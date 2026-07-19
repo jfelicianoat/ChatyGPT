@@ -1,0 +1,64 @@
+{
+  "idempotency_key": "chatygpt:smoke:replace-with-uuid",
+  "request_id": "chatygpt_smoke",
+  "inference_kind": "chat",
+  "content": {
+    "prompt": "Responde únicamente: conexión correcta",
+    "attachments": [],
+    "metadata": {
+      "origin": "chatygpt_phase_0_smoke"
+    }
+  },
+  "output": {
+    "format": "markdown",
+    "json_schema": null,
+    "language": "es"
+  },
+  "generation": {
+    "temperature": 0,
+    "max_output_tokens": 32
+  },
+  "model_requirements": {
+    "preferred_model": null,
+    "target_model": null,
+    "fallback_allowed": true,
+    "cloud_allowed": false,
+    "allowed_providers": ["ollama"],
+    "max_cost_usd": 0
+  },
+  "execution": {
+    "strategy": "single",
+    "preset": "fast",
+    "long_context": "fail",
+    "scheduling": "adaptive",
+    "max_proposers": 1,
+    "max_judges": 0,
+    "max_rounds": 1,
+    "timeout_seconds": 120,
+    "early_stop": true,
+    "selection": {
+      "mode": "auto",
+      "diversity_policy": "different_families",
+      "arbiter_policy": "strongest_available",
+      "preferred_arbiter": null,
+      "allow_substitution": true,
+      "proposers": [],
+      "required_proposers": [],
+      "arbiter": null,
+      "proposer_count": 1
+    },
+    "agent": {
+      "skills": ["web_search", "fetch_url", "calculator", "current_datetime"],
+      "max_iterations": 6,
+      "client_tools": []
+    },
+    "proposer_skills": []
+  },
+  "risk": {
+    "data_classification": "local_only",
+    "human_review_required": false
+  },
+  "priority": 100,
+  "prompt_compression": "off"
+}
+
