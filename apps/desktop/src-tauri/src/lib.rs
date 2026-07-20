@@ -1,10 +1,14 @@
+mod attachment_runtime;
 mod broker;
 mod db;
 mod error;
 mod task_runtime;
 
 use broker::{BrokerClient, BrokerDiagnostic};
-use db::{ConversationSummary, ConversationView, Database, LocalTaskSnapshot, ProjectSummary};
+use db::{
+    AttachmentView, ConversationSummary, ConversationView, Database, LocalTaskSnapshot,
+    ProjectSummary,
+};
 use error::AppError;
 use serde::Serialize;
 use tauri::{Manager, State};
@@ -13,6 +17,8 @@ struct AppState {
     database: Database,
     broker: BrokerClient,
     recovered_at_start: usize,
+    recovered_attachments_at_start: usize,
+    attachments_dir: std::path::PathBuf,
 }
 
 #[derive(Debug, Serialize)]
@@ -22,6 +28,7 @@ struct BootstrapReport {
     database_path: String,
     schema_version: i64,
     recovered_tasks: usize,
+    recovered_attachments: usize,
 }
 
 fn validated_text(value: &str, field: &str, maximum: usize) -> Result<String, AppError> {
@@ -46,6 +53,7 @@ fn bootstrap_app(state: State<'_, AppState>) -> Result<BootstrapReport, AppError
         database_path: state.database.path().display().to_string(),
         schema_version: state.database.schema_version()?,
         recovered_tasks: state.recovered_at_start,
+        recovered_attachments: state.recovered_attachments_at_start,
     })
 }
 
@@ -214,6 +222,7 @@ fn get_conversation(
 async fn send_chat_turn(
     conversation_id: String,
     text: String,
+    attachment_ids: Vec<String>,
     state: State<'_, AppState>,
 ) -> Result<LocalTaskSnapshot, AppError> {
     task_runtime::start_chat_turn(
@@ -221,8 +230,97 @@ async fn send_chat_turn(
         state.broker.clone(),
         &conversation_id,
         &text,
+        &attachment_ids,
     )
     .await
+}
+
+#[tauri::command]
+fn pick_attachment_paths() -> Result<Vec<String>, AppError> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        let script = r#"
+            Add-Type -AssemblyName System.Windows.Forms
+            $dialog = New-Object System.Windows.Forms.OpenFileDialog
+            $dialog.Multiselect = $true
+            $dialog.Title = 'Seleccionar archivos para ChatyGPT'
+            $dialog.Filter = 'Archivos compatibles|*.pdf;*.doc;*.docx;*.xls;*.xlsx;*.ppt;*.pptx;*.txt;*.md;*.csv;*.json;*.xml;*.html;*.htm;*.rtf;*.png;*.jpg;*.jpeg;*.gif;*.webp;*.bmp;*.tif;*.tiff;*.mp3;*.wav;*.m4a;*.mp4;*.mov;*.avi;*.webm;*.py;*.js;*.ts;*.tsx;*.jsx;*.rs;*.java;*.cs;*.cpp;*.c;*.h;*.sql|Todos los archivos|*.*'
+            if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+                [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+                $dialog.FileNames | ForEach-Object { [Console]::WriteLine($_) }
+            }
+        "#;
+        let output = std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-STA", "-Command", script])
+            .creation_flags(0x0800_0000)
+            .output()
+            .map_err(|error| {
+                AppError::Validation(format!("no se pudo abrir el selector: {error}"))
+            })?;
+        if !output.status.success() {
+            return Err(AppError::Validation(
+                String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+            ));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_owned)
+            .collect())
+    }
+    #[cfg(not(target_os = "windows"))]
+    Err(AppError::Validation(
+        "el selector nativo todavÃ­a solo estÃ¡ disponible en Windows".to_owned(),
+    ))
+}
+
+#[tauri::command]
+async fn import_attachment(
+    conversation_id: String,
+    source_path: String,
+    state: State<'_, AppState>,
+) -> Result<AttachmentView, AppError> {
+    attachment_runtime::import_attachment(
+        state.database.clone(),
+        state.broker.clone(),
+        state.attachments_dir.clone(),
+        conversation_id,
+        source_path,
+    )
+    .await
+}
+
+#[tauri::command]
+fn list_attachments(
+    conversation_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<AttachmentView>, AppError> {
+    state.database.list_attachments(&conversation_id)
+}
+
+#[tauri::command]
+fn remove_attachment(
+    conversation_id: String,
+    attachment_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), AppError> {
+    state
+        .database
+        .remove_conversation_attachment(&conversation_id, &attachment_id)
+}
+
+#[tauri::command]
+fn retry_attachment(
+    attachment_id: String,
+    state: State<'_, AppState>,
+) -> Result<AttachmentView, AppError> {
+    attachment_runtime::retry_attachment(
+        state.database.clone(),
+        state.broker.clone(),
+        &attachment_id,
+    )
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -239,10 +337,15 @@ pub fn run() {
             let broker = BrokerClient::from_environment()?;
             let recovered_at_start =
                 task_runtime::recover_at_start(database.clone(), broker.clone())?;
+            let recovered_attachments_at_start =
+                attachment_runtime::recover_at_start(database.clone(), broker.clone())?;
+            let attachments_dir = data_dir.join("attachments");
             app.manage(AppState {
                 database,
                 broker,
                 recovered_at_start,
+                recovered_attachments_at_start,
+                attachments_dir,
             });
             Ok(())
         })
@@ -264,7 +367,12 @@ pub fn run() {
             create_project,
             list_projects,
             rename_project,
-            archive_project
+            archive_project,
+            pick_attachment_paths,
+            import_attachment,
+            list_attachments,
+            remove_attachment,
+            retry_attachment
         ])
         .run(tauri::generate_context!())
         .expect("ChatyGPT no pudo iniciar");

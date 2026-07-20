@@ -1,0 +1,21 @@
+Diagnostico de adjuntos de ChatyGPT
+Fecha: 2026-07-20T21:55:40+01:00
+Broker: http://192.168.1.52:8765
+health/live: HTTP 200: {"status":"live"}
+health/ready: HTTP 200: {"status":"healthy","checked_at":"2026-07-20T20:55:41.087239Z","dependencies":{"sqlite":{"status":"healthy","checked_at":"2026-07-20T20:55:41.087253Z","detail":"SQLite reachable","latency_ms":0.025},"disk":{"status":"healthy","checked_at":"2026-07-20T20:55:41.087338Z","detail":"808.0 GB libres (alerta a partir de 10 GB)","latency_ms":null},"dispatcher":{"status":"healthy","checked_at":"2026-07-20T20:55:41.087753Z","detail":"Bucle de despacho activo","latency_ms":null},"ollama":{"status":"healthy","checked_at":"2026-07-20T20:55:41.311583Z","detail":"15 modelos disponibles","latency_ms":6.296899984590709},"lmstudio":{"status":"healthy","checked_at":"2026-07-20T20:55:41.311617Z","detail":"12 modelos disponibles","latency_ms":4.556900006718934},"nvidia":{"status":"healthy","checked_at":"2026-07-20T20:55:41.311620Z","detail":"118 modelos disponibles","latency_ms":222.58870000950992}}}
+
+Esquema SQLite: 2
+Adjuntos recientes: 1
+
+[1] Claude Architect Foundations.pdf
+  Tipo: application/pdf
+  Tamano: 105766 bytes
+  Estado: failed
+  Broker file_id: file_8a2a9a8b641b4c1087fa0ee72a0dcf44
+  Creado: 2026-07-20 20:50:34
+  Actualizado: 2026-07-20 20:50:43
+  Error:
+    {
+      "code": "ENGINE_MISSING",
+      "message": "Motor de ingesta no disponible: docling. Instálalo con: pip install \"ai-broker[ingestion]\""
+    }

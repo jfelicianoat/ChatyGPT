@@ -72,6 +72,18 @@ nav { margin-top: 14px; overflow-y: auto; min-height: 0; padding-right: 2px; }
 .real-progress span { width: 9px; height: 9px; border-radius: 50%; background: #d39a45; animation: pulse 1.4s ease-in-out infinite; }
 @keyframes pulse { 0%, 100% { opacity: .35; transform: scale(.85); } 50% { opacity: 1; transform: scale(1); } }
 .composer { border-top: 1px solid #e3dcd1; padding: 18px; background: #f4f0e9; }
+.attachment-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; color: #8e857a; font-size: 10px; }
+.attachment-picker { border: 1px dashed #bda984; border-radius: 9px; background: #fffaf1; color: #695534; padding: 7px 10px; cursor: pointer; }
+.attachment-picker:disabled { opacity: .55; cursor: wait; }
+.attachment-list { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.attachment-chip { display: flex; align-items: stretch; max-width: 320px; border: 1px solid #d7cfc2; border-radius: 11px; background: #faf7f1; overflow: hidden; }
+.attachment-chip.selected { border-color: #b88943; box-shadow: 0 0 0 2px #d6a55a1a; }
+.attachment-chip button { border: 0; background: transparent; color: #665e55; cursor: pointer; }
+.attachment-select { min-width: 0; padding: 8px 10px; text-align: left; }
+.attachment-select strong, .attachment-select small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attachment-select strong { color: #38322c; font-size: 11px; }
+.attachment-select small { margin-top: 3px; color: #8b8177; font-size: 9px; }
+.attachment-remove { padding: 0 9px; border-left: 1px solid #e0d8cc !important; font-size: 17px; }
 .composer textarea { width: 100%; resize: vertical; min-height: 76px; max-height: 220px; border: 1px solid #d8d0c4; border-radius: 14px; background: #fffdf9; color: #2d2823; padding: 14px 15px; font: inherit; line-height: 1.5; outline: none; }
 .composer textarea:focus { border-color: #b98b49; box-shadow: 0 0 0 3px #d6a55a1f; }
 .composer textarea:disabled { opacity: .7; }

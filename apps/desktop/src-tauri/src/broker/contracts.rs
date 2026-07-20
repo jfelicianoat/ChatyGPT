@@ -86,5 +86,35 @@ pub struct BrokerCapabilities {
     #[serde(default)]
     pub file_ingestion: bool,
     #[serde(default)]
+    pub ingestion_formats: Vec<String>,
+    #[serde(default)]
     pub client_tool_passthrough: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileAccepted {
+    pub file_id: String,
+    pub status: String,
+    pub filename: String,
+    pub size_bytes: i64,
+    pub sha256: String,
+    pub created: bool,
+    pub status_url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileState {
+    pub file_id: String,
+    pub status: String,
+    pub filename: String,
+    pub kind: Option<String>,
+    pub engine: Option<String>,
+    pub size_bytes: i64,
+    pub sha256: String,
+    #[serde(default)]
+    pub meta: Value,
+    pub error: Option<Value>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub markdown_url: Option<String>,
 }

@@ -20,6 +20,9 @@ Fase 1 en curso. La base durable y el primer corte de organización local incluy
 - búsqueda por título y contenido de mensajes;
 - confirmaciones explícitas y auditoría para operaciones de ciclo de vida;
 - recuperación visual de una tarea pendiente al reabrir su conversación;
+- adjuntos reutilizables con copia local administrada, SHA-256 y deduplicación;
+- selección nativa y arrastre de archivos, subida en streaming y seguimiento de ingesta;
+- envío al chat solo cuando Broker AI confirma el `file_id` como `ready`;
 - fixture contractual local-only y sin coste cloud;
 - pruebas ejecutables con la biblioteca estándar de Python.
 

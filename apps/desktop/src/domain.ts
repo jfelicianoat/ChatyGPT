@@ -23,6 +23,19 @@ export type BootstrapReport = {
   databasePath: string;
   schemaVersion: number;
   recoveredTasks: number;
+  recoveredAttachments: number;
+};
+
+export type AttachmentView = {
+  id: string;
+  displayName: string;
+  mediaType?: string;
+  sizeBytes: number;
+  sha256: string;
+  brokerFileId?: string;
+  ingestionStatus: "local" | "uploading" | "received" | "converting" | "ready" | "failed";
+  ingestionError?: Record<string, unknown>;
+  updatedAt: string;
 };
 
 export type BrokerDiagnostic = {

@@ -9,9 +9,10 @@ use crate::broker::{TaskAccepted, TaskState};
 use crate::error::AppError;
 
 const INITIAL_MIGRATION: &str = include_str!("../../migrations/0001_initial.sql");
+const ATTACHMENTS_MIGRATION: &str = include_str!("../../migrations/0002_attachments.sql");
 const RECOVER_NON_TERMINAL_TASKS: &str =
     include_str!("../../queries/recover_non_terminal_tasks.sql");
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 
 #[derive(Clone)]
 pub struct Database {
@@ -89,6 +90,32 @@ pub struct ContextMessage {
     pub text: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachmentView {
+    pub id: String,
+    pub display_name: String,
+    pub media_type: Option<String>,
+    pub size_bytes: i64,
+    pub sha256: String,
+    pub broker_file_id: Option<String>,
+    pub ingestion_status: String,
+    pub ingestion_error: Option<Value>,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct AttachmentRecord {
+    pub id: String,
+    pub local_path: String,
+    pub display_name: String,
+    pub media_type: Option<String>,
+    pub size_bytes: i64,
+    pub sha256: String,
+    pub broker_file_id: Option<String>,
+    pub ingestion_status: String,
+}
+
 impl Database {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, AppError> {
         let path = path.as_ref().to_path_buf();
@@ -108,9 +135,16 @@ impl Database {
 
     fn migrate(connection: &mut Connection) -> Result<(), AppError> {
         let current: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if current < SCHEMA_VERSION {
+        if current < 1 {
             let transaction = connection.transaction()?;
             transaction.execute_batch(INITIAL_MIGRATION)?;
+            transaction.pragma_update(None, "user_version", 1)?;
+            transaction.commit()?;
+        }
+        let current: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        if current < SCHEMA_VERSION {
+            let transaction = connection.transaction()?;
+            transaction.execute_batch(ATTACHMENTS_MIGRATION)?;
             transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             transaction.commit()?;
         }
@@ -601,6 +635,297 @@ impl Database {
         Ok(selected)
     }
 
+    pub fn register_attachment(
+        &self,
+        conversation_id: &str,
+        local_path: &str,
+        display_name: &str,
+        media_type: Option<&str>,
+        size_bytes: i64,
+        sha256: &str,
+    ) -> Result<AttachmentView, AppError> {
+        let connection = self.connect()?;
+        let transaction = connection.unchecked_transaction()?;
+        let active: bool = transaction.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM conversations
+                WHERE id = ?1 AND archived_at IS NULL AND deleted_at IS NULL
+             )",
+            params![conversation_id],
+            |row| row.get(0),
+        )?;
+        if !active {
+            return Err(AppError::NotFound(format!(
+                "conversaciÃ³n activa {conversation_id}"
+            )));
+        }
+        let existing: Option<String> = transaction
+            .query_row(
+                "SELECT id FROM attachments WHERE sha256 = ?1",
+                params![sha256],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let attachment_id =
+            existing.unwrap_or_else(|| format!("attachment_{}", Uuid::new_v4().simple()));
+        transaction.execute(
+            "INSERT OR IGNORE INTO attachments(
+                id, local_path, display_name, media_type, size_bytes, sha256
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                attachment_id,
+                local_path,
+                display_name,
+                media_type,
+                size_bytes,
+                sha256
+            ],
+        )?;
+        transaction.execute(
+            "INSERT OR IGNORE INTO conversation_attachments(conversation_id, attachment_id)
+             VALUES (?1, ?2)",
+            params![conversation_id, attachment_id],
+        )?;
+        transaction.execute(
+            "INSERT INTO audit_events(event_type, actor, conversation_id, payload_json)
+             VALUES ('attachment.added', 'user', ?1, ?2)",
+            params![
+                conversation_id,
+                serde_json::json!({
+                    "attachment_id": attachment_id,
+                    "sha256": sha256,
+                    "size_bytes": size_bytes
+                })
+                .to_string()
+            ],
+        )?;
+        transaction.commit()?;
+        self.attachment_view(&attachment_id)
+    }
+
+    pub fn list_attachments(&self, conversation_id: &str) -> Result<Vec<AttachmentView>, AppError> {
+        let connection = self.connect()?;
+        let mut statement = connection.prepare(
+            "SELECT a.id, a.display_name, a.media_type, a.size_bytes, a.sha256,
+                    a.broker_file_id, a.ingestion_status, a.ingestion_error_json, a.updated_at
+             FROM conversation_attachments ca
+             JOIN attachments a ON a.id = ca.attachment_id
+             WHERE ca.conversation_id = ?1
+             ORDER BY ca.added_at, a.created_at",
+        )?;
+        let attachments = statement
+            .query_map(params![conversation_id], Self::map_attachment_view)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(attachments)
+    }
+
+    pub fn remove_conversation_attachment(
+        &self,
+        conversation_id: &str,
+        attachment_id: &str,
+    ) -> Result<(), AppError> {
+        let connection = self.connect()?;
+        let changed = connection.execute(
+            "DELETE FROM conversation_attachments
+             WHERE conversation_id = ?1 AND attachment_id = ?2",
+            params![conversation_id, attachment_id],
+        )?;
+        if changed == 0 {
+            return Err(AppError::NotFound(format!("adjunto {attachment_id}")));
+        }
+        connection.execute(
+            "INSERT INTO audit_events(event_type, actor, conversation_id, payload_json)
+             VALUES ('attachment.removed', 'user', ?1, ?2)",
+            params![
+                conversation_id,
+                serde_json::json!({"attachment_id": attachment_id}).to_string()
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn map_attachment_view(row: &rusqlite::Row<'_>) -> rusqlite::Result<AttachmentView> {
+        let error_json: Option<String> = row.get(7)?;
+        Ok(AttachmentView {
+            id: row.get(0)?,
+            display_name: row.get(1)?,
+            media_type: row.get(2)?,
+            size_bytes: row.get(3)?,
+            sha256: row.get(4)?,
+            broker_file_id: row.get(5)?,
+            ingestion_status: row.get(6)?,
+            ingestion_error: error_json.and_then(|value| serde_json::from_str(&value).ok()),
+            updated_at: row.get(8)?,
+        })
+    }
+
+    pub fn attachment_view(&self, id: &str) -> Result<AttachmentView, AppError> {
+        let connection = self.connect()?;
+        connection
+            .query_row(
+                "SELECT id, display_name, media_type, size_bytes, sha256,
+                        broker_file_id, ingestion_status, ingestion_error_json, updated_at
+                 FROM attachments WHERE id = ?1",
+                params![id],
+                Self::map_attachment_view,
+            )
+            .optional()?
+            .ok_or_else(|| AppError::NotFound(format!("adjunto {id}")))
+    }
+
+    pub fn attachment_record(&self, id: &str) -> Result<AttachmentRecord, AppError> {
+        let connection = self.connect()?;
+        connection
+            .query_row(
+                "SELECT id, local_path, display_name, media_type, size_bytes, sha256,
+                        broker_file_id, ingestion_status
+                 FROM attachments WHERE id = ?1",
+                params![id],
+                |row| {
+                    Ok(AttachmentRecord {
+                        id: row.get(0)?,
+                        local_path: row.get(1)?,
+                        display_name: row.get(2)?,
+                        media_type: row.get(3)?,
+                        size_bytes: row.get(4)?,
+                        sha256: row.get(5)?,
+                        broker_file_id: row.get(6)?,
+                        ingestion_status: row.get(7)?,
+                    })
+                },
+            )
+            .optional()?
+            .ok_or_else(|| AppError::NotFound(format!("adjunto {id}")))
+    }
+
+    pub fn recoverable_attachments(&self) -> Result<Vec<AttachmentRecord>, AppError> {
+        let connection = self.connect()?;
+        let mut statement = connection.prepare(
+            "SELECT id FROM attachments
+             WHERE ingestion_status IN ('uploading', 'received', 'converting')
+             ORDER BY updated_at",
+        )?;
+        let ids = statement
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        ids.into_iter()
+            .map(|id| self.attachment_record(&id))
+            .collect()
+    }
+
+    pub fn mark_attachment_uploading(&self, id: &str) -> Result<(), AppError> {
+        self.update_attachment_ingestion(id, "uploading", None, None, None, None, None)
+    }
+
+    pub fn reset_failed_attachment_for_retry(&self, id: &str) -> Result<(), AppError> {
+        let connection = self.connect()?;
+        let transaction = connection.unchecked_transaction()?;
+        let changed = transaction.execute(
+            "UPDATE attachments
+             SET broker_file_id = NULL,
+                 ingestion_status = 'local',
+                 ingestion_error_json = NULL,
+                 kind = NULL,
+                 engine = NULL,
+                 ingestion_meta_json = NULL,
+                 updated_at = datetime('now')
+             WHERE id = ?1 AND ingestion_status = 'failed'",
+            params![id],
+        )?;
+        if changed == 0 {
+            return Err(AppError::Conflict(
+                "solo se puede reintentar un adjunto fallido".to_owned(),
+            ));
+        }
+        transaction.execute(
+            "INSERT INTO audit_events(event_type, actor, payload_json)
+             VALUES ('attachment.retry_requested', 'user', ?1)",
+            params![serde_json::json!({"attachment_id": id}).to_string()],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_attachment_ingestion(
+        &self,
+        id: &str,
+        status: &str,
+        broker_file_id: Option<&str>,
+        kind: Option<&str>,
+        engine: Option<&str>,
+        meta: Option<&Value>,
+        error: Option<&Value>,
+    ) -> Result<(), AppError> {
+        let meta_json = meta
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|error| AppError::BrokerContract(error.to_string()))?;
+        let error_json = error
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|error| AppError::BrokerContract(error.to_string()))?;
+        let connection = self.connect()?;
+        let changed = connection.execute(
+            "UPDATE attachments
+             SET ingestion_status = ?2,
+                 broker_file_id = COALESCE(?3, broker_file_id),
+                 kind = COALESCE(?4, kind),
+                 engine = COALESCE(?5, engine),
+                 ingestion_meta_json = COALESCE(?6, ingestion_meta_json),
+                 ingestion_error_json = ?7,
+                 updated_at = datetime('now')
+             WHERE id = ?1",
+            params![
+                id,
+                status,
+                broker_file_id,
+                kind,
+                engine,
+                meta_json,
+                error_json
+            ],
+        )?;
+        if changed == 0 {
+            return Err(AppError::NotFound(format!("adjunto {id}")));
+        }
+        Ok(())
+    }
+
+    pub fn ready_attachments_for_turn(
+        &self,
+        conversation_id: &str,
+        attachment_ids: &[String],
+    ) -> Result<Vec<AttachmentRecord>, AppError> {
+        let connection = self.connect()?;
+        let mut result = Vec::with_capacity(attachment_ids.len());
+        for id in attachment_ids {
+            let record = self.attachment_record(id)?;
+            let linked: bool = connection.query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM conversation_attachments
+                    WHERE conversation_id = ?1 AND attachment_id = ?2
+                 )",
+                params![conversation_id, id],
+                |row| row.get(0),
+            )?;
+            if !linked {
+                return Err(AppError::Validation(format!(
+                    "el adjunto {} no pertenece a esta conversaciÃ³n",
+                    record.display_name
+                )));
+            }
+            if record.ingestion_status != "ready" || record.broker_file_id.is_none() {
+                return Err(AppError::Conflict(format!(
+                    "el adjunto {} todavÃ­a no estÃ¡ listo",
+                    record.display_name
+                )));
+            }
+            result.push(record);
+        }
+        Ok(result)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn prepare_chat_turn(
         &self,
@@ -612,6 +937,7 @@ impl Database {
         user_text: &str,
         request: &Value,
         context: &[ContextMessage],
+        attachment_ids: &[String],
     ) -> Result<BrokerTaskRecord, AppError> {
         let request_json = serde_json::to_string(request)
             .map_err(|error| AppError::BrokerContract(error.to_string()))?;
@@ -631,6 +957,31 @@ impl Database {
              ) VALUES (?1, ?2, 'user', 'complete', ?3)",
             params![user_message_id, conversation_id, next_sequence],
         )?;
+        for (ordinal, attachment_id) in attachment_ids.iter().enumerate() {
+            let usable: bool = transaction.query_row(
+                "SELECT EXISTS(
+                    SELECT 1
+                    FROM conversation_attachments ca
+                    JOIN attachments a ON a.id = ca.attachment_id
+                    WHERE ca.conversation_id = ?1
+                      AND ca.attachment_id = ?2
+                      AND a.ingestion_status = 'ready'
+                      AND a.broker_file_id IS NOT NULL
+                 )",
+                params![conversation_id, attachment_id],
+                |row| row.get(0),
+            )?;
+            if !usable {
+                return Err(AppError::Conflict(
+                    "uno de los adjuntos ya no esta listo para enviar".to_owned(),
+                ));
+            }
+            transaction.execute(
+                "INSERT INTO message_attachments(message_id, attachment_id, ordinal)
+                 VALUES (?1, ?2, ?3)",
+                params![user_message_id, attachment_id, ordinal as i64],
+            )?;
+        }
         transaction.execute(
             "INSERT INTO message_parts(
                 id, message_id, ordinal, kind, content_text
@@ -1076,7 +1427,7 @@ impl Database {
 
 #[cfg(test)]
 mod tests {
-    use super::Database;
+    use super::{Database, INITIAL_MIGRATION};
     use crate::error::AppError;
     use rusqlite::params;
     use uuid::Uuid;
@@ -1223,6 +1574,163 @@ mod tests {
             database.conversation_summary(&conversation.id),
             Err(AppError::NotFound(_))
         ));
+        cleanup(&database);
+    }
+
+    #[test]
+    fn attachment_is_deduplicated_and_reused_across_conversations() {
+        let database = test_database();
+        assert_eq!(database.schema_version().expect("version should load"), 2);
+        let first_conversation = database
+            .create_conversation("Primera", None)
+            .expect("conversation should be created");
+        let second_conversation = database
+            .create_conversation("Segunda", None)
+            .expect("conversation should be created");
+        let first = database
+            .register_attachment(
+                &first_conversation.id,
+                "C:/managed/document.pdf",
+                "document.pdf",
+                Some("application/pdf"),
+                42,
+                "abc123",
+            )
+            .expect("attachment should be registered");
+        let second = database
+            .register_attachment(
+                &second_conversation.id,
+                "C:/managed/document.pdf",
+                "document.pdf",
+                Some("application/pdf"),
+                42,
+                "abc123",
+            )
+            .expect("attachment should be reused");
+        assert_eq!(first.id, second.id);
+        assert_eq!(
+            database
+                .list_attachments(&first_conversation.id)
+                .expect("first attachments should list")
+                .len(),
+            1
+        );
+        assert_eq!(
+            database
+                .list_attachments(&second_conversation.id)
+                .expect("second attachments should list")
+                .len(),
+            1
+        );
+
+        database
+            .update_attachment_ingestion(
+                &first.id,
+                "ready",
+                Some("broker-file-1"),
+                Some("document"),
+                Some("test"),
+                Some(&serde_json::json!({})),
+                None,
+            )
+            .expect("attachment should become ready");
+        let ready = database
+            .ready_attachments_for_turn(&second_conversation.id, std::slice::from_ref(&first.id))
+            .expect("reused attachment should be ready");
+        assert_eq!(ready[0].broker_file_id.as_deref(), Some("broker-file-1"));
+
+        database
+            .remove_conversation_attachment(&first_conversation.id, &first.id)
+            .expect("first association should be removed");
+        assert!(database
+            .list_attachments(&first_conversation.id)
+            .expect("first attachments should list")
+            .is_empty());
+        assert_eq!(
+            database
+                .list_attachments(&second_conversation.id)
+                .expect("second association should remain")
+                .len(),
+            1
+        );
+        cleanup(&database);
+    }
+
+    #[test]
+    fn existing_schema_one_database_upgrades_without_losing_conversations() {
+        let path = std::env::temp_dir().join(format!(
+            "chatygpt-db-upgrade-test-{}.sqlite",
+            Uuid::new_v4().simple()
+        ));
+        let connection = rusqlite::Connection::open(&path).expect("legacy database should open");
+        connection
+            .execute_batch(INITIAL_MIGRATION)
+            .expect("initial migration should apply");
+        connection
+            .pragma_update(None, "user_version", 1)
+            .expect("legacy version should be set");
+        connection
+            .execute(
+                "INSERT INTO conversations(id, title) VALUES ('legacy-conversation', 'Legado')",
+                [],
+            )
+            .expect("legacy conversation should exist");
+        drop(connection);
+
+        let database = Database::open(&path).expect("database should upgrade");
+        assert_eq!(database.schema_version().expect("version should load"), 2);
+        assert_eq!(
+            database
+                .list_conversations()
+                .expect("conversations should survive")
+                .first()
+                .map(|conversation| conversation.id.as_str()),
+            Some("legacy-conversation")
+        );
+        cleanup(&database);
+    }
+
+    #[test]
+    fn retrying_failed_attachment_discards_terminal_broker_file_id() {
+        let database = test_database();
+        let conversation = database
+            .create_conversation("Adjunto fallido", None)
+            .expect("conversation should be created");
+        let attachment = database
+            .register_attachment(
+                &conversation.id,
+                "C:/managed/failed.pdf",
+                "failed.pdf",
+                Some("application/pdf"),
+                100,
+                "failed-sha",
+            )
+            .expect("attachment should be registered");
+        database
+            .update_attachment_ingestion(
+                &attachment.id,
+                "failed",
+                Some("file-terminal-failure"),
+                Some("document"),
+                Some("docling"),
+                Some(&serde_json::json!({"pages": 0})),
+                Some(&serde_json::json!({"code": "ENGINE_MISSING"})),
+            )
+            .expect("attachment should fail");
+
+        database
+            .reset_failed_attachment_for_retry(&attachment.id)
+            .expect("failed attachment should reset");
+        let reset = database
+            .attachment_record(&attachment.id)
+            .expect("attachment should load");
+        assert_eq!(reset.ingestion_status, "local");
+        assert!(reset.broker_file_id.is_none());
+        assert!(database
+            .attachment_view(&attachment.id)
+            .expect("attachment view should load")
+            .ingestion_error
+            .is_none());
         cleanup(&database);
     }
 }

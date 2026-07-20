@@ -7,7 +7,7 @@ use serde::Serialize;
 use serde_json::Value;
 use url::Url;
 
-pub use contracts::{BrokerCapabilities, TaskAccepted, TaskState};
+pub use contracts::{BrokerCapabilities, FileAccepted, FileState, TaskAccepted, TaskState};
 
 use crate::error::AppError;
 
@@ -119,6 +119,74 @@ impl BrokerClient {
                     .post(self.endpoint("/api/v1/tasks")?)
                     .json(request),
             )
+            .send()
+            .await
+            .map_err(|error| AppError::BrokerTransport(error.to_string()))?;
+        Self::decode(response).await
+    }
+
+    pub async fn upload_file(
+        &self,
+        path: &std::path::Path,
+        filename: &str,
+        media_type: Option<&str>,
+        size_bytes: u64,
+    ) -> Result<FileAccepted, AppError> {
+        let path = path.to_path_buf();
+        let filename = filename.to_owned();
+        let media_type = media_type.map(str::to_owned);
+        let endpoint = self.endpoint("/api/v1/files")?;
+        let admin_token = self.admin_token.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let file = std::fs::File::open(path)
+                .map_err(|error| AppError::BrokerTransport(error.to_string()))?;
+            let mut part = reqwest::blocking::multipart::Part::reader_with_length(file, size_bytes)
+                .file_name(filename);
+            if let Some(media_type) = media_type {
+                part = part
+                    .mime_str(&media_type)
+                    .map_err(|error| AppError::BrokerContract(error.to_string()))?;
+            }
+            let form = reqwest::blocking::multipart::Form::new().part("file", part);
+            let client = reqwest::blocking::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(3))
+                .timeout(std::time::Duration::from_secs(600))
+                .user_agent(concat!("ChatyGPT/", env!("CARGO_PKG_VERSION")))
+                .build()
+                .map_err(|error| AppError::BrokerTransport(error.to_string()))?;
+            let mut request = client.post(endpoint).multipart(form);
+            if let Some(token) = admin_token {
+                request = request.header("x-admin-token", token);
+            }
+            let response = request
+                .send()
+                .map_err(|error| AppError::BrokerTransport(error.to_string()))?;
+            let status = response.status();
+            let bytes = response
+                .bytes()
+                .map_err(|error| AppError::BrokerTransport(error.to_string()))?;
+            if !status.is_success() {
+                let message = serde_json::from_slice::<Value>(&bytes)
+                    .ok()
+                    .and_then(|body| body.get("detail").cloned())
+                    .map(|detail| detail.to_string())
+                    .unwrap_or_else(|| String::from_utf8_lossy(&bytes).into_owned());
+                return Err(AppError::BrokerResponse {
+                    status: status.as_u16(),
+                    message,
+                });
+            }
+            serde_json::from_slice(&bytes)
+                .map_err(|error| AppError::BrokerContract(error.to_string()))
+        })
+        .await
+        .map_err(|error| AppError::BrokerTransport(error.to_string()))?
+    }
+
+    pub async fn get_file(&self, file_id: &str) -> Result<FileState, AppError> {
+        let path = format!("/api/v1/files/{file_id}");
+        let response = self
+            .authorize(self.http.get(self.endpoint(&path)?))
             .send()
             .await
             .map_err(|error| AppError::BrokerTransport(error.to_string()))?;

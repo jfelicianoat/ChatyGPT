@@ -5,7 +5,7 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::broker::{BrokerClient, PollPolicy};
-use crate::db::{BrokerTaskRecord, Database, LocalTaskSnapshot};
+use crate::db::{AttachmentRecord, BrokerTaskRecord, Database, LocalTaskSnapshot};
 use crate::error::AppError;
 
 pub async fn start_smoke_task(
@@ -26,6 +26,7 @@ pub async fn start_chat_turn(
     broker: BrokerClient,
     conversation_id: &str,
     user_text: &str,
+    attachment_ids: &[String],
 ) -> Result<LocalTaskSnapshot, AppError> {
     let user_text = user_text.trim();
     if user_text.is_empty() {
@@ -38,6 +39,12 @@ pub async fn start_chat_turn(
             "el mensaje supera el límite de 200.000 caracteres".to_owned(),
         ));
     }
+    if attachment_ids.len() > 20 {
+        return Err(AppError::BrokerContract(
+            "no se pueden enviar mÃ¡s de 20 adjuntos en un turno".to_owned(),
+        ));
+    }
+    let attachments = database.ready_attachments_for_turn(conversation_id, attachment_ids)?;
 
     let user_message_id = format!("msg_{}", Uuid::new_v4().simple());
     let assistant_message_id = format!("msg_{}", Uuid::new_v4().simple());
@@ -50,7 +57,13 @@ pub async fn start_chat_turn(
         role: "user".to_owned(),
         text: user_text.to_owned(),
     });
-    let request = chat_request(conversation_id, &idempotency_key, user_text, &context)?;
+    let request = chat_request(
+        conversation_id,
+        &idempotency_key,
+        user_text,
+        &context,
+        &attachments,
+    )?;
     let record = database.prepare_chat_turn(
         conversation_id,
         &user_message_id,
@@ -60,6 +73,7 @@ pub async fn start_chat_turn(
         user_text,
         &request,
         &context,
+        attachment_ids,
     )?;
     let snapshot = database.task_snapshot(&local_task_id)?;
     spawn_submission_and_poll(database, broker, record);
@@ -249,6 +263,7 @@ fn chat_request(
     idempotency_key: &str,
     user_text: &str,
     context: &[crate::db::ContextMessage],
+    attachments: &[AttachmentRecord],
 ) -> Result<serde_json::Value, AppError> {
     let prior_context = &context[..context.len().saturating_sub(1)];
     let history = serde_json::to_string(prior_context)
@@ -262,13 +277,29 @@ fn chat_request(
              Current user request:\n{user_text}"
         )
     };
+    let broker_attachments = attachments
+        .iter()
+        .map(|attachment| {
+            let file_id = attachment.broker_file_id.as_deref().ok_or_else(|| {
+                AppError::BrokerContract(format!(
+                    "el adjunto {} no tiene identificador remoto",
+                    attachment.display_name
+                ))
+            })?;
+            Ok(json!({
+                "type": "broker_file",
+                "name": attachment.display_name,
+                "metadata": {"file_id": file_id}
+            }))
+        })
+        .collect::<Result<Vec<_>, AppError>>()?;
     Ok(json!({
         "idempotency_key": idempotency_key,
         "request_id": format!("chatygpt_turn_{}", Uuid::new_v4().simple()),
         "inference_kind": "chat",
         "content": {
             "prompt": prompt,
-            "attachments": [],
+            "attachments": broker_attachments,
             "metadata": {
                 "origin": "chatygpt",
                 "conversation_id": conversation_id,

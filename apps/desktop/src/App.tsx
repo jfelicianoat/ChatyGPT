@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
   isTaskBlockingConversation,
   isTaskPollingComplete,
   isTerminalTask,
   type BootstrapReport,
+  type AttachmentView,
   type BrokerDiagnostic,
   type ConversationSummary,
   type ConversationView,
@@ -101,6 +103,10 @@ export function App() {
   const [activeTurn, setActiveTurn] = useState<Loadable<LocalTaskSnapshot> | null>(null);
   const [activeTurnConversationId, setActiveTurnConversationId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
+  const [attachments, setAttachments] = useState<AttachmentView[]>([]);
+  const [draftAttachmentIds, setDraftAttachmentIds] = useState<string[]>([]);
+  const [attachmentBusy, setAttachmentBusy] = useState(false);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [dialog, setDialog] = useState<DialogState | null>(null);
   const [dialogValue, setDialogValue] = useState("");
   const [dialogBusy, setDialogBusy] = useState(false);
@@ -116,8 +122,12 @@ export function App() {
   };
 
   const loadConversation = async (conversationId: string) => {
-    const view = await platform.getConversation(conversationId);
+    const [view, conversationAttachments] = await Promise.all([
+      platform.getConversation(conversationId),
+      platform.listAttachments(conversationId)
+    ]);
     setConversation({ state: "ready", value: view });
+    setAttachments(conversationAttachments);
     const pending = [...view.messages]
       .reverse()
       .find((message) => message.status === "pending" && message.brokerTaskId);
@@ -177,6 +187,45 @@ export function App() {
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [dialog, dialogBusy]);
+
+  useEffect(() => {
+    if (conversation?.state !== "ready") return;
+    const conversationId = conversation.value.id;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    getCurrentWebviewWindow()
+      .onDragDropEvent((event) => {
+        if (event.payload.type === "drop" && event.payload.paths.length > 0) {
+          void importAttachmentPaths(conversationId, event.payload.paths);
+        }
+      })
+      .then((stop) => {
+        if (disposed) stop();
+        else unlisten = stop;
+      })
+      .catch((error) => setAttachmentError(describeError(error)));
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [conversation?.state === "ready" ? conversation.value.id : null]);
+
+  useEffect(() => {
+    if (conversation?.state !== "ready") return;
+    if (!attachments.some((item) => !["ready", "failed"].includes(item.ingestionStatus))) {
+      return;
+    }
+    const conversationId = conversation.value.id;
+    const interval = window.setInterval(() => {
+      platform.listAttachments(conversationId)
+        .then(setAttachments)
+        .catch((error) => setAttachmentError(describeError(error)));
+    }, 1_000);
+    return () => window.clearInterval(interval);
+  }, [
+    conversation?.state === "ready" ? conversation.value.id : null,
+    attachments.map((item) => `${item.id}:${item.ingestionStatus}`).join("|")
+  ]);
 
   useEffect(() => {
     if (smokeTask?.state !== "ready" || isTaskPollingComplete(smokeTask.value)) {
@@ -246,6 +295,60 @@ export function App() {
   const currentTurnBlocks =
     currentTurn?.state === "loading" ||
     (currentTurn?.state === "ready" && isTaskBlockingConversation(currentTurn.value));
+  const selectedAttachments = attachments.filter((item) =>
+    draftAttachmentIds.includes(item.id)
+  );
+  const attachmentsBlockSend = selectedAttachments.some(
+    (item) => item.ingestionStatus !== "ready"
+  );
+
+  async function importAttachmentPaths(conversationId: string, paths: string[]) {
+    setAttachmentBusy(true);
+    setAttachmentError(null);
+    try {
+      const importedIds: string[] = [];
+      for (const path of paths) {
+        const attachment = await platform.importAttachment(conversationId, path);
+        importedIds.push(attachment.id);
+      }
+      setAttachments(await platform.listAttachments(conversationId));
+      setDraftAttachmentIds((current) => [...new Set([...current, ...importedIds])]);
+    } catch (error) {
+      setAttachmentError(describeError(error));
+    } finally {
+      setAttachmentBusy(false);
+    }
+  }
+
+  const chooseAttachments = async () => {
+    if (conversation?.state !== "ready") return;
+    try {
+      const paths = await platform.pickAttachmentPaths();
+      if (paths.length > 0) await importAttachmentPaths(conversation.value.id, paths);
+    } catch (error) {
+      setAttachmentError(describeError(error));
+    }
+  };
+
+  const removeAttachment = async (attachmentId: string) => {
+    if (conversation?.state !== "ready") return;
+    try {
+      await platform.removeAttachment(conversation.value.id, attachmentId);
+      setAttachments((items) => items.filter((item) => item.id !== attachmentId));
+      setDraftAttachmentIds((ids) => ids.filter((id) => id !== attachmentId));
+    } catch (error) {
+      setAttachmentError(describeError(error));
+    }
+  };
+
+  const retryAttachment = async (attachmentId: string) => {
+    try {
+      const updated = await platform.retryAttachment(attachmentId);
+      setAttachments((items) => items.map((item) => item.id === updated.id ? updated : item));
+    } catch (error) {
+      setAttachmentError(describeError(error));
+    }
+  };
 
   const checkBroker = async () => {
     setBroker({ state: "loading" });
@@ -279,6 +382,9 @@ export function App() {
 
   const openConversation = async (conversationId: string) => {
     setConversation({ state: "loading" });
+    setAttachments([]);
+    setDraftAttachmentIds([]);
+    setAttachmentError(null);
     setNavigationError(null);
     try {
       await loadConversation(conversationId);
@@ -309,8 +415,10 @@ export function App() {
     setActiveTurn({ state: "loading" });
     setActiveTurnConversationId(conversationId);
     try {
-      const task = await platform.sendChatTurn(conversationId, text);
+      const attachmentIds = [...draftAttachmentIds];
+      const task = await platform.sendChatTurn(conversationId, text, attachmentIds);
       setActiveTurn({ state: "ready", value: task });
+      setDraftAttachmentIds([]);
       await loadConversation(conversationId);
       await reloadNavigation();
     } catch (error) {
@@ -614,6 +722,55 @@ export function App() {
                 ))}
               </div>
               <div className="composer">
+                <div className="attachment-row">
+                  <button
+                    className="attachment-picker"
+                    onClick={chooseAttachments}
+                    disabled={Boolean(currentTurnBlocks) || attachmentBusy}
+                  >
+                    {attachmentBusy ? "Importandoâ€¦" : "+ Adjuntar archivos"}
+                  </button>
+                  <span>o arrÃ¡stralos a esta ventana</span>
+                </div>
+                {attachments.length > 0 && (
+                  <div className="attachment-list" aria-label="Archivos de la conversaciÃ³n">
+                    {attachments.map((attachment) => {
+                      const selected = draftAttachmentIds.includes(attachment.id);
+                      return (
+                        <div
+                          key={attachment.id}
+                          className={`attachment-chip ${selected ? "selected" : ""}`}
+                        >
+                          <button
+                            className="attachment-select"
+                            onClick={() => setDraftAttachmentIds((ids) =>
+                              selected
+                                ? ids.filter((id) => id !== attachment.id)
+                                : [...ids, attachment.id]
+                            )}
+                            disabled={Boolean(currentTurnBlocks)}
+                            title={selected ? "No enviar en este turno" : "Enviar en este turno"}
+                          >
+                            <strong>{attachment.displayName}</strong>
+                            <small>
+                              {(attachment.sizeBytes / 1024).toFixed(1)} KB Â· {attachment.ingestionStatus}
+                            </small>
+                          </button>
+                          {attachment.ingestionStatus === "failed" && (
+                            <button onClick={() => retryAttachment(attachment.id)}>Reintentar</button>
+                          )}
+                          <button
+                            className="attachment-remove"
+                            onClick={() => removeAttachment(attachment.id)}
+                            aria-label={`Quitar ${attachment.displayName}`}
+                          >
+                            Ã—
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
                 <textarea
                   value={draft}
                   onChange={(event) => setDraft(event.target.value)}
@@ -644,6 +801,8 @@ export function App() {
                         !draft.trim() ||
                         broker?.state !== "ready" ||
                         !broker.value.ready ||
+                        attachmentsBlockSend ||
+                        attachmentBusy ||
                         Boolean(currentTurnBlocks)
                       }
                     >
@@ -654,6 +813,7 @@ export function App() {
                 {currentTurn?.state === "error" && (
                   <p className="error">{currentTurn.message}</p>
                 )}
+                {attachmentError && <p className="error">{attachmentError}</p>}
               </div>
             </section>
           ) : conversation?.state === "loading" ? (

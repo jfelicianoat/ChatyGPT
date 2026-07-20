@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   BootstrapReport,
+  AttachmentView,
   BrokerDiagnostic,
   ConversationSummary,
   ConversationView,
@@ -60,7 +61,26 @@ export const platform = {
   archiveProject(projectId: string): Promise<void> {
     return invoke<void>("archive_project", { projectId, confirmed: true });
   },
-  sendChatTurn(conversationId: string, text: string): Promise<LocalTaskSnapshot> {
-    return invoke<LocalTaskSnapshot>("send_chat_turn", { conversationId, text });
+  sendChatTurn(
+    conversationId: string,
+    text: string,
+    attachmentIds: string[]
+  ): Promise<LocalTaskSnapshot> {
+    return invoke<LocalTaskSnapshot>("send_chat_turn", { conversationId, text, attachmentIds });
+  },
+  pickAttachmentPaths(): Promise<string[]> {
+    return invoke<string[]>("pick_attachment_paths");
+  },
+  importAttachment(conversationId: string, sourcePath: string): Promise<AttachmentView> {
+    return invoke<AttachmentView>("import_attachment", { conversationId, sourcePath });
+  },
+  listAttachments(conversationId: string): Promise<AttachmentView[]> {
+    return invoke<AttachmentView[]>("list_attachments", { conversationId });
+  },
+  removeAttachment(conversationId: string, attachmentId: string): Promise<void> {
+    return invoke<void>("remove_attachment", { conversationId, attachmentId });
+  },
+  retryAttachment(attachmentId: string): Promise<AttachmentView> {
+    return invoke<AttachmentView>("retry_attachment", { attachmentId });
   }
 };

@@ -2,8 +2,8 @@
 
 Fecha: 2026-07-20.
 
-Estado: **Fase 1 en curso**. Este documento cubre el primer corte vertical de
-organización local; no declara completada la fase completa.
+Estado: **Fase 1 en curso**. Este documento cubre organización local y el corte
+vertical de adjuntos; no declara completada la fase completa.
 
 ## Matriz del corte
 
@@ -18,6 +18,9 @@ organización local; no declara completada la fase completa.
 | Recuperar progreso en UI | Revisado estáticamente + compilado | mensajes exponen vínculo y estado de tarea | TypeScript + Cargo + Tauri build | compila | no se cerró la app durante una tarea real | cierre/reapertura |
 | Auditoría | Verificado automáticamente | `audit_events` | recuento de eventos en test Rust | cuatro operaciones trazadas | no hay inspector UI | inspeccionar futura pantalla |
 | Ejecutable Windows | Verificado automáticamente | Tauri CLI | `tauri build --no-bundle` | `target/release/chatygpt.exe` generado | sin MSI/NSIS | abrir con perfil Windows |
+| Importar y deduplicar adjuntos | Verificado automáticamente | copia administrada + SHA-256 + esquema 2 | tests Rust de archivo y SQLite | una copia reutilizable entre conversaciones | límite local 512 MB | seleccionar y arrastrar en ventana real |
+| Ingesta durable | Revisado estáticamente + compilado | subida multipart en streaming, polling y recuperación | Cargo check/test/clippy | estados reales `uploading/received/converting/ready/failed` | Broker inaccesible desde sandbox Codex | probar PDF contra A9_Mega |
+| Usar `file_id` en chat | Verificado automáticamente por tipos, transacción y compilación | solo adjuntos `ready` asociados a la conversación | Rust + TypeScript + Vite | el compositor se bloquea durante ingesta | falta prueba visual | enviar pregunta sobre un PDF |
 
 ## Comandos ejecutados
 
@@ -27,7 +30,8 @@ cargo test
 cargo clippy --all-targets -- -D warnings
 ```
 
-Resultado: 4 pruebas Rust correctas y Clippy sin errores.
+Resultado: 8 pruebas Rust correctas y Clippy sin errores, incluida la migración
+de una base existente desde esquema 1 a esquema 2 sin perder conversaciones.
 
 ```powershell
 tsc -b --pretty false
@@ -59,6 +63,5 @@ frontend ya estaba compilado. El archivo temporal se eliminó después.
 
 ## Siguiente corte
 
-Adjuntos reutilizables: selección y arrastre local, hashing, persistencia,
-subida a Broker AI, seguimiento de ingesta y uso explícito de `file_id` en un
-turno.
+Visualización de citas y fuentes devueltas por Broker AI, seguida de herramientas
+con confirmación explícita y estados recuperables.
