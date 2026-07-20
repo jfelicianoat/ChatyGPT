@@ -25,6 +25,26 @@ impl TaskStatus {
     pub fn is_terminal(&self) -> bool {
         matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
     }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Routing => "routing",
+            Self::Planning => "planning",
+            Self::ResourcePlanning => "resource_planning",
+            Self::Chunking => "chunking",
+            Self::Generating => "generating",
+            Self::Proposing => "proposing",
+            Self::Evaluating => "evaluating",
+            Self::Debating => "debating",
+            Self::Synthesizing => "synthesizing",
+            Self::Verifying => "verifying",
+            Self::WaitingForTools => "waiting_for_tools",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,9 +88,3 @@ pub struct BrokerCapabilities {
     #[serde(default)]
     pub client_tool_passthrough: bool,
 }
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HealthResponse {
-    pub status: String,
-}
-

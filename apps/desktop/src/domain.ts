@@ -37,3 +37,58 @@ export type BrokerDiagnostic = {
   message: string;
 };
 
+export type LocalTaskSnapshot = {
+  id: string;
+  remoteTaskId?: string;
+  remoteStatus: string;
+  localState: string;
+  consecutivePollErrors: number;
+  result?: Record<string, unknown>;
+  error?: Record<string, unknown>;
+  updatedAt: string;
+};
+
+export const isTerminalTask = (task: LocalTaskSnapshot): boolean =>
+  ["completed", "failed", "cancelled"].includes(task.remoteStatus);
+
+export const isTaskPollingComplete = (task: LocalTaskSnapshot): boolean =>
+  isTerminalTask(task) ||
+  ["waiting_for_tools", "orphaned"].includes(task.localState);
+
+export const isTaskBlockingConversation = (task: LocalTaskSnapshot): boolean =>
+  !isTerminalTask(task) && task.localState !== "orphaned";
+
+export type ConversationSummary = {
+  id: string;
+  title: string;
+  projectId?: string;
+  updatedAt: string;
+};
+
+export type ProjectSummary = {
+  id: string;
+  name: string;
+  description?: string;
+  conversationCount: number;
+  updatedAt: string;
+};
+
+export type ConversationMessage = {
+  id: string;
+  role: "system" | "user" | "assistant" | "tool" | "error";
+  status: "draft" | "pending" | "complete" | "failed" | "cancelled";
+  sequenceNo: number;
+  brokerTaskId?: string;
+  taskRemoteStatus?: string;
+  taskLocalState?: string;
+  text?: string;
+  error?: Record<string, unknown>;
+  createdAt: string;
+};
+
+export type ConversationView = {
+  id: string;
+  title: string;
+  projectId?: string;
+  messages: ConversationMessage[];
+};

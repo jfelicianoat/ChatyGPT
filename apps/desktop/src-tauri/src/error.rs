@@ -15,8 +15,12 @@ pub enum AppError {
     BrokerResponse { status: u16, message: String },
     #[error("Broker AI devolvió un contrato inesperado: {0}")]
     BrokerContract(String),
-    #[error("el estado interno no está inicializado")]
-    NotInitialized,
+    #[error("datos no válidos: {0}")]
+    Validation(String),
+    #[error("no encontrado: {0}")]
+    NotFound(String),
+    #[error("la operación no puede realizarse ahora: {0}")]
+    Conflict(String),
 }
 
 impl Serialize for AppError {
@@ -27,4 +31,3 @@ impl Serialize for AppError {
         serializer.serialize_str(&self.to_string())
     }
 }
-

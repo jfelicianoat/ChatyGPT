@@ -2,4 +2,7 @@ packages:
   - "apps/*"
   - "packages/*"
   - "services/*"
-
+allowBuilds:
+  # Vite necesita el binario nativo de esbuild. No se autoriza ningún otro
+  # script de instalación de dependencias.
+  esbuild: true

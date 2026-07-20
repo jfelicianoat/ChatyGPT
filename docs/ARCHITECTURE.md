@@ -11,22 +11,21 @@ Fecha de auditoría: 2026-07-19.
   instancia SQLite local.
 - AI Broker está implementado con FastAPI, Pydantic y SQLite.
 - Existen Node 24.11.1, pnpm 11.9.0, Python 3.14.0, uv 0.11.7 y Git 2.47.0.
-- `cargo` y `rustc` no están instalados o no están en `PATH`.
+- Rust estable está instalado mediante rustup y Cargo compila el proyecto.
 - La política de PowerShell impide ejecutar `npm.ps1`; `pnpm.cmd` sí arranca.
-- El entorno no permite descargar paquetes de npm.
+- Las dependencias JavaScript quedaron instaladas con pnpm 11.9.0.
 - El virtualenv de AI Broker referencia un intérprete inexistente; el Python del
   sistema carga FastAPI 0.128.0 y Pydantic 2.12.5, pero no `pytest`.
-- AI Broker no estaba ejecutándose y `http://127.0.0.1:8765/openapi.json` no
-  respondió.
+- AI Broker inicialmente no estaba ejecutándose. Después se verificó una
+  instancia real en `A9_Mega` mediante un probe ejecutado en esa máquina.
 - Git rechazó la inspección por propiedad dudosa del directorio superior. No se
   cambió la configuración global del usuario.
 
 ### No verificado
 
-- Compilación y arranque de Tauri.
-- Instalación de dependencias JavaScript.
-- OpenAPI generado por la instancia configurada.
-- Conexión real, creación, polling, cancelación y recuperación de una tarea.
+- Interacción manual con la ventana Tauri desde el perfil del usuario final; la
+  sesión aislada de Codex no puede crear la ventana o su directorio de perfil.
+- Cancelación real y recuperación de una tarea tras reinicio.
 - Disponibilidad real de modelos, Docker y sandbox.
 - Empaquetado MSI/NSIS y firma.
 
@@ -42,14 +41,15 @@ La evidencia procede del código local (`app/main.py`, `app/schemas.py`,
 | Consultar tarea | Revisado estáticamente | `GET /api/v1/tasks/{task_id}` |
 | Cancelar | Revisado estáticamente | `DELETE /api/v1/tasks/{task_id}` |
 | Reanudar tools | Revisado estáticamente | `POST /api/v1/tasks/{task_id}/tool_results` |
-| Estados | Revisado estáticamente | 16 estados; terminales `completed`, `failed`, `cancelled` |
+| Estados | Revisado estáticamente | 15 estados; terminales `completed`, `failed`, `cancelled` |
 | Ingesta | Revisado estáticamente | `POST /api/v1/files`, polling y Markdown |
 | Modelos/capacidades | Revisado estáticamente | endpoints `/models`, `/models/availability`, `/models/context`, `/capabilities` |
 | Embeddings | Revisado estáticamente | `inference_kind=embedding`, estrategia `single`, salida JSON |
 | Autenticación | Revisado estáticamente | cabecera `x-admin-token` cuando hay token configurado |
 | Idempotencia | Revisado estáticamente | `idempotency_key` + hash; conflicto HTTP 409 |
 | Sandbox | Revisado estáticamente | `run_code` opt-in y `SANDBOX_DISABLED` si no está habilitado |
-| OpenAPI real | No verificado | Servicio apagado durante la auditoría |
+| OpenAPI real | Verificado manualmente (alcance) | endpoint consultado por el probe en A9 |
+| Integración real | Verificado manualmente | contrato 2.5, 73 modelos, HTTP 202/200 idempotente y tarea completada |
 
 La semántica de cancelación observada es una solicitud de cancelación. No se
 presupone que una operación remota en curso termine de forma instantánea.
@@ -176,20 +176,24 @@ Decisiones de ciclo de vida:
 - SQLite en AppLocalData, migración inicial e integrity checks.
 - Pantalla de diagnóstico y estados honestos.
 
-### 0B. Contrato Broker — siguiente
+### 0B. Contrato Broker — en curso
 
 - Generar tipos desde el OpenAPI real o comparar manualmente con Pydantic.
 - Fixtures de 202/200/409/422, estados terminales, `waiting_for_tools` y errores.
-- Persistir `broker_task` antes de `POST`.
-- Polling con lease, backoff, jitter y clasificación de errores.
-- Cancelación como solicitud, sin prometer inmediatez.
+- **Implementado en el slice durable:** persistir `broker_task` antes de `POST`.
+- **Implementado:** polling con backoff, jitter y clasificación de errores.
+- **Implementado:** cancelación como solicitud, sin prometer inmediatez.
+- Pendiente: fixture automatizado desde el binario Tauri y lease multiworker.
 
 ### 0C. Recuperación
 
-- Matriz local/remoto para `created`, `submitting`, `polling`,
+- **Implementado parcialmente:** matriz local/remoto para `created`, `submitting`, `polling`,
   `waiting_for_tools`, terminal y huérfana.
-- Reinicio entre commit local, POST y recepción de 202.
-- Reconciliación idempotente y pruebas con servidor contractual local.
+- **Implementado en código:** reenvío con la misma petición y clave cuando el
+  proceso se interrumpe antes de persistir el 202.
+- **Verificado localmente:** identidad remota, petición e idempotency key
+  sobreviven a recuperación.
+- Pendiente: prueba E2E cerrando el proceso real entre commit, POST y 202.
 
 ### 0D. Seguridad y observabilidad
 
@@ -214,6 +218,13 @@ recorrido: crear conversación → persistir mensaje y snapshot → crear tarea 
 polling → resultado → reinicio. Después archivos, búsqueda, sandbox y exportación
 Markdown.
 
+El recorrido base de conversación, mensajes, snapshot, polling y resultado ya
+está implementado. El primer corte de Fase 1 añade búsqueda, proyectos,
+renombrado, archivado y borrado lógico con auditoría. Una conversación con
+tarea activa no puede ocultarse y las tareas pendientes vuelven a enlazarse a
+la interfaz al reabrir el chat. Siguen pendientes adjuntos, citas, herramientas,
+exportación Markdown y recuperación E2E cerrando el proceso real.
+
 ### Fase 2
 
 Memoria visible y opt-in, embeddings, recuperación semántica, resúmenes
@@ -234,7 +245,7 @@ claim keys, zonas horarias, historial, confirmación previa y notificaciones.
 
 | Riesgo | Mitigación |
 |---|---|
-| Tauri no compilable en el entorno actual | Instalar toolchain Rust y verificar antes de considerar 0A terminado |
+| Diferencias entre sandbox y perfil Windows real | Compilación automática + prueba manual de ventana desde el `.bat` |
 | Contrato dinámico no contrastado en vivo | Bloquear cierre de 0B hasta capturar OpenAPI y fixtures reales |
 | Doble creación tras crash | Persistencia previa + clave idempotente estable + reconciliación |
 | Polling duplicado | Lease en SQLite con expiración y propietario |
@@ -275,7 +286,7 @@ claim keys, zonas horarias, historial, confirmación previa y notificaciones.
 
 ## 11. Primer slice vertical
 
-El slice implementado prepara:
+El slice implementado cubre:
 
 1. inicio Tauri;
 2. resolución de AppLocalData;
@@ -283,7 +294,16 @@ El slice implementado prepara:
 4. marcado de tareas activas como `recovery_pending`;
 5. render de estado local;
 6. diagnóstico manual de `/health/ready` y `/api/v1/capabilities`.
+7. persistencia previa al `POST`;
+8. almacenamiento del identificador remoto;
+9. polling adaptable en segundo plano;
+10. estados y resultado leídos desde SQLite;
+11. cancelación explícita;
+12. recuperación al arranque sin reintentar errores contractuales huérfanos.
+13. creación y reapertura de conversaciones persistentes;
+14. commit atómico del mensaje de usuario, respuesta pendiente, tarea y contexto;
+15. envío del turno en segundo plano con reintento idempotente;
+16. materialización única de la respuesta terminal como mensaje asistente.
 
-El slice no crea inferencia automáticamente: hacerlo podría consumir recursos o
-coste. La creación de tarea de prueba se incorporará como acción explícita
-después de verificar modelos y contrato vivo.
+La app no crea inferencia automáticamente: tanto la prueba durable como el envío
+de un mensaje requieren una acción explícita de la persona usuaria.

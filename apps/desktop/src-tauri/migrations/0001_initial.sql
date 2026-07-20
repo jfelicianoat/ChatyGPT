@@ -364,7 +364,7 @@ CREATE TABLE IF NOT EXISTS feature_flags (
 ) STRICT, WITHOUT ROWID;
 
 INSERT OR IGNORE INTO feature_flags(key, enabled, rationale) VALUES
-    ('chat', 0, 'Se habilita tras completar persistencia y polling durable'),
+    ('chat', 1, 'Turnos locales durables con contexto trazable y Broker AI'),
     ('memory', 0, 'Fase 2'),
     ('custom_gpts', 0, 'Fase 3'),
     ('deep_research', 0, 'Fase 4'),

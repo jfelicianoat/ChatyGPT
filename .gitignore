@@ -10,4 +10,7 @@ target/
 coverage/
 __pycache__/
 *.pyc
-
+*.tsbuildinfo
+vite.config.js
+vite.config.d.ts
+apps/desktop/src-tauri/gen/schemas/

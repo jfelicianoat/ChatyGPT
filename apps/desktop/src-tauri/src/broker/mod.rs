@@ -36,8 +36,8 @@ impl BrokerClient {
     pub fn from_environment() -> Result<Self, AppError> {
         let raw_url = std::env::var("CHATYGPT_BROKER_BASE_URL")
             .unwrap_or_else(|_| "http://127.0.0.1:8765".to_owned());
-        let mut base_url = Url::parse(&raw_url)
-            .map_err(|error| AppError::InvalidBrokerUrl(error.to_string()))?;
+        let mut base_url =
+            Url::parse(&raw_url).map_err(|error| AppError::InvalidBrokerUrl(error.to_string()))?;
         if !matches!(base_url.scheme(), "http" | "https") {
             return Err(AppError::InvalidBrokerUrl(
                 "solo se admiten esquemas http y https".to_owned(),
@@ -50,8 +50,9 @@ impl BrokerClient {
             .ok()
             .filter(|value| !value.is_empty())
             .map(|value| {
-                HeaderValue::from_str(&value)
-                    .map_err(|_| AppError::BrokerContract("token administrativo inválido".to_owned()))
+                HeaderValue::from_str(&value).map_err(|_| {
+                    AppError::BrokerContract("token administrativo inválido".to_owned())
+                })
             })
             .transpose()?;
         let http = Client::builder()
@@ -60,7 +61,11 @@ impl BrokerClient {
             .user_agent(concat!("ChatyGPT/", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|error| AppError::BrokerTransport(error.to_string()))?;
-        Ok(Self { base_url, http, admin_token })
+        Ok(Self {
+            base_url,
+            http,
+            admin_token,
+        })
     }
 
     fn endpoint(&self, path: &str) -> Result<Url, AppError> {
@@ -95,8 +100,7 @@ impl BrokerClient {
                 message,
             });
         }
-        serde_json::from_slice(&bytes)
-            .map_err(|error| AppError::BrokerContract(error.to_string()))
+        serde_json::from_slice(&bytes).map_err(|error| AppError::BrokerContract(error.to_string()))
     }
 
     pub async fn capabilities(&self) -> Result<BrokerCapabilities, AppError> {
@@ -110,7 +114,11 @@ impl BrokerClient {
 
     pub async fn create_task(&self, request: &Value) -> Result<TaskAccepted, AppError> {
         let response = self
-            .authorize(self.http.post(self.endpoint("/api/v1/tasks")?).json(request))
+            .authorize(
+                self.http
+                    .post(self.endpoint("/api/v1/tasks")?)
+                    .json(request),
+            )
             .send()
             .await
             .map_err(|error| AppError::BrokerTransport(error.to_string()))?;
@@ -220,14 +228,20 @@ pub struct PollPolicy {
 
 impl Default for PollPolicy {
     fn default() -> Self {
-        Self { initial_ms: 750, maximum_ms: 15_000 }
+        Self {
+            initial_ms: 750,
+            maximum_ms: 15_000,
+        }
     }
 }
 
 impl PollPolicy {
     pub fn delay_ms(&self, unchanged_polls: u32, jitter_basis_points: i32) -> u64 {
         let exponent = unchanged_polls.min(6);
-        let base = self.initial_ms.saturating_mul(1_u64 << exponent).min(self.maximum_ms);
+        let base = self
+            .initial_ms
+            .saturating_mul(1_u64 << exponent)
+            .min(self.maximum_ms);
         let bounded_jitter = jitter_basis_points.clamp(-1_500, 1_500) as i64;
         ((base as i64) * (10_000 + bounded_jitter) / 10_000).max(100) as u64
     }
