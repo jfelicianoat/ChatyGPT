@@ -656,7 +656,7 @@ impl Database {
         )?;
         if !active {
             return Err(AppError::NotFound(format!(
-                "conversaciÃ³n activa {conversation_id}"
+                "conversación activa {conversation_id}"
             )));
         }
         let existing: Option<String> = transaction
@@ -911,13 +911,13 @@ impl Database {
             )?;
             if !linked {
                 return Err(AppError::Validation(format!(
-                    "el adjunto {} no pertenece a esta conversaciÃ³n",
+                    "el adjunto {} no pertenece a esta conversación",
                     record.display_name
                 )));
             }
             if record.ingestion_status != "ready" || record.broker_file_id.is_none() {
                 return Err(AppError::Conflict(format!(
-                    "el adjunto {} todavÃ­a no estÃ¡ listo",
+                    "el adjunto {} todavía no está listo",
                     record.display_name
                 )));
             }

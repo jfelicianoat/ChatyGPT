@@ -154,7 +154,7 @@ async fn poll_remote_file(
     let state = broker.get_file(file_id).await?;
     if !state.sha256.eq_ignore_ascii_case(&record.sha256) {
         return Err(AppError::BrokerContract(
-            "el Broker asociÃ³ un contenido distinto al adjunto local".to_owned(),
+            "el Broker asoció un contenido distinto al adjunto local".to_owned(),
         ));
     }
     let terminal = state.status == "ready" || state.status == "failed";
@@ -209,7 +209,7 @@ fn copy_into_managed_storage(root: &Path, source: &Path) -> Result<ImportedFile,
     let display_name = canonical
         .file_name()
         .and_then(|name| name.to_str())
-        .ok_or_else(|| AppError::Validation("el nombre del archivo no es vÃ¡lido".to_owned()))?
+        .ok_or_else(|| AppError::Validation("el nombre del archivo no es válido".to_owned()))?
         .to_owned();
     fs::create_dir_all(root).map_err(|error| AppError::DataDirectory(error.to_string()))?;
     let temporary = root.join(format!(".import-{}.tmp", Uuid::new_v4().simple()));
@@ -222,7 +222,7 @@ fn copy_into_managed_storage(root: &Path, source: &Path) -> Result<ImportedFile,
     loop {
         let read = input
             .read(&mut buffer)
-            .map_err(|error| AppError::Validation(format!("fallÃ³ la lectura: {error}")))?;
+            .map_err(|error| AppError::Validation(format!("falló la lectura: {error}")))?;
         if read == 0 {
             break;
         }

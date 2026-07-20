@@ -418,7 +418,6 @@ export function App() {
       const attachmentIds = [...draftAttachmentIds];
       const task = await platform.sendChatTurn(conversationId, text, attachmentIds);
       setActiveTurn({ state: "ready", value: task });
-      setDraftAttachmentIds([]);
       await loadConversation(conversationId);
       await reloadNavigation();
     } catch (error) {
@@ -728,12 +727,12 @@ export function App() {
                     onClick={chooseAttachments}
                     disabled={Boolean(currentTurnBlocks) || attachmentBusy}
                   >
-                    {attachmentBusy ? "Importandoâ€¦" : "+ Adjuntar archivos"}
+                    {attachmentBusy ? "Importando…" : "+ Adjuntar archivos"}
                   </button>
-                  <span>o arrÃ¡stralos a esta ventana</span>
+                  <span>o arrástralos a esta ventana</span>
                 </div>
                 {attachments.length > 0 && (
-                  <div className="attachment-list" aria-label="Archivos de la conversaciÃ³n">
+                  <div className="attachment-list" aria-label="Archivos de la conversación">
                     {attachments.map((attachment) => {
                       const selected = draftAttachmentIds.includes(attachment.id);
                       return (
@@ -749,11 +748,15 @@ export function App() {
                                 : [...ids, attachment.id]
                             )}
                             disabled={Boolean(currentTurnBlocks)}
-                            title={selected ? "No enviar en este turno" : "Enviar en este turno"}
+                            title={
+                              selected
+                                ? "Desactivar para los próximos mensajes"
+                                : "Activar para los próximos mensajes"
+                            }
                           >
                             <strong>{attachment.displayName}</strong>
                             <small>
-                              {(attachment.sizeBytes / 1024).toFixed(1)} KB Â· {attachment.ingestionStatus}
+                              {(attachment.sizeBytes / 1024).toFixed(1)} KB · {attachment.ingestionStatus}
                             </small>
                           </button>
                           {attachment.ingestionStatus === "failed" && (
@@ -764,7 +767,7 @@ export function App() {
                             onClick={() => removeAttachment(attachment.id)}
                             aria-label={`Quitar ${attachment.displayName}`}
                           >
-                            Ã—
+                            ×
                           </button>
                         </div>
                       );
@@ -785,7 +788,11 @@ export function App() {
                   disabled={Boolean(currentTurnBlocks)}
                 />
                 <div className="composer-footer">
-                  <span>Enter para enviar · Shift+Enter para nueva línea</span>
+                  <span>
+                    Enter para enviar · Shift+Enter para nueva línea
+                    {selectedAttachments.length > 0 &&
+                      ` · ${selectedAttachments.length} adjunto(s) activo(s)`}
+                  </span>
                   <div className="task-actions">
                     {currentTurn?.state === "ready" &&
                       isTaskBlockingConversation(currentTurn.value) &&

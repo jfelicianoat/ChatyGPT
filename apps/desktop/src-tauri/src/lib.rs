@@ -272,7 +272,7 @@ fn pick_attachment_paths() -> Result<Vec<String>, AppError> {
     }
     #[cfg(not(target_os = "windows"))]
     Err(AppError::Validation(
-        "el selector nativo todavÃ­a solo estÃ¡ disponible en Windows".to_owned(),
+        "el selector nativo todavía solo está disponible en Windows".to_owned(),
     ))
 }
 

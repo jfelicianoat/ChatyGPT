@@ -21,6 +21,7 @@ vertical de adjuntos; no declara completada la fase completa.
 | Importar y deduplicar adjuntos | Verificado automáticamente | copia administrada + SHA-256 + esquema 2 | tests Rust de archivo y SQLite | una copia reutilizable entre conversaciones | límite local 512 MB | seleccionar y arrastrar en ventana real |
 | Ingesta durable | Revisado estáticamente + compilado | subida multipart en streaming, polling y recuperación | Cargo check/test/clippy | estados reales `uploading/received/converting/ready/failed` | Broker inaccesible desde sandbox Codex | probar PDF contra A9_Mega |
 | Usar `file_id` en chat | Verificado automáticamente por tipos, transacción y compilación | solo adjuntos `ready` asociados a la conversación | Rust + TypeScript + Vite | el compositor se bloquea durante ingesta | falta prueba visual | enviar pregunta sobre un PDF |
+| Mantener adjuntos activos | Verificado por compilación | la selección permanece tras enviar y solo cambia por acción explícita o al cambiar de conversación | TypeScript + Vite | el PDF se incluye en turnos sucesivos | sin prueba E2E visual | realizar dos preguntas seguidas sobre el mismo PDF |
 
 ## Comandos ejecutados
 

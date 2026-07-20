@@ -41,7 +41,7 @@ pub async fn start_chat_turn(
     }
     if attachment_ids.len() > 20 {
         return Err(AppError::BrokerContract(
-            "no se pueden enviar mÃ¡s de 20 adjuntos en un turno".to_owned(),
+            "no se pueden enviar más de 20 adjuntos en un turno".to_owned(),
         ));
     }
     let attachments = database.ready_attachments_for_turn(conversation_id, attachment_ids)?;
