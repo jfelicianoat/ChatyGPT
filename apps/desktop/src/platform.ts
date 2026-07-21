@@ -2,9 +2,12 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   BootstrapReport,
   AttachmentView,
+  AuditEventView,
   BrokerDiagnostic,
   ConversationSummary,
   ConversationView,
+  ExportPathSelection,
+  ExportReport,
   LocalTaskSnapshot,
   ProjectSummary
 } from "./domain";
@@ -15,6 +18,9 @@ export const platform = {
   },
   diagnoseBroker(): Promise<BrokerDiagnostic> {
     return invoke<BrokerDiagnostic>("diagnose_broker");
+  },
+  listAuditEvents(): Promise<AuditEventView[]> {
+    return invoke<AuditEventView[]>("list_audit_events");
   },
   startSmokeTask(): Promise<LocalTaskSnapshot> {
     return invoke<LocalTaskSnapshot>("start_smoke_task");
@@ -61,12 +67,40 @@ export const platform = {
   archiveProject(projectId: string): Promise<void> {
     return invoke<void>("archive_project", { projectId, confirmed: true });
   },
+  pickExportPath(suggestedName: string): Promise<ExportPathSelection | null> {
+    return invoke<ExportPathSelection | null>("pick_export_path", { suggestedName });
+  },
+  exportConversation(
+    conversationId: string,
+    destinationPath: string,
+    overwriteConfirmed: boolean
+  ): Promise<ExportReport> {
+    return invoke<ExportReport>("export_conversation", {
+      conversationId,
+      destinationPath,
+      overwriteConfirmed
+    });
+  },
   sendChatTurn(
     conversationId: string,
     text: string,
-    attachmentIds: string[]
+    attachmentIds: string[],
+    toolsEnabled: boolean,
+    sandboxEnabled: boolean
   ): Promise<LocalTaskSnapshot> {
-    return invoke<LocalTaskSnapshot>("send_chat_turn", { conversationId, text, attachmentIds });
+    return invoke<LocalTaskSnapshot>("send_chat_turn", {
+      conversationId,
+      text,
+      attachmentIds,
+      toolsEnabled,
+      sandboxEnabled
+    });
+  },
+  resolveToolCalls(
+    localTaskId: string,
+    decisions: Array<{ toolCallId: string; approved: boolean }>
+  ): Promise<LocalTaskSnapshot> {
+    return invoke<LocalTaskSnapshot>("resolve_tool_calls", { localTaskId, decisions });
   },
   pickAttachmentPaths(): Promise<string[]> {
     return invoke<string[]>("pick_attachment_paths");

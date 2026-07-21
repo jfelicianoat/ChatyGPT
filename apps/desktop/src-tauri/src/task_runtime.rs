@@ -1,11 +1,15 @@
+use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::time::Duration;
 
+use serde::Deserialize;
 use serde_json::json;
 use uuid::Uuid;
 
-use crate::broker::{BrokerClient, PollPolicy};
-use crate::db::{AttachmentRecord, BrokerTaskRecord, Database, LocalTaskSnapshot};
+use crate::broker::{BrokerCapabilities, BrokerClient, PollPolicy};
+use crate::db::{
+    AttachmentRecord, BrokerTaskRecord, Database, LocalTaskSnapshot, ToolOutcomeRecord,
+};
 use crate::error::AppError;
 
 pub async fn start_smoke_task(
@@ -27,6 +31,8 @@ pub async fn start_chat_turn(
     conversation_id: &str,
     user_text: &str,
     attachment_ids: &[String],
+    tools_enabled: bool,
+    sandbox_enabled: bool,
 ) -> Result<LocalTaskSnapshot, AppError> {
     let user_text = user_text.trim();
     if user_text.is_empty() {
@@ -43,6 +49,10 @@ pub async fn start_chat_turn(
         return Err(AppError::BrokerContract(
             "no se pueden enviar más de 20 adjuntos en un turno".to_owned(),
         ));
+    }
+    if sandbox_enabled {
+        let capabilities = broker.capabilities().await?;
+        validate_sandbox_capability(&capabilities)?;
     }
     let attachments = database.ready_attachments_for_turn(conversation_id, attachment_ids)?;
 
@@ -63,6 +73,8 @@ pub async fn start_chat_turn(
         user_text,
         &context,
         &attachments,
+        tools_enabled,
+        sandbox_enabled,
     )?;
     let record = database.prepare_chat_turn(
         conversation_id,
@@ -80,12 +92,214 @@ pub async fn start_chat_turn(
     Ok(snapshot)
 }
 
+fn validate_sandbox_capability(capabilities: &BrokerCapabilities) -> Result<(), AppError> {
+    if capabilities.sandbox_run_code
+        && capabilities
+            .agent_skills
+            .iter()
+            .any(|skill| skill == "run_code")
+    {
+        Ok(())
+    } else {
+        Err(AppError::Conflict(
+            "el sandbox de código no está disponible en Broker AI; comprueba Docker y la configuración del Broker"
+                .to_owned(),
+        ))
+    }
+}
+
 pub fn recover_at_start(database: Database, broker: BrokerClient) -> Result<usize, AppError> {
-    let recovered = database.recover_non_terminal_tasks()?;
-    for record in database.recoverable_tasks()? {
-        spawn_submission_and_poll(database.clone(), broker.clone(), record);
+    database.recover_non_terminal_tasks()?;
+    let records = database.recoverable_tasks()?;
+    let recovered = records.len();
+    for record in records {
+        let prepared = database.prepared_tool_results(&record.id)?;
+        let has_prepared_results = prepared
+            .get("tool_results")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|results| !results.is_empty());
+        if record.remote_task_id.is_some() && has_prepared_results {
+            spawn_tool_resume(database.clone(), broker.clone(), record.id);
+        } else {
+            spawn_submission_and_poll(database.clone(), broker.clone(), record);
+        }
     }
     Ok(recovered)
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolDecision {
+    pub tool_call_id: String,
+    pub approved: bool,
+}
+
+pub fn resolve_tool_calls(
+    database: Database,
+    broker: BrokerClient,
+    local_task_id: &str,
+    decisions: &[ToolDecision],
+) -> Result<LocalTaskSnapshot, AppError> {
+    let pending = database.pending_tool_calls(local_task_id)?;
+    let expected: HashSet<&str> = pending
+        .iter()
+        .map(|call| call.tool_call_id.as_str())
+        .collect();
+    let provided: HashSet<&str> = decisions
+        .iter()
+        .map(|decision| decision.tool_call_id.as_str())
+        .collect();
+    if expected != provided || decisions.len() != provided.len() || pending.is_empty() {
+        return Err(AppError::Validation(
+            "debe aprobar o rechazar cada herramienta pendiente exactamente una vez".to_owned(),
+        ));
+    }
+    let decisions_by_id: HashMap<&str, bool> = decisions
+        .iter()
+        .map(|decision| (decision.tool_call_id.as_str(), decision.approved))
+        .collect();
+    for call in &pending {
+        if decisions_by_id[call.tool_call_id.as_str()] {
+            match call.name.as_str() {
+                "rename_conversation" => {
+                    let title = call
+                        .arguments
+                        .get("title")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .ok_or_else(|| {
+                            AppError::Validation(
+                                "rename_conversation requiere un título".to_owned(),
+                            )
+                        })?;
+                    if title.chars().count() > 120 {
+                        return Err(AppError::Validation(
+                            "el título propuesto supera 120 caracteres".to_owned(),
+                        ));
+                    }
+                }
+                other => {
+                    return Err(AppError::Validation(format!(
+                        "herramienta de cliente no admitida: {other}"
+                    )))
+                }
+            }
+        }
+    }
+    let conversation_id = database.task_conversation_id(local_task_id)?;
+    let mut outcomes = Vec::with_capacity(pending.len());
+    for call in pending {
+        let approved = decisions_by_id[call.tool_call_id.as_str()];
+        let (status, content) = if approved {
+            match call.name.as_str() {
+                "rename_conversation" => {
+                    let title = call
+                        .arguments
+                        .get("title")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .ok_or_else(|| {
+                            AppError::Validation(
+                                "rename_conversation requiere un título".to_owned(),
+                            )
+                        })?;
+                    if title.chars().count() > 120 {
+                        return Err(AppError::Validation(
+                            "el título propuesto supera 120 caracteres".to_owned(),
+                        ));
+                    }
+                    database.rename_conversation(&conversation_id, title)?;
+                    (
+                        "approved",
+                        serde_json::json!({"ok": true, "title": title}).to_string(),
+                    )
+                }
+                other => {
+                    return Err(AppError::Validation(format!(
+                        "herramienta de cliente no admitida: {other}"
+                    )))
+                }
+            }
+        } else {
+            (
+                "cancelled",
+                serde_json::json!({
+                    "ok": false,
+                    "rejected_by_user": true,
+                    "message": "El usuario rechazó esta acción"
+                })
+                .to_string(),
+            )
+        };
+        outcomes.push(ToolOutcomeRecord {
+            tool_call_id: call.tool_call_id,
+            status: status.to_owned(),
+            content,
+        });
+    }
+    database.prepare_tool_outcomes(local_task_id, &outcomes)?;
+    spawn_tool_resume(database.clone(), broker, local_task_id.to_owned());
+    database.task_snapshot(local_task_id)
+}
+
+fn spawn_tool_resume(database: Database, broker: BrokerClient, local_task_id: String) {
+    tauri::async_runtime::spawn(async move {
+        let policy = PollPolicy::default();
+        let mut failures = 0_u32;
+        loop {
+            let record = match database.task_record(&local_task_id) {
+                Ok(record) => record,
+                Err(_) => return,
+            };
+            let Some(remote_id) = record.remote_task_id else {
+                return;
+            };
+            let payload = match database.prepared_tool_results(&local_task_id) {
+                Ok(payload) => payload,
+                Err(_) => return,
+            };
+            match broker.submit_tool_results(&remote_id, &payload).await {
+                Ok(state) => {
+                    if database
+                        .mark_tool_results_submitted(&local_task_id)
+                        .and_then(|()| database.record_remote_state(&local_task_id, &state))
+                        .is_ok()
+                    {
+                        spawn_polling(database, broker, local_task_id);
+                    }
+                    return;
+                }
+                Err(error) if is_permanent(&error) => {
+                    match broker.get_task(&remote_id).await {
+                        Ok(state) if state.status.as_str() != "waiting_for_tools" => {
+                            if database
+                                .mark_tool_results_submitted(&local_task_id)
+                                .and_then(|()| database.record_remote_state(&local_task_id, &state))
+                                .is_ok()
+                            {
+                                spawn_polling(database, broker, local_task_id);
+                            }
+                        }
+                        _ => {
+                            let _ = database.mark_orphaned(&local_task_id, &error.to_string());
+                        }
+                    }
+                    return;
+                }
+                Err(error) => {
+                    failures = failures.saturating_add(1);
+                    let _ = database.record_transport_error(&local_task_id, &error.to_string());
+                    let delay = policy.delay_ms(
+                        failures,
+                        deterministic_jitter(&local_task_id, failures as u64),
+                    );
+                    tokio::time::sleep(Duration::from_millis(delay)).await;
+                }
+            }
+        }
+    });
 }
 
 pub async fn cancel_task(
@@ -264,6 +478,8 @@ fn chat_request(
     user_text: &str,
     context: &[crate::db::ContextMessage],
     attachments: &[AttachmentRecord],
+    tools_enabled: bool,
+    sandbox_enabled: bool,
 ) -> Result<serde_json::Value, AppError> {
     let prior_context = &context[..context.len().saturating_sub(1)];
     let history = serde_json::to_string(prior_context)
@@ -293,6 +509,41 @@ fn chat_request(
             }))
         })
         .collect::<Result<Vec<_>, AppError>>()?;
+    let execution = if tools_enabled || sandbox_enabled {
+        let skills = if sandbox_enabled {
+            vec!["run_code"]
+        } else {
+            Vec::new()
+        };
+        let client_tools = if tools_enabled {
+            vec![json!({
+                "name": "rename_conversation",
+                "description": "Renombra la conversación actual. Úsala solo cuando el usuario pida explícitamente cambiar el título del chat. La aplicación solicitará confirmación antes de ejecutar la acción.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string", "description": "Nuevo título de la conversación"}
+                    },
+                    "required": ["title"],
+                    "additionalProperties": false
+                }
+            })]
+        } else {
+            Vec::new()
+        };
+        json!({
+            "strategy": "agent",
+            "preset": "fast",
+            "timeout_seconds": 600,
+            "agent": {
+                "skills": skills,
+                "max_iterations": 6,
+                "client_tools": client_tools
+            }
+        })
+    } else {
+        json!({"strategy": "single", "preset": "fast", "timeout_seconds": 600})
+    };
     Ok(json!({
         "idempotency_key": idempotency_key,
         "request_id": format!("chatygpt_turn_{}", Uuid::new_v4().simple()),
@@ -314,11 +565,7 @@ fn chat_request(
             "allowed_providers": ["ollama"],
             "max_cost_usd": 0
         },
-        "execution": {
-            "strategy": "single",
-            "preset": "fast",
-            "timeout_seconds": 600
-        },
+        "execution": execution,
         "risk": {
             "data_classification": "local_only",
             "human_review_required": false
@@ -328,12 +575,95 @@ fn chat_request(
 
 #[cfg(test)]
 mod tests {
-    use super::deterministic_jitter;
+    use super::{chat_request, deterministic_jitter, validate_sandbox_capability};
+    use crate::broker::BrokerCapabilities;
+    use crate::db::ContextMessage;
 
     #[test]
     fn jitter_is_bounded_and_stable() {
         let first = deterministic_jitter("task", 1);
         assert_eq!(first, deterministic_jitter("task", 1));
         assert!((-1_500..=1_500).contains(&first));
+    }
+
+    #[test]
+    fn tools_mode_uses_agent_passthrough_only_when_enabled() {
+        let context = vec![ContextMessage {
+            message_id: "message-1".to_owned(),
+            role: "user".to_owned(),
+            text: "Renombra el chat".to_owned(),
+        }];
+        let agent = chat_request(
+            "conversation",
+            "key-agent",
+            "Renombra",
+            &context,
+            &[],
+            true,
+            false,
+        )
+        .expect("agent request should build");
+        assert_eq!(agent["execution"]["strategy"], "agent");
+        assert_eq!(
+            agent["execution"]["agent"]["client_tools"][0]["name"],
+            "rename_conversation"
+        );
+
+        let single = chat_request(
+            "conversation",
+            "key-single",
+            "Hola",
+            &context,
+            &[],
+            false,
+            false,
+        )
+        .expect("single request should build");
+        assert_eq!(single["execution"]["strategy"], "single");
+        assert!(single["execution"].get("agent").is_none());
+    }
+
+    #[test]
+    fn sandbox_is_explicit_and_requires_broker_capability() {
+        let context = vec![ContextMessage {
+            message_id: "message-code".to_owned(),
+            role: "user".to_owned(),
+            text: "Calcula con Python".to_owned(),
+        }];
+        let request = chat_request(
+            "conversation",
+            "key-code",
+            "Calcula",
+            &context,
+            &[],
+            false,
+            true,
+        )
+        .expect("sandbox request should build");
+        assert_eq!(request["execution"]["strategy"], "agent");
+        assert_eq!(request["execution"]["agent"]["skills"][0], "run_code");
+        assert_eq!(
+            request["execution"]["agent"]["client_tools"]
+                .as_array()
+                .map(Vec::len),
+            Some(0)
+        );
+
+        let unavailable = BrokerCapabilities {
+            contract_version: "2.5".to_owned(),
+            strategies: vec!["agent".to_owned()],
+            agent_skills: Vec::new(),
+            sandbox_run_code: false,
+            file_ingestion: true,
+            ingestion_formats: Vec::new(),
+            client_tool_passthrough: true,
+        };
+        assert!(validate_sandbox_capability(&unavailable).is_err());
+        let available = BrokerCapabilities {
+            sandbox_run_code: true,
+            agent_skills: vec!["run_code".to_owned()],
+            ..unavailable
+        };
+        assert!(validate_sandbox_capability(&available).is_ok());
     }
 }

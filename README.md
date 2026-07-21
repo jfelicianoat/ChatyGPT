@@ -23,6 +23,18 @@ Fase 1 en curso. La base durable y el primer corte de organización local incluy
 - adjuntos reutilizables con copia local administrada, SHA-256 y deduplicación;
 - selección nativa y arrastre de archivos, subida en streaming y seguimiento de ingesta;
 - envío al chat solo cuando Broker AI confirma el `file_id` como `ready`;
+- fuentes documentales trazables bajo cada respuesta, derivadas de los adjuntos enviados;
+- modo de herramientas opt-in con confirmación individual antes de cualquier acción local;
+- primera herramienta de cliente: renombrar la conversación solo tras autorización visible;
+- decisiones y resultados de herramientas persistidos antes de reanudar AI Broker;
+- exportación Markdown mediante diálogo nativo, con fuentes documentales y sin rutas internas;
+- escritura atómica, comprobación SHA-256, detección de cambios externos y auditoría del exportado;
+- ejecución opcional de Python en el sandbox desechable de Broker AI, habilitada para un solo turno;
+- comprobación redundante de la capacidad `sandbox_run_code` antes de persistir y enviar la tarea;
+- inspector de actividad reciente con descripciones legibles y severidad visual;
+- proyección segura de auditoría que excluye prompts, tokens, rutas, hashes y JSON técnico;
+- aviso global de recuperación al reiniciar, con recuento de tareas y adjuntos reanudados;
+- acceso directo desde el aviso a cada conversación recuperada;
 - fixture contractual local-only y sin coste cloud;
 - pruebas ejecutables con la biblioteca estándar de Python.
 
@@ -73,6 +85,16 @@ $env:CHATYGPT_BROKER_BASE_URL = "http://192.168.1.52:8765"
 
 Dentro de la app, primero se usa **Comprobar conexión**. Cuando Broker AI está
 listo, se puede crear una conversación y enviar el primer mensaje.
+
+Una conversación se guarda desde **Exportar Markdown**. Si el archivo ya
+existe, Windows solicita confirmación antes de reemplazarlo. ChatyGPT escribe
+el resultado de forma atómica y verifica su huella antes de declararlo
+completado.
+
+La opción **Código aislado · un turno** solo se habilita cuando Broker AI
+publica la capacidad `sandbox_run_code`. El permiso se consume tras el siguiente
+envío; la ejecución sucede en el contenedor restringido del Broker, nunca en el
+proceso de ChatyGPT ni con acceso a los archivos del equipo.
 
 Secreto de transición:
 

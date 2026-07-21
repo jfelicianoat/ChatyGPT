@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
+  canSendMessage,
   isTaskBlockingConversation,
   isTaskPollingComplete,
   isTerminalTask,
   type BootstrapReport,
   type AttachmentView,
+  type AuditEventView,
   type BrokerDiagnostic,
   type ConversationSummary,
   type ConversationView,
@@ -93,6 +95,7 @@ function dialogCopy(dialog: DialogState): {
 export function App() {
   const [bootstrap, setBootstrap] = useState<Loadable<BootstrapReport>>({ state: "loading" });
   const [broker, setBroker] = useState<Loadable<BrokerDiagnostic> | null>(null);
+  const [auditEvents, setAuditEvents] = useState<Loadable<AuditEventView[]>>({ state: "loading" });
   const [smokeTask, setSmokeTask] = useState<Loadable<LocalTaskSnapshot> | null>(null);
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
@@ -107,10 +110,25 @@ export function App() {
   const [draftAttachmentIds, setDraftAttachmentIds] = useState<string[]>([]);
   const [attachmentBusy, setAttachmentBusy] = useState(false);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [toolsEnabled, setToolsEnabled] = useState(false);
+  const [sandboxEnabled, setSandboxEnabled] = useState(false);
+  const [toolDecisions, setToolDecisions] = useState<Record<string, boolean>>({});
+  const [toolDecisionBusy, setToolDecisionBusy] = useState(false);
   const [dialog, setDialog] = useState<DialogState | null>(null);
   const [dialogValue, setDialogValue] = useState("");
   const [dialogBusy, setDialogBusy] = useState(false);
   const [navigationError, setNavigationError] = useState<string | null>(null);
+  const [exportBusy, setExportBusy] = useState(false);
+  const [exportNotice, setExportNotice] = useState<string | null>(null);
+  const [recoveryNoticeDismissed, setRecoveryNoticeDismissed] = useState(false);
+  const currentTurn =
+    conversation?.state === "ready" &&
+    activeTurnConversationId === conversation.value.id
+      ? activeTurn
+      : null;
+  const currentTurnBlocks =
+    currentTurn?.state === "loading" ||
+    (currentTurn?.state === "ready" && isTaskBlockingConversation(currentTurn.value));
 
   const reloadNavigation = async () => {
     const [nextConversations, nextProjects] = await Promise.all([
@@ -119,6 +137,11 @@ export function App() {
     ]);
     setConversations(nextConversations);
     setProjects(nextProjects);
+    try {
+      setAuditEvents({ state: "ready", value: await platform.listAuditEvents() });
+    } catch (error) {
+      setAuditEvents({ state: "error", message: describeError(error) });
+    }
   };
 
   const loadConversation = async (conversationId: string) => {
@@ -156,6 +179,11 @@ export function App() {
         ]);
         setConversations(items);
         setProjects(projectItems);
+        try {
+          setAuditEvents({ state: "ready", value: await platform.listAuditEvents() });
+        } catch (error) {
+          setAuditEvents({ state: "error", message: describeError(error) });
+        }
         if (items[0]) {
           await loadConversation(items[0].id);
         }
@@ -228,6 +256,15 @@ export function App() {
   ]);
 
   useEffect(() => {
+    setToolDecisions({});
+  }, [
+    currentTurn?.state === "ready" ? currentTurn.value.id : null,
+    currentTurn?.state === "ready"
+      ? currentTurn.value.pendingToolCalls.map((call) => call.toolCallId).join("|")
+      : ""
+  ]);
+
+  useEffect(() => {
     if (smokeTask?.state !== "ready" || isTaskPollingComplete(smokeTask.value)) {
       return;
     }
@@ -270,6 +307,7 @@ export function App() {
   }, [
     activeTurn?.state === "ready" ? activeTurn.value.id : null,
     activeTurn?.state === "ready" ? activeTurn.value.remoteStatus : null,
+    activeTurn?.state === "ready" ? activeTurn.value.localState : null,
     activeTurnConversationId,
     conversation?.state === "ready" ? conversation.value.id : null
   ]);
@@ -287,20 +325,19 @@ export function App() {
 
   const selectedProject =
     projects.find((project) => project.id === selectedProjectId) ?? null;
-  const currentTurn =
-    conversation?.state === "ready" &&
-    activeTurnConversationId === conversation.value.id
-      ? activeTurn
-      : null;
-  const currentTurnBlocks =
-    currentTurn?.state === "loading" ||
-    (currentTurn?.state === "ready" && isTaskBlockingConversation(currentTurn.value));
   const selectedAttachments = attachments.filter((item) =>
     draftAttachmentIds.includes(item.id)
   );
   const attachmentsBlockSend = selectedAttachments.some(
     (item) => item.ingestionStatus !== "ready"
   );
+  const canSend = canSendMessage({
+    hasConversation: conversation?.state === "ready",
+    hasText: Boolean(draft.trim()),
+    attachmentsReady: !attachmentsBlockSend,
+    attachmentBusy,
+    turnBlocking: Boolean(currentTurnBlocks)
+  });
 
   async function importAttachmentPaths(conversationId: string, paths: string[]) {
     setAttachmentBusy(true);
@@ -359,6 +396,15 @@ export function App() {
     }
   };
 
+  const refreshAuditEvents = async () => {
+    setAuditEvents({ state: "loading" });
+    try {
+      setAuditEvents({ state: "ready", value: await platform.listAuditEvents() });
+    } catch (error) {
+      setAuditEvents({ state: "error", message: describeError(error) });
+    }
+  };
+
   const startSmokeTask = async () => {
     setSmokeTask({ state: "loading" });
     try {
@@ -408,7 +454,7 @@ export function App() {
   };
 
   const sendTurn = async () => {
-    if (conversation?.state !== "ready" || !draft.trim()) return;
+    if (!canSend || conversation?.state !== "ready") return;
     const conversationId = conversation.value.id;
     const text = draft;
     setDraft("");
@@ -416,13 +462,47 @@ export function App() {
     setActiveTurnConversationId(conversationId);
     try {
       const attachmentIds = [...draftAttachmentIds];
-      const task = await platform.sendChatTurn(conversationId, text, attachmentIds);
+      const task = await platform.sendChatTurn(
+        conversationId,
+        text,
+        attachmentIds,
+        toolsEnabled,
+        sandboxEnabled
+      );
+      setSandboxEnabled(false);
       setActiveTurn({ state: "ready", value: task });
       await loadConversation(conversationId);
       await reloadNavigation();
     } catch (error) {
       setActiveTurn({ state: "error", message: describeError(error) });
       setDraft(text);
+    }
+  };
+
+  const submitToolDecisions = async () => {
+    if (currentTurn?.state !== "ready") return;
+    const calls = currentTurn.value.pendingToolCalls;
+    if (calls.length === 0 || calls.some((call) => toolDecisions[call.toolCallId] === undefined)) {
+      return;
+    }
+    setToolDecisionBusy(true);
+    try {
+      const task = await platform.resolveToolCalls(
+        currentTurn.value.id,
+        calls.map((call) => ({
+          toolCallId: call.toolCallId,
+          approved: toolDecisions[call.toolCallId]
+        }))
+      );
+      setActiveTurn({ state: "ready", value: task });
+      await reloadNavigation();
+      if (conversation?.state === "ready") {
+        await loadConversation(conversation.value.id);
+      }
+    } catch (error) {
+      setActiveTurn({ state: "error", message: describeError(error) });
+    } finally {
+      setToolDecisionBusy(false);
     }
   };
 
@@ -452,6 +532,27 @@ export function App() {
       ]);
     } catch (error) {
       setNavigationError(describeError(error));
+    }
+  };
+
+  const exportCurrentConversation = async () => {
+    if (conversation?.state !== "ready") return;
+    setExportBusy(true);
+    setExportNotice(null);
+    setNavigationError(null);
+    try {
+      const selection = await platform.pickExportPath(conversation.value.title);
+      if (!selection) return;
+      const report = await platform.exportConversation(
+        conversation.value.id,
+        selection.path,
+        selection.existed
+      );
+      setExportNotice(`Exportación verificada: ${report.destinationPath}`);
+    } catch (error) {
+      setNavigationError(describeError(error));
+    } finally {
+      setExportBusy(false);
     }
   };
 
@@ -664,6 +765,12 @@ export function App() {
                 Renombrar
               </button>
               <button
+                onClick={exportCurrentConversation}
+                disabled={exportBusy || Boolean(currentTurnBlocks)}
+              >
+                {exportBusy ? "Exportando…" : "Exportar Markdown"}
+              </button>
+              <button
                 disabled={Boolean(currentTurnBlocks)}
                 onClick={() =>
                   openDialog({ kind: "conversation-archive", conversation: conversation.value })
@@ -687,6 +794,37 @@ export function App() {
         </header>
 
         <div className="content">
+          {exportNotice && <p className="export-notice">{exportNotice}</p>}
+          {bootstrap.state === "ready" &&
+            !recoveryNoticeDismissed &&
+            (bootstrap.value.recoveredTasks > 0 || bootstrap.value.recoveredAttachments > 0) && (
+              <section className="recovery-notice" aria-label="Recuperación al iniciar">
+                <div>
+                  <span className="kicker">Recuperación automática</span>
+                  <strong>
+                    ChatyGPT reanudó {bootstrap.value.recoveredTasks} tarea(s) y {bootstrap.value.recoveredAttachments} adjunto(s).
+                  </strong>
+                  <p>Puedes seguir trabajando: el progreso continúa desde el último estado guardado.</p>
+                  {bootstrap.value.recoveryItems.slice(0, 3).map((item, index) => (
+                    <div className="recovery-item" key={`${item.updatedAt}-${index}`}>
+                      <span>{item.conversationTitle ?? item.label} · {item.status}</span>
+                      {item.conversationId && (
+                        <button className="secondary" onClick={() => openConversation(item.conversationId!)}>
+                          Abrir conversación
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                <button
+                  className="recovery-dismiss"
+                  onClick={() => setRecoveryNoticeDismissed(true)}
+                  aria-label="Ocultar aviso de recuperación"
+                >
+                  ×
+                </button>
+              </section>
+            )}
           {conversation?.state === "ready" ? (
             <section className="chat-surface">
               <div className="message-list" aria-live="polite">
@@ -717,9 +855,89 @@ export function App() {
                     ) : message.error ? (
                       <div className="error">{JSON.stringify(message.error)}</div>
                     ) : null}
+                    {message.sources.length > 0 && (
+                      <section className="message-sources" aria-label="Fuentes usadas">
+                        <h4>Fuentes usadas</h4>
+                        <div className="source-list">
+                          {message.sources.map((source, index) => (
+                            <article key={source.id} className="source-card">
+                              <span>{index + 1}</span>
+                              <div>
+                                <strong>{source.title}</strong>
+                                <small>
+                                  {source.mediaType ?? "Archivo adjunto"}
+                                  {source.sizeBytes !== undefined &&
+                                    ` · ${(source.sizeBytes / 1024).toFixed(1)} KB`}
+                                </small>
+                                {source.quoteText && <p>{source.quoteText}</p>}
+                              </div>
+                            </article>
+                          ))}
+                        </div>
+                        <p className="source-disclaimer">
+                          Archivos enviados al Broker en este turno. No implican una cita por frase.
+                        </p>
+                      </section>
+                    )}
                   </article>
                 ))}
               </div>
+              {currentTurn?.state === "ready" &&
+                currentTurn.value.pendingToolCalls.length > 0 && (
+                  <section className="tool-confirmation" aria-label="Confirmación de herramientas">
+                    <span className="kicker">Confirmación necesaria</span>
+                    <h3>ChatyGPT quiere realizar una acción</h3>
+                    <p>
+                      Revisa cada propuesta. No se ejecutará ninguna acción hasta que decidas.
+                    </p>
+                    <div className="tool-call-list">
+                      {currentTurn.value.pendingToolCalls.map((call) => (
+                        <article key={call.toolCallId} className="tool-call-card">
+                          <div>
+                            <strong>
+                              {call.name === "rename_conversation"
+                                ? "Renombrar la conversación"
+                                : call.name}
+                            </strong>
+                            <small>{JSON.stringify(call.arguments)}</small>
+                          </div>
+                          <div className="tool-decision-buttons">
+                            <button
+                              className={toolDecisions[call.toolCallId] === false ? "selected" : ""}
+                              onClick={() => setToolDecisions((values) => ({
+                                ...values,
+                                [call.toolCallId]: false
+                              }))}
+                            >
+                              Rechazar
+                            </button>
+                            <button
+                              className={toolDecisions[call.toolCallId] === true ? "selected approve" : ""}
+                              onClick={() => setToolDecisions((values) => ({
+                                ...values,
+                                [call.toolCallId]: true
+                              }))}
+                            >
+                              Autorizar
+                            </button>
+                          </div>
+                        </article>
+                      ))}
+                    </div>
+                    <button
+                      className="primary"
+                      onClick={submitToolDecisions}
+                      disabled={
+                        toolDecisionBusy ||
+                        currentTurn.value.pendingToolCalls.some(
+                          (call) => toolDecisions[call.toolCallId] === undefined
+                        )
+                      }
+                    >
+                      {toolDecisionBusy ? "Reanudando…" : "Confirmar decisiones y continuar"}
+                    </button>
+                  </section>
+                )}
               <div className="composer">
                 <div className="attachment-row">
                   <button
@@ -778,7 +996,7 @@ export function App() {
                   value={draft}
                   onChange={(event) => setDraft(event.target.value)}
                   onKeyDown={(event) => {
-                    if (event.key === "Enter" && !event.shiftKey) {
+                    if (event.key === "Enter" && !event.shiftKey && canSend) {
                       event.preventDefault();
                       void sendTurn();
                     }
@@ -787,6 +1005,11 @@ export function App() {
                   rows={3}
                   disabled={Boolean(currentTurnBlocks)}
                 />
+                {sandboxEnabled && (
+                  <p className="sandbox-consent">
+                    Este mensaje puede ejecutar Python en un contenedor desechable, sin red ni acceso a tus archivos. El permiso se desactiva al enviarlo.
+                  </p>
+                )}
                 <div className="composer-footer">
                   <span>
                     Enter para enviar · Shift+Enter para nueva línea
@@ -794,6 +1017,36 @@ export function App() {
                       ` · ${selectedAttachments.length} adjunto(s) activo(s)`}
                   </span>
                   <div className="task-actions">
+                    <label className="tools-toggle" title="Permite que el modelo proponga acciones locales confirmables">
+                      <input
+                        type="checkbox"
+                        checked={toolsEnabled}
+                        onChange={(event) => setToolsEnabled(event.target.checked)}
+                        disabled={Boolean(currentTurnBlocks)}
+                      />
+                      Herramientas
+                    </label>
+                    <label
+                      className="tools-toggle sandbox-toggle"
+                      title={
+                        broker?.state === "ready" && broker.value.sandboxRunCode
+                          ? "Permite ejecutar Python aislado solo durante el próximo mensaje"
+                          : "El sandbox no está disponible en Broker AI"
+                      }
+                    >
+                      <input
+                        type="checkbox"
+                        checked={sandboxEnabled}
+                        onChange={(event) => setSandboxEnabled(event.target.checked)}
+                        disabled={
+                          Boolean(currentTurnBlocks) ||
+                          broker?.state !== "ready" ||
+                          !broker.value.ready ||
+                          !broker.value.sandboxRunCode
+                        }
+                      />
+                      Código aislado · un turno
+                    </label>
                     {currentTurn?.state === "ready" &&
                       isTaskBlockingConversation(currentTurn.value) &&
                       currentTurn.value.remoteTaskId && (
@@ -804,14 +1057,7 @@ export function App() {
                     <button
                       className="primary"
                       onClick={sendTurn}
-                      disabled={
-                        !draft.trim() ||
-                        broker?.state !== "ready" ||
-                        !broker.value.ready ||
-                        attachmentsBlockSend ||
-                        attachmentBusy ||
-                        Boolean(currentTurnBlocks)
-                      }
+                      disabled={!canSend}
                     >
                       Enviar
                     </button>
@@ -891,6 +1137,9 @@ export function App() {
                           : broker.value.baseUrl}
                       </span>
                       <span>{broker.value.latencyMs} ms</span>
+                      <span>
+                        Código aislado: {broker.value.sandboxRunCode ? "disponible" : "no disponible"}
+                      </span>
                     </div>
                   )}
                   {broker?.state === "error" && <p className="error">{broker.message}</p>}
@@ -945,6 +1194,46 @@ export function App() {
                 {smokeTask?.state === "error" && (
                   <p className="error">{smokeTask.message}</p>
                 )}
+              </section>
+
+              <section className="activity-card">
+                <div className="panel-heading">
+                  <div>
+                    <span className="kicker">Trazabilidad local</span>
+                    <h3>Actividad reciente</h3>
+                  </div>
+                  <button
+                    className="secondary"
+                    onClick={refreshAuditEvents}
+                    disabled={auditEvents.state === "loading"}
+                  >
+                    {auditEvents.state === "loading" ? "Actualizando…" : "Actualizar"}
+                  </button>
+                </div>
+                <p className="muted">
+                  Resumen seguro de las acciones guardadas. No muestra prompts, tokens, rutas ni datos técnicos internos.
+                </p>
+                {auditEvents.state === "ready" && auditEvents.value.length === 0 && (
+                  <p className="activity-empty">Todavía no hay actividad registrada.</p>
+                )}
+                {auditEvents.state === "ready" && auditEvents.value.length > 0 && (
+                  <ol className="activity-list">
+                    {auditEvents.value.map((event) => (
+                      <li key={event.id} className={`activity-item ${event.severity}`}>
+                        <span className="activity-marker" aria-hidden="true" />
+                        <div>
+                          <strong>{event.summary}</strong>
+                          <small>
+                            {event.conversationTitle ?? (event.actor === "user" ? "Acción del usuario" : "Sistema")}
+                            {" · "}
+                            {new Date(`${event.occurredAt.replace(" ", "T")}Z`).toLocaleString("es-ES")}
+                          </small>
+                        </div>
+                      </li>
+                    ))}
+                  </ol>
+                )}
+                {auditEvents.state === "error" && <p className="error">{auditEvents.message}</p>}
               </section>
             </>
           )}

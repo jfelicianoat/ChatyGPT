@@ -213,6 +213,20 @@ impl BrokerClient {
         Self::decode(response).await
     }
 
+    pub async fn submit_tool_results(
+        &self,
+        task_id: &str,
+        tool_results: &Value,
+    ) -> Result<TaskState, AppError> {
+        let path = format!("/api/v1/tasks/{task_id}/tool_results");
+        let response = self
+            .authorize(self.http.post(self.endpoint(&path)?).json(tool_results))
+            .send()
+            .await
+            .map_err(|error| AppError::BrokerTransport(error.to_string()))?;
+        Self::decode(response).await
+    }
+
     pub async fn diagnose(&self) -> BrokerDiagnostic {
         let started = Instant::now();
         let readiness_url = match self.endpoint("/health/ready") {

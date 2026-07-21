@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
@@ -10,9 +11,11 @@ use crate::error::AppError;
 
 const INITIAL_MIGRATION: &str = include_str!("../../migrations/0001_initial.sql");
 const ATTACHMENTS_MIGRATION: &str = include_str!("../../migrations/0002_attachments.sql");
+const ATTACHMENT_SOURCES_MIGRATION: &str =
+    include_str!("../../migrations/0003_attachment_sources.sql");
 const RECOVER_NON_TERMINAL_TASKS: &str =
     include_str!("../../queries/recover_non_terminal_tasks.sql");
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 #[derive(Clone)]
 pub struct Database {
@@ -37,7 +40,24 @@ pub struct LocalTaskSnapshot {
     pub consecutive_poll_errors: u32,
     pub result: Option<Value>,
     pub error: Option<Value>,
+    pub pending_tool_calls: Vec<ToolCallView>,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolCallView {
+    pub tool_call_id: String,
+    pub name: String,
+    pub arguments: Value,
+    pub status: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ToolOutcomeRecord {
+    pub tool_call_id: String,
+    pub status: String,
+    pub content: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -61,6 +81,57 @@ pub struct ProjectSummary {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AuditEventView {
+    pub id: i64,
+    pub category: String,
+    pub summary: String,
+    pub severity: String,
+    pub actor: String,
+    pub conversation_title: Option<String>,
+    pub occurred_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryItemView {
+    pub kind: String,
+    pub label: String,
+    pub status: String,
+    pub conversation_id: Option<String>,
+    pub conversation_title: Option<String>,
+    pub updated_at: String,
+}
+
+fn audit_presentation(event_type: &str) -> (&'static str, &'static str, &'static str) {
+    match event_type {
+        "project.created" => ("project", "Proyecto creado", "info"),
+        "project.renamed" => ("project", "Proyecto renombrado", "info"),
+        "project.archived" => ("project", "Proyecto archivado", "warning"),
+        "conversation.created" => ("conversation", "Conversación creada", "info"),
+        "conversation.renamed" => ("conversation", "Conversación renombrada", "info"),
+        "conversation.moved" => ("conversation", "Conversación movida", "info"),
+        "conversation.archived" => ("conversation", "Conversación archivada", "warning"),
+        "conversation.deleted" => ("conversation", "Conversación eliminada", "warning"),
+        "attachment.added" => ("attachment", "Adjunto añadido", "info"),
+        "attachment.removed" => ("attachment", "Adjunto retirado", "info"),
+        "attachment.retry_requested" => ("attachment", "Reintento de adjunto solicitado", "info"),
+        "local.prepared" => ("task", "Mensaje preparado para enviar", "info"),
+        "remote.accepted" => ("task", "Broker AI aceptó la tarea", "info"),
+        "remote.status_changed" => ("task", "Cambió el estado de una tarea", "info"),
+        "transport.error" => ("task", "Error temporal de conexión", "error"),
+        "local.orphaned" => ("task", "Tarea pendiente marcada para revisión", "warning"),
+        "local.tool_decisions_prepared" => ("tool", "Decisiones de herramientas guardadas", "info"),
+        "remote.tool_results_accepted" => ("tool", "Broker AI aceptó los resultados", "info"),
+        "export.pending" => ("export", "Exportación iniciada", "info"),
+        "export.completed" => ("export", "Exportación completada", "info"),
+        "export.conflict" => ("export", "Exportación detenida por un conflicto", "warning"),
+        "export.failed" => ("export", "Error durante la exportación", "error"),
+        _ => ("system", "Actividad registrada", "info"),
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ConversationMessage {
     pub id: String,
     pub role: String,
@@ -71,7 +142,21 @@ pub struct ConversationMessage {
     pub task_local_state: Option<String>,
     pub text: Option<String>,
     pub error: Option<Value>,
+    pub sources: Vec<ConversationSource>,
     pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationSource {
+    pub id: String,
+    pub title: String,
+    pub source_attachment_id: Option<String>,
+    pub media_type: Option<String>,
+    pub size_bytes: Option<i64>,
+    pub url: Option<String>,
+    pub quote_text: Option<String>,
+    pub claim_text: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -142,9 +227,16 @@ impl Database {
             transaction.commit()?;
         }
         let current: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if current < SCHEMA_VERSION {
+        if current < 2 {
             let transaction = connection.transaction()?;
             transaction.execute_batch(ATTACHMENTS_MIGRATION)?;
+            transaction.pragma_update(None, "user_version", 2)?;
+            transaction.commit()?;
+        }
+        let current: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        if current < SCHEMA_VERSION {
+            let transaction = connection.transaction()?;
+            transaction.execute_batch(ATTACHMENT_SOURCES_MIGRATION)?;
             transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             transaction.commit()?;
         }
@@ -171,6 +263,36 @@ impl Database {
         let connection = self.connect()?;
         let changed = connection.execute(RECOVER_NON_TERMINAL_TASKS, [])?;
         Ok(changed)
+    }
+
+    pub fn recovery_candidates(&self) -> Result<Vec<RecoveryItemView>, AppError> {
+        let connection = self.connect()?;
+        let mut statement = connection.prepare(
+            "SELECT bt.remote_status, bt.conversation_id, c.title, bt.updated_at
+             FROM broker_tasks bt
+             LEFT JOIN conversations c ON c.id = bt.conversation_id
+             WHERE bt.remote_status NOT IN ('completed', 'failed', 'cancelled')
+               AND bt.local_state != 'orphaned'
+             ORDER BY bt.updated_at DESC",
+        )?;
+        let items = statement
+            .query_map([], |row| {
+                let conversation_id: Option<String> = row.get(1)?;
+                Ok(RecoveryItemView {
+                    kind: "task".to_owned(),
+                    label: if conversation_id.is_some() {
+                        "Respuesta pendiente".to_owned()
+                    } else {
+                        "Prueba de inferencia pendiente".to_owned()
+                    },
+                    status: row.get(0)?,
+                    conversation_id,
+                    conversation_title: row.get(2)?,
+                    updated_at: row.get(3)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(items)
     }
 
     pub fn prepare_broker_task(
@@ -243,6 +365,33 @@ impl Database {
             })?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(projects)
+    }
+
+    pub fn list_audit_events(&self, limit: u32) -> Result<Vec<AuditEventView>, AppError> {
+        let connection = self.connect()?;
+        let mut statement = connection.prepare(
+            "SELECT ae.id, ae.event_type, ae.actor, c.title, ae.occurred_at
+             FROM audit_events ae
+             LEFT JOIN conversations c ON c.id = ae.conversation_id
+             ORDER BY ae.occurred_at DESC, ae.id DESC
+             LIMIT ?1",
+        )?;
+        let events = statement
+            .query_map(params![i64::from(limit.clamp(1, 100))], |row| {
+                let event_type: String = row.get(1)?;
+                let (category, summary, severity) = audit_presentation(&event_type);
+                Ok(AuditEventView {
+                    id: row.get(0)?,
+                    category: category.to_owned(),
+                    summary: summary.to_owned(),
+                    severity: severity.to_owned(),
+                    actor: row.get(2)?,
+                    conversation_title: row.get(3)?,
+                    occurred_at: row.get(4)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(events)
     }
 
     fn project_summary(&self, id: &str) -> Result<ProjectSummary, AppError> {
@@ -1096,10 +1245,53 @@ impl Database {
                     task_local_state: row.get(6)?,
                     text: row.get(7)?,
                     error: error_json.and_then(|value| serde_json::from_str(&value).ok()),
+                    sources: Vec::new(),
                     created_at: row.get(9)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
+        let mut source_statement = connection.prepare(
+            "SELECT c.message_id, c.id,
+                    COALESCE(c.title, a.display_name, 'Fuente'),
+                    c.source_attachment_id, a.media_type, a.size_bytes,
+                    c.url, c.quote_text, c.claim_text
+             FROM citations c
+             JOIN messages m ON m.id = c.message_id
+             LEFT JOIN attachments a ON a.id = c.source_attachment_id
+             WHERE m.conversation_id = ?1
+             ORDER BY c.message_id, c.ordinal",
+        )?;
+        let source_rows = source_statement
+            .query_map(params![id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    ConversationSource {
+                        id: row.get(1)?,
+                        title: row.get(2)?,
+                        source_attachment_id: row.get(3)?,
+                        media_type: row.get(4)?,
+                        size_bytes: row.get(5)?,
+                        url: row.get(6)?,
+                        quote_text: row.get(7)?,
+                        claim_text: row.get(8)?,
+                    },
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut sources_by_message: HashMap<String, Vec<ConversationSource>> = HashMap::new();
+        for (message_id, source) in source_rows {
+            sources_by_message
+                .entry(message_id)
+                .or_default()
+                .push(source);
+        }
+        let messages = messages
+            .into_iter()
+            .map(|mut message| {
+                message.sources = sources_by_message.remove(&message.id).unwrap_or_default();
+                message
+            })
+            .collect();
         Ok(ConversationView {
             id: summary.id,
             title: summary.title,
@@ -1191,15 +1383,16 @@ impl Database {
 
     pub fn record_remote_state(&self, id: &str, state: &TaskState) -> Result<(), AppError> {
         let connection = self.connect()?;
-        let (previous, response_message_id, conversation_id): (
+        let (previous, request_message_id, response_message_id, conversation_id): (
             String,
             Option<String>,
             Option<String>,
+            Option<String>,
         ) = connection.query_row(
-            "SELECT remote_status, response_message_id, conversation_id
+            "SELECT remote_status, request_message_id, response_message_id, conversation_id
              FROM broker_tasks WHERE id = ?1",
             params![id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )?;
         let local_state = if state.status.is_terminal() {
             "terminal"
@@ -1246,6 +1439,56 @@ impl Database {
                  ) VALUES (?1, 'remote.status_changed', ?2, ?3, datetime('now'))",
                 params![id, state.status.as_str(), payload_json],
             )?;
+        }
+        if state.status.as_str() == "waiting_for_tools" {
+            let pending = state
+                .result
+                .as_ref()
+                .and_then(|result| result.get("pending_tool_calls"))
+                .and_then(Value::as_array)
+                .ok_or_else(|| {
+                    AppError::BrokerContract(
+                        "waiting_for_tools no incluye pending_tool_calls".to_owned(),
+                    )
+                })?;
+            for call in pending {
+                let remote_tool_call_id =
+                    call.get("id").and_then(Value::as_str).ok_or_else(|| {
+                        AppError::BrokerContract(
+                            "una llamada de herramienta no incluye id".to_owned(),
+                        )
+                    })?;
+                let tool_name = call.get("name").and_then(Value::as_str).ok_or_else(|| {
+                    AppError::BrokerContract(
+                        "una llamada de herramienta no incluye name".to_owned(),
+                    )
+                })?;
+                let arguments = call
+                    .get("arguments")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!({}));
+                transaction.execute(
+                    "INSERT INTO tool_calls(
+                        id, broker_task_id, remote_tool_call_id, tool_name,
+                        arguments_json, status
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, 'confirmation_required')
+                     ON CONFLICT(broker_task_id, remote_tool_call_id) DO UPDATE SET
+                        tool_name = excluded.tool_name,
+                        arguments_json = excluded.arguments_json,
+                        status = CASE
+                            WHEN tool_calls.status IN ('requested', 'confirmation_required')
+                            THEN 'confirmation_required'
+                            ELSE tool_calls.status
+                        END",
+                    params![
+                        format!("toolcall_{}", Uuid::new_v4().simple()),
+                        id,
+                        remote_tool_call_id,
+                        tool_name,
+                        arguments.to_string()
+                    ],
+                )?;
+            }
         }
         if previous != state.status.as_str() && state.status.is_terminal() {
             if let Some(message_id) = response_message_id {
@@ -1300,6 +1543,68 @@ impl Database {
                         content_json
                     ],
                 )?;
+                if state.status.as_str() == "completed" {
+                    if let Some(request_message_id) = request_message_id.as_deref() {
+                        let sources = {
+                            let mut statement = transaction.prepare(
+                                "SELECT a.id, a.display_name, a.broker_file_id,
+                                        a.media_type, a.size_bytes, ma.ordinal
+                                 FROM message_attachments ma
+                                 JOIN attachments a ON a.id = ma.attachment_id
+                                 WHERE ma.message_id = ?1
+                                 ORDER BY ma.ordinal",
+                            )?;
+                            let rows = statement
+                                .query_map(params![request_message_id], |row| {
+                                    Ok((
+                                        row.get::<_, String>(0)?,
+                                        row.get::<_, String>(1)?,
+                                        row.get::<_, Option<String>>(2)?,
+                                        row.get::<_, Option<String>>(3)?,
+                                        row.get::<_, Option<i64>>(4)?,
+                                        row.get::<_, i64>(5)?,
+                                    ))
+                                })?
+                                .collect::<Result<Vec<_>, _>>()?;
+                            rows
+                        };
+                        for (
+                            attachment_id,
+                            title,
+                            broker_file_id,
+                            media_type,
+                            size_bytes,
+                            ordinal,
+                        ) in sources
+                        {
+                            let metadata = serde_json::json!({
+                                "kind": "broker_file",
+                                "broker_file_id": broker_file_id,
+                                "media_type": media_type,
+                                "size_bytes": size_bytes,
+                                "attribution": "turn_attachment"
+                            });
+                            transaction.execute(
+                                "INSERT INTO citations(
+                                    id, message_id, ordinal, title,
+                                    source_attachment_id, metadata_json
+                                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                                 ON CONFLICT(message_id, ordinal) DO UPDATE SET
+                                    title = excluded.title,
+                                    source_attachment_id = excluded.source_attachment_id,
+                                    metadata_json = excluded.metadata_json",
+                                params![
+                                    format!("citation_{}", Uuid::new_v4().simple()),
+                                    message_id,
+                                    ordinal,
+                                    title,
+                                    attachment_id,
+                                    metadata.to_string()
+                                ],
+                            )?;
+                        }
+                    }
+                }
                 if let Some(conversation_id) = conversation_id {
                     transaction.execute(
                         "UPDATE conversations SET updated_at = datetime('now') WHERE id = ?1",
@@ -1393,9 +1698,238 @@ impl Database {
         Ok(())
     }
 
+    pub fn pending_tool_calls(&self, local_task_id: &str) -> Result<Vec<ToolCallView>, AppError> {
+        let connection = self.connect()?;
+        let mut statement = connection.prepare(
+            "SELECT remote_tool_call_id, tool_name, arguments_json, status
+             FROM tool_calls
+             WHERE broker_task_id = ?1 AND status = 'confirmation_required'
+             ORDER BY requested_at, id",
+        )?;
+        let calls = statement
+            .query_map(params![local_task_id], |row| {
+                let arguments_json: String = row.get(2)?;
+                let arguments = serde_json::from_str(&arguments_json).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        arguments_json.len(),
+                        rusqlite::types::Type::Text,
+                        Box::new(error),
+                    )
+                })?;
+                Ok(ToolCallView {
+                    tool_call_id: row.get(0)?,
+                    name: row.get(1)?,
+                    arguments,
+                    status: row.get(3)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(calls)
+    }
+
+    pub fn task_conversation_id(&self, local_task_id: &str) -> Result<String, AppError> {
+        self.connect()?
+            .query_row(
+                "SELECT conversation_id FROM broker_tasks WHERE id = ?1",
+                params![local_task_id],
+                |row| row.get::<_, Option<String>>(0),
+            )?
+            .ok_or_else(|| AppError::BrokerContract("la tarea no pertenece a un chat".to_owned()))
+    }
+
+    pub fn prepare_tool_outcomes(
+        &self,
+        local_task_id: &str,
+        outcomes: &[ToolOutcomeRecord],
+    ) -> Result<(), AppError> {
+        let expected = self.pending_tool_calls(local_task_id)?;
+        let expected_ids: HashSet<&str> = expected
+            .iter()
+            .map(|call| call.tool_call_id.as_str())
+            .collect();
+        let provided_ids: HashSet<&str> = outcomes
+            .iter()
+            .map(|outcome| outcome.tool_call_id.as_str())
+            .collect();
+        if expected_ids != provided_ids || outcomes.len() != provided_ids.len() {
+            return Err(AppError::Validation(
+                "debe decidirse exactamente una vez sobre cada herramienta pendiente".to_owned(),
+            ));
+        }
+        let connection = self.connect()?;
+        let transaction = connection.unchecked_transaction()?;
+        for outcome in outcomes {
+            if !matches!(outcome.status.as_str(), "approved" | "cancelled") {
+                return Err(AppError::Validation(
+                    "el resultado local de herramienta no es válido".to_owned(),
+                ));
+            }
+            let local_call_id: String = transaction.query_row(
+                "SELECT id FROM tool_calls
+                 WHERE broker_task_id = ?1 AND remote_tool_call_id = ?2
+                   AND status = 'confirmation_required'",
+                params![local_task_id, outcome.tool_call_id],
+                |row| row.get(0),
+            )?;
+            transaction.execute(
+                "UPDATE tool_calls SET status = ?2 WHERE id = ?1",
+                params![local_call_id, outcome.status],
+            )?;
+            transaction.execute(
+                "INSERT INTO tool_results(id, tool_call_id, content_text, is_error)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(tool_call_id) DO UPDATE SET
+                    content_text = excluded.content_text,
+                    is_error = excluded.is_error",
+                params![
+                    format!("toolresult_{}", Uuid::new_v4().simple()),
+                    local_call_id,
+                    outcome.content,
+                    i64::from(outcome.status == "cancelled")
+                ],
+            )?;
+        }
+        transaction.execute(
+            "UPDATE broker_tasks
+             SET local_state = 'polling', updated_at = datetime('now')
+             WHERE id = ?1",
+            params![local_task_id],
+        )?;
+        transaction.execute(
+            "INSERT INTO broker_task_events(
+                broker_task_id, event_type, remote_status, payload_json, occurred_at
+             ) VALUES (?1, 'local.tool_decisions_prepared', 'waiting_for_tools', ?2, datetime('now'))",
+            params![
+                local_task_id,
+                serde_json::json!({"count": outcomes.len()}).to_string()
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn prepared_tool_results(&self, local_task_id: &str) -> Result<Value, AppError> {
+        let connection = self.connect()?;
+        let mut statement = connection.prepare(
+            "SELECT tc.remote_tool_call_id, tr.content_text
+             FROM tool_calls tc
+             JOIN tool_results tr ON tr.tool_call_id = tc.id
+             WHERE tc.broker_task_id = ?1
+               AND tc.status IN ('approved', 'cancelled')
+             ORDER BY tc.requested_at, tc.id",
+        )?;
+        let results = statement
+            .query_map(params![local_task_id], |row| {
+                Ok(serde_json::json!({
+                    "tool_call_id": row.get::<_, String>(0)?,
+                    "content": row.get::<_, Option<String>>(1)?.unwrap_or_default()
+                }))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(serde_json::json!({"tool_results": results}))
+    }
+
+    pub fn mark_tool_results_submitted(&self, local_task_id: &str) -> Result<(), AppError> {
+        let connection = self.connect()?;
+        let transaction = connection.unchecked_transaction()?;
+        transaction.execute(
+            "UPDATE tool_calls
+             SET status = 'completed', completed_at = datetime('now')
+             WHERE broker_task_id = ?1 AND status IN ('approved', 'cancelled')",
+            params![local_task_id],
+        )?;
+        transaction.execute(
+            "INSERT INTO broker_task_events(
+                broker_task_id, event_type, remote_status, payload_json, occurred_at
+             ) VALUES (?1, 'remote.tool_results_accepted', 'queued', '{}', datetime('now'))",
+            params![local_task_id],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn last_completed_export_hash(
+        &self,
+        stable_export_id: &str,
+        destination_path: &str,
+    ) -> Result<Option<String>, AppError> {
+        Ok(self
+            .connect()?
+            .query_row(
+                "SELECT destination_hash_after
+                 FROM export_records
+                 WHERE stable_export_id = ?1 AND destination_path = ?2
+                   AND status = 'completed'",
+                params![stable_export_id, destination_path],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_export(
+        &self,
+        source_id: &str,
+        stable_export_id: &str,
+        destination_path: &str,
+        source_hash: &str,
+        destination_hash_before: Option<&str>,
+        destination_hash_after: Option<&str>,
+        status: &str,
+        error: Option<&Value>,
+    ) -> Result<(), AppError> {
+        let error_json = error
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|error| AppError::BrokerContract(error.to_string()))?;
+        let connection = self.connect()?;
+        connection.execute(
+            "INSERT INTO export_records(
+                id, source_type, source_id, stable_export_id, destination_path,
+                source_hash, destination_hash_before, destination_hash_after,
+                status, error_json
+             ) VALUES (?1, 'conversation', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             ON CONFLICT(stable_export_id, destination_path) DO UPDATE SET
+                source_id = excluded.source_id,
+                source_hash = excluded.source_hash,
+                destination_hash_before = excluded.destination_hash_before,
+                destination_hash_after = excluded.destination_hash_after,
+                status = excluded.status,
+                error_json = excluded.error_json,
+                updated_at = datetime('now')",
+            params![
+                format!("export_{}", Uuid::new_v4().simple()),
+                source_id,
+                stable_export_id,
+                destination_path,
+                source_hash,
+                destination_hash_before,
+                destination_hash_after,
+                status,
+                error_json
+            ],
+        )?;
+        connection.execute(
+            "INSERT INTO audit_events(event_type, actor, conversation_id, payload_json)
+             VALUES (?1, 'user', ?2, ?3)",
+            params![
+                format!("export.{status}"),
+                source_id,
+                serde_json::json!({
+                    "stable_export_id": stable_export_id,
+                    "destination_path": destination_path,
+                    "source_hash": source_hash
+                })
+                .to_string()
+            ],
+        )?;
+        Ok(())
+    }
+
     pub fn task_snapshot(&self, id: &str) -> Result<LocalTaskSnapshot, AppError> {
         let connection = self.connect()?;
-        connection
+        let mut snapshot = connection
             .query_row(
                 "SELECT id, remote_task_id, remote_status, local_state,
                         consecutive_poll_errors, result_json, error_json, updated_at
@@ -1412,12 +1946,15 @@ impl Database {
                         consecutive_poll_errors: row.get(4)?,
                         result: result_json.and_then(|value| serde_json::from_str(&value).ok()),
                         error: error_json.and_then(|value| serde_json::from_str(&value).ok()),
+                        pending_tool_calls: Vec::new(),
                         updated_at: row.get(7)?,
                     })
                 },
             )
             .optional()?
-            .ok_or_else(|| AppError::BrokerContract(format!("tarea local no encontrada: {id}")))
+            .ok_or_else(|| AppError::BrokerContract(format!("tarea local no encontrada: {id}")))?;
+        snapshot.pending_tool_calls = self.pending_tool_calls(id)?;
+        Ok(snapshot)
     }
 
     pub fn path(&self) -> &Path {
@@ -1427,7 +1964,8 @@ impl Database {
 
 #[cfg(test)]
 mod tests {
-    use super::{Database, INITIAL_MIGRATION};
+    use super::{ContextMessage, Database, ToolOutcomeRecord, INITIAL_MIGRATION};
+    use crate::broker::TaskState;
     use crate::error::AppError;
     use rusqlite::params;
     use uuid::Uuid;
@@ -1580,7 +2118,7 @@ mod tests {
     #[test]
     fn attachment_is_deduplicated_and_reused_across_conversations() {
         let database = test_database();
-        assert_eq!(database.schema_version().expect("version should load"), 2);
+        assert_eq!(database.schema_version().expect("version should load"), 3);
         let first_conversation = database
             .create_conversation("Primera", None)
             .expect("conversation should be created");
@@ -1678,7 +2216,7 @@ mod tests {
         drop(connection);
 
         let database = Database::open(&path).expect("database should upgrade");
-        assert_eq!(database.schema_version().expect("version should load"), 2);
+        assert_eq!(database.schema_version().expect("version should load"), 3);
         assert_eq!(
             database
                 .list_conversations()
@@ -1731,6 +2269,238 @@ mod tests {
             .expect("attachment view should load")
             .ingestion_error
             .is_none());
+        cleanup(&database);
+    }
+
+    #[test]
+    fn completed_turn_materializes_attachment_sources_on_assistant_message() {
+        let database = test_database();
+        let conversation = database
+            .create_conversation("Pregunta con fuente", None)
+            .expect("conversation should be created");
+        let attachment = database
+            .register_attachment(
+                &conversation.id,
+                "C:/managed/source.pdf",
+                "source.pdf",
+                Some("application/pdf"),
+                2048,
+                "source-sha",
+            )
+            .expect("attachment should be registered");
+        database
+            .update_attachment_ingestion(
+                &attachment.id,
+                "ready",
+                Some("broker-source-1"),
+                Some("document"),
+                Some("docling"),
+                Some(&serde_json::json!({"pages": 2})),
+                None,
+            )
+            .expect("attachment should become ready");
+        let user_message_id = "message-source-user";
+        let assistant_message_id = "message-source-assistant";
+        let context = vec![ContextMessage {
+            message_id: user_message_id.to_owned(),
+            role: "user".to_owned(),
+            text: "Resume el documento".to_owned(),
+        }];
+        database
+            .prepare_chat_turn(
+                &conversation.id,
+                user_message_id,
+                assistant_message_id,
+                "local-source-task",
+                "source-idempotency-key",
+                "Resume el documento",
+                &serde_json::json!({}),
+                &context,
+                std::slice::from_ref(&attachment.id),
+            )
+            .expect("turn should be prepared");
+        let state: TaskState = serde_json::from_value(serde_json::json!({
+            "task_id": "remote-source-task",
+            "status": "completed",
+            "request_id": "request-source",
+            "created_at": "2026-07-21T00:00:00Z",
+            "updated_at": "2026-07-21T00:00:01Z",
+            "execution_strategy": "single",
+            "execution_preset": "fast",
+            "selection_mode": "automatic",
+            "progress": {},
+            "result": {"result_markdown": "Resumen documentado"},
+            "error": null
+        }))
+        .expect("task state should deserialize");
+        database
+            .record_remote_state("local-source-task", &state)
+            .expect("completed state should materialize");
+
+        let view = database
+            .conversation_view(&conversation.id)
+            .expect("conversation should load");
+        let assistant = view
+            .messages
+            .iter()
+            .find(|message| message.id == assistant_message_id)
+            .expect("assistant message should exist");
+        assert_eq!(assistant.sources.len(), 1);
+        assert_eq!(assistant.sources[0].title, "source.pdf");
+        assert_eq!(
+            assistant.sources[0].source_attachment_id.as_deref(),
+            Some(attachment.id.as_str())
+        );
+        cleanup(&database);
+    }
+
+    #[test]
+    fn waiting_tool_call_is_persisted_and_decisions_are_durable() {
+        let database = test_database();
+        let conversation = database
+            .create_conversation("Herramienta pendiente", None)
+            .expect("conversation should be created");
+        let context = vec![ContextMessage {
+            message_id: "tool-user-message".to_owned(),
+            role: "user".to_owned(),
+            text: "Renombra este chat".to_owned(),
+        }];
+        database
+            .prepare_chat_turn(
+                &conversation.id,
+                "tool-user-message",
+                "tool-assistant-message",
+                "local-tool-task",
+                "tool-idempotency-key",
+                "Renombra este chat",
+                &serde_json::json!({}),
+                &context,
+                &[],
+            )
+            .expect("turn should be prepared");
+        let waiting: TaskState = serde_json::from_value(serde_json::json!({
+            "task_id": "remote-tool-task",
+            "status": "waiting_for_tools",
+            "request_id": "request-tool",
+            "created_at": "2026-07-21T00:00:00Z",
+            "updated_at": "2026-07-21T00:00:01Z",
+            "execution_strategy": "agent",
+            "execution_preset": "fast",
+            "selection_mode": "automatic",
+            "progress": {},
+            "result": {
+                "status": "waiting_for_tools",
+                "pending_tool_calls": [{
+                    "id": "call-rename-1",
+                    "name": "rename_conversation",
+                    "arguments": {"title": "Título propuesto"}
+                }]
+            },
+            "error": null
+        }))
+        .expect("waiting state should deserialize");
+        database
+            .record_remote_state("local-tool-task", &waiting)
+            .expect("waiting state should persist");
+        let waiting_snapshot = database
+            .task_snapshot("local-tool-task")
+            .expect("snapshot should load");
+        assert_eq!(waiting_snapshot.local_state, "waiting_for_tools");
+        assert_eq!(waiting_snapshot.pending_tool_calls.len(), 1);
+        assert_eq!(
+            waiting_snapshot.pending_tool_calls[0].arguments["title"],
+            "Título propuesto"
+        );
+
+        database
+            .prepare_tool_outcomes(
+                "local-tool-task",
+                &[ToolOutcomeRecord {
+                    tool_call_id: "call-rename-1".to_owned(),
+                    status: "approved".to_owned(),
+                    content: serde_json::json!({"ok": true}).to_string(),
+                }],
+            )
+            .expect("decision should persist before HTTP");
+        let prepared = database
+            .prepared_tool_results("local-tool-task")
+            .expect("prepared results should load");
+        assert_eq!(prepared["tool_results"][0]["tool_call_id"], "call-rename-1");
+        assert!(database
+            .task_snapshot("local-tool-task")
+            .expect("snapshot should load")
+            .pending_tool_calls
+            .is_empty());
+        cleanup(&database);
+    }
+
+    #[test]
+    fn audit_inspector_exposes_only_safe_presentation_fields() {
+        let database = test_database();
+        let conversation = database
+            .create_conversation("Auditoría segura", None)
+            .expect("conversation should be created");
+        let secret_path = r"C:\Users\private\Documents\conversation.md";
+        let internal_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        database
+            .record_export(
+                &conversation.id,
+                "conversation:audit:markdown:v1",
+                secret_path,
+                internal_hash,
+                None,
+                Some(internal_hash),
+                "completed",
+                None,
+            )
+            .expect("export audit should be recorded");
+
+        let events = database
+            .list_audit_events(50)
+            .expect("safe audit view should load");
+        let serialized = serde_json::to_string(&events).expect("audit view should serialize");
+        assert!(!serialized.contains(secret_path));
+        assert!(!serialized.contains(internal_hash));
+        assert!(events
+            .iter()
+            .any(|event| event.summary == "Exportación completada"));
+        cleanup(&database);
+    }
+
+    #[test]
+    fn pending_conversation_is_identified_for_visible_startup_recovery() {
+        let database = test_database();
+        let conversation = database
+            .create_conversation("Conversación recuperable", None)
+            .expect("conversation should be created");
+        let context = vec![ContextMessage {
+            message_id: "recovery-user-message".to_owned(),
+            role: "user".to_owned(),
+            text: "Continúa tras reiniciar".to_owned(),
+        }];
+        database
+            .prepare_chat_turn(
+                &conversation.id,
+                "recovery-user-message",
+                "recovery-assistant-message",
+                "recovery-local-task",
+                "recovery-idempotency",
+                "Continúa tras reiniciar",
+                &serde_json::json!({}),
+                &context,
+                &[],
+            )
+            .expect("pending turn should be persisted");
+
+        let candidates = database
+            .recovery_candidates()
+            .expect("recovery candidates should load");
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(
+            candidates[0].conversation_id.as_deref(),
+            Some(conversation.id.as_str())
+        );
+        assert_eq!(candidates[0].label, "Respuesta pendiente");
         cleanup(&database);
     }
 }

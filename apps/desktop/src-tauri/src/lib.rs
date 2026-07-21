@@ -2,15 +2,16 @@ mod attachment_runtime;
 mod broker;
 mod db;
 mod error;
+mod export;
 mod task_runtime;
 
 use broker::{BrokerClient, BrokerDiagnostic};
 use db::{
-    AttachmentView, ConversationSummary, ConversationView, Database, LocalTaskSnapshot,
-    ProjectSummary,
+    AttachmentView, AuditEventView, ConversationSummary, ConversationView, Database,
+    LocalTaskSnapshot, ProjectSummary, RecoveryItemView,
 };
 use error::AppError;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{Manager, State};
 
 struct AppState {
@@ -18,6 +19,7 @@ struct AppState {
     broker: BrokerClient,
     recovered_at_start: usize,
     recovered_attachments_at_start: usize,
+    recovery_items_at_start: Vec<RecoveryItemView>,
     attachments_dir: std::path::PathBuf,
 }
 
@@ -29,6 +31,14 @@ struct BootstrapReport {
     schema_version: i64,
     recovered_tasks: usize,
     recovered_attachments: usize,
+    recovery_items: Vec<RecoveryItemView>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExportPathSelection {
+    path: String,
+    existed: bool,
 }
 
 fn validated_text(value: &str, field: &str, maximum: usize) -> Result<String, AppError> {
@@ -54,6 +64,7 @@ fn bootstrap_app(state: State<'_, AppState>) -> Result<BootstrapReport, AppError
         schema_version: state.database.schema_version()?,
         recovered_tasks: state.recovered_at_start,
         recovered_attachments: state.recovered_attachments_at_start,
+        recovery_items: state.recovery_items_at_start.clone(),
     })
 }
 
@@ -187,6 +198,11 @@ fn list_projects(state: State<'_, AppState>) -> Result<Vec<ProjectSummary>, AppE
 }
 
 #[tauri::command]
+fn list_audit_events(state: State<'_, AppState>) -> Result<Vec<AuditEventView>, AppError> {
+    state.database.list_audit_events(50)
+}
+
+#[tauri::command]
 fn rename_project(
     project_id: String,
     name: String,
@@ -223,6 +239,8 @@ async fn send_chat_turn(
     conversation_id: String,
     text: String,
     attachment_ids: Vec<String>,
+    tools_enabled: bool,
+    sandbox_enabled: bool,
     state: State<'_, AppState>,
 ) -> Result<LocalTaskSnapshot, AppError> {
     task_runtime::start_chat_turn(
@@ -231,8 +249,24 @@ async fn send_chat_turn(
         &conversation_id,
         &text,
         &attachment_ids,
+        tools_enabled,
+        sandbox_enabled,
     )
     .await
+}
+
+#[tauri::command]
+fn resolve_tool_calls(
+    local_task_id: String,
+    decisions: Vec<task_runtime::ToolDecision>,
+    state: State<'_, AppState>,
+) -> Result<LocalTaskSnapshot, AppError> {
+    task_runtime::resolve_tool_calls(
+        state.database.clone(),
+        state.broker.clone(),
+        &local_task_id,
+        &decisions,
+    )
 }
 
 #[tauri::command]
@@ -274,6 +308,92 @@ fn pick_attachment_paths() -> Result<Vec<String>, AppError> {
     Err(AppError::Validation(
         "el selector nativo todavía solo está disponible en Windows".to_owned(),
     ))
+}
+
+#[tauri::command]
+fn pick_export_path(suggested_name: String) -> Result<Option<ExportPathSelection>, AppError> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        let safe_name: String = suggested_name
+            .chars()
+            .map(|character| match character {
+                '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
+                '\r' | '\n' => ' ',
+                other => other,
+            })
+            .take(100)
+            .collect();
+        let filename = if safe_name.trim().is_empty() {
+            "conversacion.md".to_owned()
+        } else if safe_name.to_ascii_lowercase().ends_with(".md") {
+            safe_name
+        } else {
+            format!("{}.md", safe_name.trim())
+        };
+        let script = r#"
+            Add-Type -AssemblyName System.Windows.Forms
+            $dialog = New-Object System.Windows.Forms.SaveFileDialog
+            $dialog.Title = 'Exportar conversación de ChatyGPT'
+            $dialog.Filter = 'Markdown|*.md|Markdown largo|*.markdown'
+            $dialog.DefaultExt = 'md'
+            $dialog.AddExtension = $true
+            $dialog.OverwritePrompt = $true
+            $dialog.FileName = $env:CHATYGPT_EXPORT_NAME
+            if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+                [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+                [pscustomobject]@{
+                    path = $dialog.FileName
+                    existed = [System.IO.File]::Exists($dialog.FileName)
+                } | ConvertTo-Json -Compress
+            }
+        "#;
+        let output = std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-STA", "-Command", script])
+            .env("CHATYGPT_EXPORT_NAME", filename)
+            .creation_flags(0x0800_0000)
+            .output()
+            .map_err(|error| {
+                AppError::Validation(format!("no se pudo abrir el selector: {error}"))
+            })?;
+        if !output.status.success() {
+            return Err(AppError::Validation(
+                String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+            ));
+        }
+        let raw = String::from_utf8_lossy(&output.stdout);
+        let raw = raw.trim();
+        if raw.is_empty() {
+            return Ok(None);
+        }
+        let selection = serde_json::from_str(raw)
+            .map_err(|error| AppError::Validation(format!("selector inválido: {error}")))?;
+        Ok(Some(selection))
+    }
+    #[cfg(not(target_os = "windows"))]
+    Err(AppError::Validation(
+        "la exportación nativa todavía solo está disponible en Windows".to_owned(),
+    ))
+}
+
+#[tauri::command]
+async fn export_conversation(
+    conversation_id: String,
+    destination_path: String,
+    overwrite_confirmed: bool,
+    state: State<'_, AppState>,
+) -> Result<export::ExportReport, AppError> {
+    let database = state.database.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        export::export_conversation(
+            database,
+            &conversation_id,
+            &destination_path,
+            overwrite_confirmed,
+        )
+    })
+    .await
+    .map_err(|error| AppError::DataDirectory(error.to_string()))?
 }
 
 #[tauri::command]
@@ -335,6 +455,7 @@ pub fn run() {
                 .map_err(|error| AppError::DataDirectory(error.to_string()))?;
             let database = Database::open(data_dir.join("chatygpt.db"))?;
             let broker = BrokerClient::from_environment()?;
+            let recovery_items_at_start = database.recovery_candidates()?;
             let recovered_at_start =
                 task_runtime::recover_at_start(database.clone(), broker.clone())?;
             let recovered_attachments_at_start =
@@ -345,6 +466,7 @@ pub fn run() {
                 broker,
                 recovered_at_start,
                 recovered_attachments_at_start,
+                recovery_items_at_start,
                 attachments_dir,
             });
             Ok(())
@@ -364,15 +486,19 @@ pub fn run() {
             delete_conversation,
             get_conversation,
             send_chat_turn,
+            resolve_tool_calls,
             create_project,
             list_projects,
+            list_audit_events,
             rename_project,
             archive_project,
             pick_attachment_paths,
             import_attachment,
             list_attachments,
             remove_attachment,
-            retry_attachment
+            retry_attachment,
+            pick_export_path,
+            export_conversation
         ])
         .run(tauri::generate_context!())
         .expect("ChatyGPT no pudo iniciar");
