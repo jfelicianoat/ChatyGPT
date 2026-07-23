@@ -13,9 +13,10 @@ const INITIAL_MIGRATION: &str = include_str!("../../migrations/0001_initial.sql"
 const ATTACHMENTS_MIGRATION: &str = include_str!("../../migrations/0002_attachments.sql");
 const ATTACHMENT_SOURCES_MIGRATION: &str =
     include_str!("../../migrations/0003_attachment_sources.sql");
+const MEMORY_SEARCHES_MIGRATION: &str = include_str!("../../migrations/0004_memory_searches.sql");
 const RECOVER_NON_TERMINAL_TASKS: &str =
     include_str!("../../queries/recover_non_terminal_tasks.sql");
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 #[derive(Clone)]
 pub struct Database {
@@ -102,6 +103,67 @@ pub struct RecoveryItemView {
     pub updated_at: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryItemView {
+    pub id: String,
+    pub project_id: Option<String>,
+    pub project_name: Option<String>,
+    pub category: String,
+    pub content: String,
+    pub sensitivity: String,
+    pub enabled: bool,
+    pub embedding_status: String,
+    pub embedding_model: Option<String>,
+    pub embedding_error: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryOverview {
+    pub enabled: bool,
+    pub items: Vec<MemoryItemView>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemorySearchResultView {
+    pub memory_id: String,
+    pub content: String,
+    pub category: String,
+    pub project_name: Option<String>,
+    pub sensitivity: String,
+    pub score: f64,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemorySearchView {
+    pub id: String,
+    pub query: String,
+    pub project_id: Option<String>,
+    pub status: String,
+    pub model: Option<String>,
+    pub error: Option<String>,
+    pub results: Vec<MemorySearchResultView>,
+    pub created_at: String,
+}
+
+struct MemorySearchRecord {
+    query: String,
+    project_id: Option<String>,
+    remote_status: String,
+    local_state: String,
+    error_json: Option<String>,
+    model: Option<String>,
+    dimensions: Option<i64>,
+    blob: Option<Vec<u8>>,
+    created_at: String,
+}
+
 fn audit_presentation(event_type: &str) -> (&'static str, &'static str, &'static str) {
     match event_type {
         "project.created" => ("project", "Proyecto creado", "info"),
@@ -126,6 +188,12 @@ fn audit_presentation(event_type: &str) -> (&'static str, &'static str, &'static
         "export.completed" => ("export", "Exportación completada", "info"),
         "export.conflict" => ("export", "Exportación detenida por un conflicto", "warning"),
         "export.failed" => ("export", "Error durante la exportación", "error"),
+        "memory.enabled" => ("memory", "Memoria activada", "info"),
+        "memory.disabled" => ("memory", "Memoria desactivada", "warning"),
+        "memory.created" => ("memory", "Recuerdo creado", "info"),
+        "memory.item_enabled" => ("memory", "Recuerdo activado", "info"),
+        "memory.item_disabled" => ("memory", "Recuerdo desactivado", "warning"),
+        "memory.deleted" => ("memory", "Recuerdo eliminado", "warning"),
         _ => ("system", "Actividad registrada", "info"),
     }
 }
@@ -142,8 +210,17 @@ pub struct ConversationMessage {
     pub task_local_state: Option<String>,
     pub text: Option<String>,
     pub error: Option<Value>,
+    pub model_used: Option<ModelUsedView>,
     pub sources: Vec<ConversationSource>,
     pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelUsedView {
+    pub provider: String,
+    pub deployment: String,
+    pub model: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -234,9 +311,16 @@ impl Database {
             transaction.commit()?;
         }
         let current: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if current < SCHEMA_VERSION {
+        if current < 3 {
             let transaction = connection.transaction()?;
             transaction.execute_batch(ATTACHMENT_SOURCES_MIGRATION)?;
+            transaction.pragma_update(None, "user_version", 3)?;
+            transaction.commit()?;
+        }
+        let current: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        if current < SCHEMA_VERSION {
+            let transaction = connection.transaction()?;
+            transaction.execute_batch(MEMORY_SEARCHES_MIGRATION)?;
             transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             transaction.commit()?;
         }
@@ -268,7 +352,9 @@ impl Database {
     pub fn recovery_candidates(&self) -> Result<Vec<RecoveryItemView>, AppError> {
         let connection = self.connect()?;
         let mut statement = connection.prepare(
-            "SELECT bt.remote_status, bt.conversation_id, c.title, bt.updated_at
+            "SELECT bt.remote_status, bt.conversation_id, c.title, bt.updated_at,
+                    json_extract(bt.request_json, '$.inference_kind'),
+                    json_extract(bt.request_json, '$.content.metadata.source_type')
              FROM broker_tasks bt
              LEFT JOIN conversations c ON c.id = bt.conversation_id
              WHERE bt.remote_status NOT IN ('completed', 'failed', 'cancelled')
@@ -278,9 +364,16 @@ impl Database {
         let items = statement
             .query_map([], |row| {
                 let conversation_id: Option<String> = row.get(1)?;
+                let inference_kind: Option<String> = row.get(4)?;
+                let embedding_source: Option<String> = row.get(5)?;
+                let is_embedding = inference_kind.as_deref() == Some("embedding");
                 Ok(RecoveryItemView {
-                    kind: "task".to_owned(),
-                    label: if conversation_id.is_some() {
+                    kind: if is_embedding { "embedding" } else { "task" }.to_owned(),
+                    label: if embedding_source.as_deref() == Some("memory_search") {
+                        "Búsqueda semántica pendiente".to_owned()
+                    } else if is_embedding {
+                        "Indexación de memoria pendiente".to_owned()
+                    } else if conversation_id.is_some() {
                         "Respuesta pendiente".to_owned()
                     } else {
                         "Prueba de inferencia pendiente".to_owned()
@@ -392,6 +485,422 @@ impl Database {
             })?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(events)
+    }
+
+    pub fn memory_overview(&self) -> Result<MemoryOverview, AppError> {
+        let connection = self.connect()?;
+        let enabled = connection.query_row(
+            "SELECT enabled FROM feature_flags WHERE key = 'memory'",
+            [],
+            |row| row.get(0),
+        )?;
+        let mut statement = connection.prepare(
+            "SELECT m.id, m.project_id, p.name, m.category, m.content,
+                    m.sensitivity, m.enabled, m.created_at, m.updated_at,
+                    CASE
+                      WHEN er.id IS NOT NULL THEN 'ready'
+                      WHEN EXISTS(
+                        SELECT 1 FROM broker_tasks bt
+                        WHERE json_extract(bt.request_json, '$.content.metadata.source_type') = 'memory'
+                          AND json_extract(bt.request_json, '$.content.metadata.source_id') = m.id
+                          AND bt.local_state NOT IN ('terminal', 'orphaned')
+                      ) THEN 'indexing'
+                      WHEN EXISTS(
+                        SELECT 1 FROM broker_tasks bt
+                        WHERE json_extract(bt.request_json, '$.content.metadata.source_type') = 'memory'
+                          AND json_extract(bt.request_json, '$.content.metadata.source_id') = m.id
+                          AND (bt.remote_status = 'failed' OR bt.local_state = 'orphaned')
+                      ) THEN 'failed'
+                      ELSE 'missing'
+                    END,
+                    er.model,
+                    (
+                      SELECT substr(json_extract(failed.error_json, '$.message'), 1, 500)
+                      FROM broker_tasks failed
+                      WHERE json_extract(failed.request_json, '$.content.metadata.source_type') = 'memory'
+                        AND json_extract(failed.request_json, '$.content.metadata.source_id') = m.id
+                        AND failed.error_json IS NOT NULL
+                      ORDER BY failed.updated_at DESC, failed.rowid DESC LIMIT 1
+                    )
+             FROM memory_items m
+             LEFT JOIN projects p ON p.id = m.project_id
+             LEFT JOIN embedding_records er ON er.id = (
+                SELECT candidate.id FROM embedding_records candidate
+                WHERE candidate.source_type = 'memory' AND candidate.source_id = m.id
+                ORDER BY candidate.created_at DESC, candidate.rowid DESC LIMIT 1
+             )
+             WHERE m.custom_gpt_id IS NULL
+             ORDER BY m.updated_at DESC, m.id DESC",
+        )?;
+        let items = statement
+            .query_map([], |row| {
+                Ok(MemoryItemView {
+                    id: row.get(0)?,
+                    project_id: row.get(1)?,
+                    project_name: row.get(2)?,
+                    category: row.get(3)?,
+                    content: row.get(4)?,
+                    sensitivity: row.get(5)?,
+                    enabled: row.get(6)?,
+                    created_at: row.get(7)?,
+                    updated_at: row.get(8)?,
+                    embedding_status: row.get(9)?,
+                    embedding_model: row.get(10)?,
+                    embedding_error: row.get(11)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(MemoryOverview { enabled, items })
+    }
+
+    pub fn set_memory_enabled(&self, enabled: bool) -> Result<MemoryOverview, AppError> {
+        let connection = self.connect()?;
+        let transaction = connection.unchecked_transaction()?;
+        transaction.execute(
+            "UPDATE feature_flags
+             SET enabled = ?1, updated_at = datetime('now')
+             WHERE key = 'memory'",
+            params![enabled],
+        )?;
+        transaction.execute(
+            "INSERT INTO audit_events(event_type, actor, payload_json)
+             VALUES (?1, 'user', '{}')",
+            params![if enabled {
+                "memory.enabled"
+            } else {
+                "memory.disabled"
+            }],
+        )?;
+        transaction.commit()?;
+        self.memory_overview()
+    }
+
+    pub fn create_memory_item(
+        &self,
+        content: &str,
+        category: &str,
+        sensitivity: &str,
+        project_id: Option<&str>,
+    ) -> Result<(String, MemoryOverview), AppError> {
+        let id = format!("memory_{}", Uuid::new_v4().simple());
+        let connection = self.connect()?;
+        let transaction = connection.unchecked_transaction()?;
+        if let Some(project_id) = project_id {
+            let exists: bool = transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM projects WHERE id = ?1 AND archived_at IS NULL)",
+                params![project_id],
+                |row| row.get(0),
+            )?;
+            if !exists {
+                return Err(AppError::NotFound(format!("proyecto {project_id}")));
+            }
+        }
+        transaction.execute(
+            "INSERT INTO memory_items(
+                id, project_id, category, content, sensitivity,
+                enabled, provenance_type
+             ) VALUES (?1, ?2, ?3, ?4, ?5, 1, 'manual')",
+            params![id, project_id, category, content, sensitivity],
+        )?;
+        transaction.execute(
+            "INSERT INTO audit_events(event_type, actor, payload_json)
+             VALUES ('memory.created', 'user', ?1)",
+            params![serde_json::json!({
+                "memory_id": id,
+                "category": category,
+                "sensitivity": sensitivity,
+                "project_id": project_id
+            })
+            .to_string()],
+        )?;
+        transaction.commit()?;
+        Ok((id, self.memory_overview()?))
+    }
+
+    pub fn set_memory_item_enabled(
+        &self,
+        id: &str,
+        enabled: bool,
+    ) -> Result<MemoryOverview, AppError> {
+        let connection = self.connect()?;
+        let transaction = connection.unchecked_transaction()?;
+        let changed = transaction.execute(
+            "UPDATE memory_items
+             SET enabled = ?2, updated_at = datetime('now')
+             WHERE id = ?1",
+            params![id, enabled],
+        )?;
+        if changed == 0 {
+            return Err(AppError::NotFound(format!("recuerdo {id}")));
+        }
+        transaction.execute(
+            "INSERT INTO audit_events(event_type, actor, payload_json)
+             VALUES (?1, 'user', ?2)",
+            params![
+                if enabled {
+                    "memory.item_enabled"
+                } else {
+                    "memory.item_disabled"
+                },
+                serde_json::json!({"memory_id": id}).to_string()
+            ],
+        )?;
+        transaction.commit()?;
+        self.memory_overview()
+    }
+
+    pub fn delete_memory_item(&self, id: &str) -> Result<MemoryOverview, AppError> {
+        let connection = self.connect()?;
+        let transaction = connection.unchecked_transaction()?;
+        transaction.execute(
+            "DELETE FROM embedding_records WHERE source_type = 'memory' AND source_id = ?1",
+            params![id],
+        )?;
+        let changed = transaction.execute("DELETE FROM memory_items WHERE id = ?1", params![id])?;
+        if changed == 0 {
+            return Err(AppError::NotFound(format!("recuerdo {id}")));
+        }
+        transaction.execute(
+            "INSERT INTO audit_events(event_type, actor, payload_json)
+             VALUES ('memory.deleted', 'user', ?1)",
+            params![serde_json::json!({"memory_id": id}).to_string()],
+        )?;
+        transaction.commit()?;
+        self.memory_overview()
+    }
+
+    pub fn memory_item(&self, id: &str) -> Result<MemoryItemView, AppError> {
+        self.memory_overview()?
+            .items
+            .into_iter()
+            .find(|item| item.id == id)
+            .ok_or_else(|| AppError::NotFound(format!("recuerdo {id}")))
+    }
+
+    pub fn clear_memory_embedding(&self, id: &str) -> Result<(), AppError> {
+        let connection = self.connect()?;
+        connection.execute(
+            "DELETE FROM embedding_records WHERE source_type = 'memory' AND source_id = ?1",
+            params![id],
+        )?;
+        Ok(())
+    }
+
+    pub fn prepare_memory_search(
+        &self,
+        search_id: &str,
+        query: &str,
+        project_id: Option<&str>,
+        task_id: &str,
+        idempotency_key: &str,
+        request: &Value,
+    ) -> Result<BrokerTaskRecord, AppError> {
+        let request_json = serde_json::to_string(request)
+            .map_err(|error| AppError::BrokerContract(error.to_string()))?;
+        let connection = self.connect()?;
+        let transaction = connection.unchecked_transaction()?;
+        if let Some(project_id) = project_id {
+            let exists: bool = transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM projects WHERE id = ?1 AND archived_at IS NULL)",
+                params![project_id],
+                |row| row.get(0),
+            )?;
+            if !exists {
+                return Err(AppError::NotFound(format!("proyecto {project_id}")));
+            }
+        }
+        transaction.execute(
+            "INSERT INTO broker_tasks(
+                id, idempotency_key, request_json, remote_status, local_state
+             ) VALUES (?1, ?2, ?3, 'not_submitted', 'created')",
+            params![task_id, idempotency_key, request_json],
+        )?;
+        transaction.execute(
+            "INSERT INTO broker_task_events(
+                broker_task_id, event_type, remote_status, payload_json, occurred_at
+             ) VALUES (?1, 'local.prepared', 'not_submitted', '{}', datetime('now'))",
+            params![task_id],
+        )?;
+        transaction.execute(
+            "INSERT INTO memory_searches(id, query_text, project_id, broker_task_id)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![search_id, query, project_id, task_id],
+        )?;
+        transaction.commit()?;
+        self.task_record(task_id)
+    }
+
+    pub fn memory_search(&self, id: &str) -> Result<MemorySearchView, AppError> {
+        let connection = self.connect()?;
+        let record = connection
+            .query_row(
+                "SELECT ms.query_text, ms.project_id, bt.remote_status, bt.local_state,
+                        bt.error_json, er.model, er.dimensions, er.vector_blob, ms.created_at
+                 FROM memory_searches ms
+                 JOIN broker_tasks bt ON bt.id = ms.broker_task_id
+                 LEFT JOIN embedding_records er ON er.id = (
+                    SELECT candidate.id FROM embedding_records candidate
+                    WHERE candidate.source_type = 'memory_search'
+                      AND candidate.source_id = ms.id
+                    ORDER BY candidate.created_at DESC, candidate.rowid DESC LIMIT 1
+                 )
+                 WHERE ms.id = ?1",
+                params![id],
+                |row| {
+                    Ok(MemorySearchRecord {
+                        query: row.get(0)?,
+                        project_id: row.get(1)?,
+                        remote_status: row.get(2)?,
+                        local_state: row.get(3)?,
+                        error_json: row.get(4)?,
+                        model: row.get(5)?,
+                        dimensions: row.get(6)?,
+                        blob: row.get(7)?,
+                        created_at: row.get(8)?,
+                    })
+                },
+            )
+            .optional()?
+            .ok_or_else(|| AppError::NotFound(format!("búsqueda de memoria {id}")))?;
+
+        let error = record
+            .error_json
+            .as_deref()
+            .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+            .and_then(|value| {
+                value
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            });
+        let status = if record.blob.is_some() {
+            "completed"
+        } else if record.remote_status == "failed"
+            || record.local_state == "orphaned"
+            || record.remote_status == "completed"
+        {
+            "failed"
+        } else {
+            "searching"
+        };
+        let mut results = Vec::new();
+        if let (Some(model_name), Some(dimensions), Some(search_blob)) = (
+            record.model.as_deref(),
+            record.dimensions,
+            record.blob.as_deref(),
+        ) {
+            let search_vector = decode_embedding(search_blob, dimensions)?;
+            let mut statement = connection.prepare(
+                "SELECT m.id, m.content, m.category, p.name, m.sensitivity,
+                        er.dimensions, er.vector_blob
+                 FROM memory_items m
+                 JOIN embedding_records er
+                   ON er.source_type = 'memory' AND er.source_id = m.id
+                  AND er.model = ?1 AND er.dimensions = ?2
+                 LEFT JOIN projects p ON p.id = m.project_id
+                 WHERE m.enabled = 1 AND m.custom_gpt_id IS NULL
+                   AND (m.project_id IS NULL OR (?3 IS NOT NULL AND m.project_id = ?3))
+                 ORDER BY m.updated_at DESC",
+            )?;
+            let candidates = statement
+                .query_map(params![model_name, dimensions, record.project_id], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, i64>(5)?,
+                        row.get::<_, Vec<u8>>(6)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            for (memory_id, content, category, project_name, sensitivity, dims, candidate_blob) in
+                candidates
+            {
+                let candidate = decode_embedding(&candidate_blob, dims)?;
+                let score = cosine_similarity(&search_vector, &candidate);
+                if score.is_finite() && score >= 0.25 {
+                    let reason = if score >= 0.75 {
+                        "Coincidencia semántica alta"
+                    } else if score >= 0.5 {
+                        "Coincidencia semántica media"
+                    } else {
+                        "Coincidencia semántica baja"
+                    };
+                    results.push(MemorySearchResultView {
+                        memory_id,
+                        content,
+                        category,
+                        project_name,
+                        sensitivity,
+                        score: (score * 1000.0).round() / 1000.0,
+                        reason: reason.to_owned(),
+                    });
+                }
+            }
+            results.sort_by(|left, right| {
+                right
+                    .score
+                    .partial_cmp(&left.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            results.truncate(5);
+        }
+        Ok(MemorySearchView {
+            id: id.to_owned(),
+            query: record.query,
+            project_id: record.project_id,
+            status: status.to_owned(),
+            model: record.model,
+            error: error.or_else(|| {
+                (record.remote_status == "completed" && status == "failed").then(|| {
+                    "Broker AI completó la tarea sin devolver un vector utilizable".to_owned()
+                })
+            }),
+            results,
+            created_at: record.created_at,
+        })
+    }
+
+    pub fn latest_memory_search(&self) -> Result<Option<MemorySearchView>, AppError> {
+        let id = self
+            .connect()?
+            .query_row(
+                "SELECT id FROM memory_searches ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        id.map(|id| self.memory_search(&id)).transpose()
+    }
+
+    pub fn active_memories_for_conversation(
+        &self,
+        conversation_id: &str,
+    ) -> Result<Vec<MemoryItemView>, AppError> {
+        let overview = self.memory_overview()?;
+        if !overview.enabled {
+            return Ok(Vec::new());
+        }
+        let project_id: Option<String> = self.connect()?.query_row(
+            "SELECT project_id FROM conversations
+             WHERE id = ?1 AND deleted_at IS NULL",
+            params![conversation_id],
+            |row| row.get(0),
+        )?;
+        let mut total_chars = 0_usize;
+        Ok(overview
+            .items
+            .into_iter()
+            .filter(|item| item.enabled)
+            .filter(|item| item.project_id.is_none() || item.project_id == project_id)
+            .filter(|item| {
+                total_chars += item.content.chars().count();
+                total_chars <= 8_000
+            })
+            .take(20)
+            .collect())
     }
 
     fn project_summary(&self, id: &str) -> Result<ProjectSummary, AppError> {
@@ -1086,12 +1595,16 @@ impl Database {
         user_text: &str,
         request: &Value,
         context: &[ContextMessage],
+        memories: &[MemoryItemView],
         attachment_ids: &[String],
     ) -> Result<BrokerTaskRecord, AppError> {
         let request_json = serde_json::to_string(request)
             .map_err(|error| AppError::BrokerContract(error.to_string()))?;
-        let context_json = serde_json::to_string(context)
-            .map_err(|error| AppError::BrokerContract(error.to_string()))?;
+        let context_json = serde_json::to_string(&serde_json::json!({
+            "messages": context,
+            "memories": memories
+        }))
+        .map_err(|error| AppError::BrokerContract(error.to_string()))?;
         let connection = self.connect()?;
         let transaction = connection.unchecked_transaction()?;
         let next_sequence: i64 = transaction.query_row(
@@ -1166,14 +1679,20 @@ impl Database {
             params![assistant_message_id, local_task_id],
         )?;
         let snapshot_id = format!("ctx_{}", Uuid::new_v4().simple());
+        let strategy_version = if memories.is_empty() {
+            "window-v1"
+        } else {
+            "window-memory-v1"
+        };
         transaction.execute(
             "INSERT INTO context_snapshots(
                 id, broker_task_id, strategy_version, token_budget,
                 estimated_tokens, final_context_json
-             ) VALUES (?1, ?2, 'window-v1', NULL, ?3, ?4)",
+             ) VALUES (?1, ?2, ?3, NULL, ?4, ?5)",
             params![
                 snapshot_id,
                 local_task_id,
+                strategy_version,
                 (context_json.chars().count() as i64 + 3) / 4,
                 context_json
             ],
@@ -1196,6 +1715,23 @@ impl Database {
                     },
                     (source.text.chars().count() as i64 + 3) / 4,
                     source.text
+                ],
+            )?;
+        }
+        for (index, memory) in memories.iter().enumerate() {
+            transaction.execute(
+                "INSERT INTO context_sources(
+                    id, snapshot_id, source_type, source_id, ordinal,
+                    reason, estimated_tokens, excerpt
+                 ) VALUES (?1, ?2, 'memory', ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    format!("ctxsrc_{}", Uuid::new_v4().simple()),
+                    snapshot_id,
+                    memory.id,
+                    (context.len() + index) as i64,
+                    "Recuerdo activado explícitamente por el usuario",
+                    (memory.content.chars().count() as i64 + 3) / 4,
+                    memory.content
                 ],
             )?;
         }
@@ -1225,7 +1761,10 @@ impl Database {
         let mut statement = connection.prepare(
             "SELECT m.id, m.role, m.status, m.sequence_no,
                     m.broker_task_id, bt.remote_status, bt.local_state,
-                    mp.content_text, mp.content_json, m.created_at
+                    mp.content_text, mp.content_json, m.created_at,
+                    json_extract(bt.result_json, '$.model_used.provider'),
+                    json_extract(bt.result_json, '$.model_used.deployment'),
+                    json_extract(bt.result_json, '$.model_used.model')
              FROM messages m
              LEFT JOIN message_parts mp ON mp.message_id = m.id AND mp.ordinal = 0
              LEFT JOIN broker_tasks bt ON bt.id = m.broker_task_id
@@ -1235,6 +1774,9 @@ impl Database {
         let messages = statement
             .query_map(params![id], |row| {
                 let error_json: Option<String> = row.get(8)?;
+                let model_provider: Option<String> = row.get(10)?;
+                let model_deployment: Option<String> = row.get(11)?;
+                let model_name: Option<String> = row.get(12)?;
                 Ok(ConversationMessage {
                     id: row.get(0)?,
                     role: row.get(1)?,
@@ -1245,6 +1787,14 @@ impl Database {
                     task_local_state: row.get(6)?,
                     text: row.get(7)?,
                     error: error_json.and_then(|value| serde_json::from_str(&value).ok()),
+                    model_used: match (model_provider, model_deployment, model_name) {
+                        (Some(provider), Some(deployment), Some(model)) => Some(ModelUsedView {
+                            provider,
+                            deployment,
+                            model,
+                        }),
+                        _ => None,
+                    },
                     sources: Vec::new(),
                     created_at: row.get(9)?,
                 })
@@ -1383,16 +1933,28 @@ impl Database {
 
     pub fn record_remote_state(&self, id: &str, state: &TaskState) -> Result<(), AppError> {
         let connection = self.connect()?;
-        let (previous, request_message_id, response_message_id, conversation_id): (
+        let (previous, request_message_id, response_message_id, conversation_id, request): (
             String,
             Option<String>,
             Option<String>,
             Option<String>,
+            Value,
         ) = connection.query_row(
-            "SELECT remote_status, request_message_id, response_message_id, conversation_id
+            "SELECT remote_status, request_message_id, response_message_id, conversation_id,
+                    request_json
              FROM broker_tasks WHERE id = ?1",
             params![id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            |row| {
+                let request_json: String = row.get(4)?;
+                let request = serde_json::from_str(&request_json).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        request_json.len(),
+                        rusqlite::types::Type::Text,
+                        Box::new(error),
+                    )
+                })?;
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, request))
+            },
         )?;
         let local_state = if state.status.is_terminal() {
             "terminal"
@@ -1439,6 +2001,93 @@ impl Database {
                  ) VALUES (?1, 'remote.status_changed', ?2, ?3, datetime('now'))",
                 params![id, state.status.as_str(), payload_json],
             )?;
+        }
+        if state.status.as_str() == "completed"
+            && request.get("inference_kind").and_then(Value::as_str) == Some("embedding")
+        {
+            let metadata = request
+                .get("content")
+                .and_then(|content| content.get("metadata"));
+            let source_type = metadata
+                .and_then(|value| value.get("source_type"))
+                .and_then(Value::as_str);
+            let source_id = metadata
+                .and_then(|value| value.get("source_id"))
+                .and_then(Value::as_str);
+            let content_sha256 = metadata
+                .and_then(|value| value.get("content_sha256"))
+                .and_then(Value::as_str);
+            let vector = state
+                .result
+                .as_ref()
+                .and_then(|result| result.get("embedding"))
+                .and_then(Value::as_array);
+            if let (Some(source_type), Some(source_id), Some(content_sha256), Some(vector)) =
+                (source_type, source_id, content_sha256, vector)
+            {
+                let values = vector
+                    .iter()
+                    .map(|value| {
+                        value.as_f64().ok_or_else(|| {
+                            AppError::BrokerContract(
+                                "el embedding contiene un valor no numérico".to_owned(),
+                            )
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                if values.is_empty() {
+                    return Err(AppError::BrokerContract(
+                        "el embedding completado está vacío".to_owned(),
+                    ));
+                }
+                let mut vector_blob = Vec::with_capacity(values.len() * 8);
+                for value in &values {
+                    vector_blob.extend_from_slice(&value.to_le_bytes());
+                }
+                let model_used = state
+                    .result
+                    .as_ref()
+                    .and_then(|result| result.get("model_used"));
+                let model = model_used
+                    .map(|model| {
+                        format!(
+                            "{}/{}/{}",
+                            model
+                                .get("provider")
+                                .and_then(Value::as_str)
+                                .unwrap_or("unknown"),
+                            model
+                                .get("deployment")
+                                .and_then(Value::as_str)
+                                .unwrap_or("unknown"),
+                            model
+                                .get("model")
+                                .and_then(Value::as_str)
+                                .unwrap_or("unknown")
+                        )
+                    })
+                    .unwrap_or_else(|| "unknown/unknown/unknown".to_owned());
+                transaction.execute(
+                    "INSERT INTO embedding_records(
+                        id, source_type, source_id, chunk_index, model,
+                        dimensions, vector_blob, content_sha256
+                     ) VALUES (?1, ?2, ?3, 0, ?4, ?5, ?6, ?7)
+                     ON CONFLICT(source_type, source_id, chunk_index, model) DO UPDATE SET
+                        dimensions = excluded.dimensions,
+                        vector_blob = excluded.vector_blob,
+                        content_sha256 = excluded.content_sha256,
+                        created_at = datetime('now')",
+                    params![
+                        format!("embedding_{}", Uuid::new_v4().simple()),
+                        source_type,
+                        source_id,
+                        model,
+                        values.len() as i64,
+                        vector_blob,
+                        content_sha256
+                    ],
+                )?;
+            }
         }
         if state.status.as_str() == "waiting_for_tools" {
             let pending = state
@@ -1962,6 +2611,36 @@ impl Database {
     }
 }
 
+fn decode_embedding(blob: &[u8], dimensions: i64) -> Result<Vec<f64>, AppError> {
+    let expected = usize::try_from(dimensions)
+        .ok()
+        .and_then(|value| value.checked_mul(8))
+        .ok_or_else(|| AppError::BrokerContract("dimensiones de embedding inválidas".to_owned()))?;
+    if blob.len() != expected {
+        return Err(AppError::BrokerContract(
+            "el vector almacenado no coincide con sus dimensiones".to_owned(),
+        ));
+    }
+    Ok(blob
+        .chunks_exact(8)
+        .map(|chunk| f64::from_le_bytes(chunk.try_into().expect("chunk de ocho bytes")))
+        .collect())
+}
+
+fn cosine_similarity(left: &[f64], right: &[f64]) -> f64 {
+    if left.len() != right.len() || left.is_empty() {
+        return f64::NAN;
+    }
+    let dot = left.iter().zip(right).map(|(a, b)| a * b).sum::<f64>();
+    let left_norm = left.iter().map(|value| value * value).sum::<f64>().sqrt();
+    let right_norm = right.iter().map(|value| value * value).sum::<f64>().sqrt();
+    if left_norm == 0.0 || right_norm == 0.0 {
+        f64::NAN
+    } else {
+        (dot / (left_norm * right_norm)).clamp(-1.0, 1.0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{ContextMessage, Database, ToolOutcomeRecord, INITIAL_MIGRATION};
@@ -2118,7 +2797,7 @@ mod tests {
     #[test]
     fn attachment_is_deduplicated_and_reused_across_conversations() {
         let database = test_database();
-        assert_eq!(database.schema_version().expect("version should load"), 3);
+        assert_eq!(database.schema_version().expect("version should load"), 4);
         let first_conversation = database
             .create_conversation("Primera", None)
             .expect("conversation should be created");
@@ -2216,7 +2895,7 @@ mod tests {
         drop(connection);
 
         let database = Database::open(&path).expect("database should upgrade");
-        assert_eq!(database.schema_version().expect("version should load"), 3);
+        assert_eq!(database.schema_version().expect("version should load"), 4);
         assert_eq!(
             database
                 .list_conversations()
@@ -2316,6 +2995,7 @@ mod tests {
                 "Resume el documento",
                 &serde_json::json!({}),
                 &context,
+                &[],
                 std::slice::from_ref(&attachment.id),
             )
             .expect("turn should be prepared");
@@ -2329,7 +3009,14 @@ mod tests {
             "execution_preset": "fast",
             "selection_mode": "automatic",
             "progress": {},
-            "result": {"result_markdown": "Resumen documentado"},
+            "result": {
+                "result_markdown": "Resumen documentado",
+                "model_used": {
+                    "provider": "lmstudio",
+                    "deployment": "local",
+                    "model": "modelo-prueba"
+                }
+            },
             "error": null
         }))
         .expect("task state should deserialize");
@@ -2347,6 +3034,13 @@ mod tests {
             .expect("assistant message should exist");
         assert_eq!(assistant.sources.len(), 1);
         assert_eq!(assistant.sources[0].title, "source.pdf");
+        assert_eq!(
+            assistant
+                .model_used
+                .as_ref()
+                .map(|model| model.model.as_str()),
+            Some("modelo-prueba")
+        );
         assert_eq!(
             assistant.sources[0].source_attachment_id.as_deref(),
             Some(attachment.id.as_str())
@@ -2375,6 +3069,7 @@ mod tests {
                 "Renombra este chat",
                 &serde_json::json!({}),
                 &context,
+                &[],
                 &[],
             )
             .expect("turn should be prepared");
@@ -2489,6 +3184,7 @@ mod tests {
                 &serde_json::json!({}),
                 &context,
                 &[],
+                &[],
             )
             .expect("pending turn should be persisted");
 
@@ -2501,6 +3197,311 @@ mod tests {
             Some(conversation.id.as_str())
         );
         assert_eq!(candidates[0].label, "Respuesta pendiente");
+        cleanup(&database);
+    }
+
+    #[test]
+    fn memory_is_opt_in_scoped_and_user_controllable() {
+        let database = test_database();
+        let general = database
+            .create_conversation("Chat general", None)
+            .expect("general conversation should exist");
+        let project = database
+            .create_project("Proyecto memoria", None)
+            .expect("project should exist");
+        let scoped = database
+            .create_conversation("Chat de proyecto", Some(&project.id))
+            .expect("scoped conversation should exist");
+        database
+            .create_memory_item("Responder en español", "preference", "normal", None)
+            .expect("global memory should be created");
+        database
+            .create_memory_item("El proyecto usa Rust", "fact", "normal", Some(&project.id))
+            .expect("project memory should be created");
+
+        assert!(database
+            .active_memories_for_conversation(&general.id)
+            .expect("disabled memory should load")
+            .is_empty());
+        database
+            .set_memory_enabled(true)
+            .expect("memory should enable");
+        let general_memories = database
+            .active_memories_for_conversation(&general.id)
+            .expect("global memory should load");
+        assert_eq!(general_memories.len(), 1);
+        let scoped_memories = database
+            .active_memories_for_conversation(&scoped.id)
+            .expect("scoped memories should load");
+        assert_eq!(scoped_memories.len(), 2);
+        let context = vec![ContextMessage {
+            message_id: "memory-context-user".to_owned(),
+            role: "user".to_owned(),
+            text: "Usa mi memoria".to_owned(),
+        }];
+        database
+            .prepare_chat_turn(
+                &scoped.id,
+                "memory-context-user",
+                "memory-context-assistant",
+                "memory-context-task",
+                "memory-context-key",
+                "Usa mi memoria",
+                &serde_json::json!({}),
+                &context,
+                &scoped_memories,
+                &[],
+            )
+            .expect("memory context should be traced");
+        let connection = database.connect().expect("connection should open");
+        let (strategy, memory_sources): (String, i64) = connection
+            .query_row(
+                "SELECT cs.strategy_version,
+                        (SELECT COUNT(*) FROM context_sources src
+                         WHERE src.snapshot_id = cs.id AND src.source_type = 'memory')
+                 FROM context_snapshots cs
+                 WHERE cs.broker_task_id = 'memory-context-task'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("memory snapshot should load");
+        assert_eq!(strategy, "window-memory-v1");
+        assert_eq!(memory_sources, 2);
+        drop(connection);
+
+        database
+            .set_memory_item_enabled(&general_memories[0].id, false)
+            .expect("item should disable");
+        assert!(database
+            .active_memories_for_conversation(&general.id)
+            .expect("disabled item should be omitted")
+            .is_empty());
+        database
+            .delete_memory_item(&general_memories[0].id)
+            .expect("item should delete");
+        assert_eq!(
+            database
+                .memory_overview()
+                .expect("overview should load")
+                .items
+                .len(),
+            1
+        );
+        cleanup(&database);
+    }
+
+    #[test]
+    fn completed_memory_embedding_is_stored_with_model_and_dimensions() {
+        let database = test_database();
+        let (memory_id, _) = database
+            .create_memory_item("Memoria vectorial", "fact", "normal", None)
+            .expect("memory should be created");
+        let request = serde_json::json!({
+            "inference_kind": "embedding",
+            "content": {
+                "prompt": "Memoria vectorial",
+                "metadata": {
+                    "source_type": "memory",
+                    "source_id": memory_id,
+                    "content_sha256": "memory-content-hash"
+                }
+            }
+        });
+        database
+            .prepare_broker_task("embedding-local-task", "embedding-key", &request)
+            .expect("embedding task should persist");
+        database
+            .mark_orphaned(
+                "embedding-local-task",
+                "Broker AI devolvió HTTP 422: contrato inválido",
+            )
+            .expect("failed submission should be recorded");
+        let failed_item = database
+            .memory_item(&memory_id)
+            .expect("memory should load");
+        assert_eq!(failed_item.embedding_status, "failed");
+        assert!(failed_item
+            .embedding_error
+            .as_deref()
+            .is_some_and(|error| error.contains("HTTP 422")));
+        let completed: TaskState = serde_json::from_value(serde_json::json!({
+            "task_id": "embedding-remote-task",
+            "status": "completed",
+            "request_id": "embedding-request",
+            "created_at": "2026-07-22T00:00:00Z",
+            "updated_at": "2026-07-22T00:00:01Z",
+            "execution_strategy": "single",
+            "execution_preset": "fast",
+            "selection_mode": "automatic",
+            "progress": {},
+            "result": {
+                "inference_kind": "embedding",
+                "embedding": [0.1, 0.2, 0.3],
+                "model_used": {
+                    "provider": "ollama",
+                    "deployment": "local",
+                    "model": "nomic-embed-text"
+                }
+            },
+            "error": null
+        }))
+        .expect("completed embedding state should deserialize");
+        database
+            .record_remote_state("embedding-local-task", &completed)
+            .expect("embedding should materialize");
+
+        let item = database
+            .memory_item(&memory_id)
+            .expect("memory should load");
+        assert_eq!(item.embedding_status, "ready");
+        assert_eq!(
+            item.embedding_model.as_deref(),
+            Some("ollama/local/nomic-embed-text")
+        );
+        let connection = database.connect().expect("connection should open");
+        let (dimensions, bytes): (i64, i64) = connection
+            .query_row(
+                "SELECT dimensions, length(vector_blob) FROM embedding_records
+                 WHERE source_type = 'memory' AND source_id = ?1",
+                params![memory_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("embedding record should exist");
+        assert_eq!(dimensions, 3);
+        assert_eq!(bytes, 24);
+        drop(connection);
+        cleanup(&database);
+    }
+
+    #[test]
+    fn semantic_memory_search_ranks_compatible_vectors_and_respects_scope() {
+        fn completed_embedding(task_id: &str, model: &str, vector: &[f64]) -> TaskState {
+            serde_json::from_value(serde_json::json!({
+                "task_id": task_id,
+                "status": "completed",
+                "request_id": format!("request-{task_id}"),
+                "created_at": "2026-07-22T00:00:00Z",
+                "updated_at": "2026-07-22T00:00:01Z",
+                "execution_strategy": "single",
+                "execution_preset": "fast",
+                "selection_mode": "automatic",
+                "progress": {},
+                "result": {
+                    "inference_kind": "embedding",
+                    "embedding": vector,
+                    "model_used": {
+                        "provider": "ollama",
+                        "deployment": "local",
+                        "model": model
+                    }
+                },
+                "error": null
+            }))
+            .expect("embedding state should deserialize")
+        }
+
+        fn store_memory_embedding(
+            database: &Database,
+            memory_id: &str,
+            task_id: &str,
+            model: &str,
+            vector: &[f64],
+        ) {
+            let request = serde_json::json!({
+                "inference_kind": "embedding",
+                "content": {"metadata": {
+                    "source_type": "memory",
+                    "source_id": memory_id,
+                    "content_sha256": format!("hash-{memory_id}")
+                }}
+            });
+            database
+                .prepare_broker_task(task_id, &format!("key-{task_id}"), &request)
+                .expect("memory embedding task should persist");
+            database
+                .record_remote_state(task_id, &completed_embedding(task_id, model, vector))
+                .expect("memory embedding should materialize");
+        }
+
+        let database = test_database();
+        let project = database
+            .create_project("TFM", None)
+            .expect("project should be created");
+        let other_project = database
+            .create_project("Otro", None)
+            .expect("other project should be created");
+        let (global_id, _) = database
+            .create_memory_item("Prefiero respuestas breves", "preference", "normal", None)
+            .expect("global memory should be created");
+        let (scoped_id, _) = database
+            .create_memory_item(
+                "El TFM usa arquitectura durable",
+                "fact",
+                "normal",
+                Some(&project.id),
+            )
+            .expect("scoped memory should be created");
+        let (other_id, _) = database
+            .create_memory_item(
+                "Recuerdo de otro proyecto",
+                "fact",
+                "normal",
+                Some(&other_project.id),
+            )
+            .expect("other memory should be created");
+        let (different_model_id, _) = database
+            .create_memory_item("Modelo incompatible", "fact", "normal", None)
+            .expect("incompatible memory should be created");
+        store_memory_embedding(&database, &global_id, "task-global", "nomic", &[1.0, 0.0]);
+        store_memory_embedding(&database, &scoped_id, "task-scoped", "nomic", &[0.8, 0.2]);
+        store_memory_embedding(&database, &other_id, "task-other", "nomic", &[1.0, 0.0]);
+        store_memory_embedding(
+            &database,
+            &different_model_id,
+            "task-different-model",
+            "other-model",
+            &[1.0, 0.0],
+        );
+
+        let search_id = "memory-search-test";
+        let search_task_id = "memory-search-task";
+        let request = serde_json::json!({
+            "inference_kind": "embedding",
+            "content": {"metadata": {
+                "source_type": "memory_search",
+                "source_id": search_id,
+                "content_sha256": "search-hash"
+            }}
+        });
+        database
+            .prepare_memory_search(
+                search_id,
+                "respuestas concisas",
+                Some(&project.id),
+                search_task_id,
+                "memory-search-key",
+                &request,
+            )
+            .expect("search should persist atomically");
+        database
+            .record_remote_state(
+                search_task_id,
+                &completed_embedding(search_task_id, "nomic", &[1.0, 0.0]),
+            )
+            .expect("search embedding should materialize");
+
+        let search = database
+            .memory_search(search_id)
+            .expect("search should load");
+        assert_eq!(search.status, "completed");
+        assert_eq!(search.results.len(), 2);
+        assert_eq!(search.results[0].memory_id, global_id);
+        assert_eq!(search.results[1].memory_id, scoped_id);
+        assert!(search.results[0].score > search.results[1].score);
+        assert!(search
+            .results
+            .iter()
+            .all(|result| result.memory_id != other_id && result.memory_id != different_model_id));
         cleanup(&database);
     }
 }

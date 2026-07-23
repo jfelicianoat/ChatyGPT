@@ -28,7 +28,7 @@ export type BootstrapReport = {
 };
 
 export type RecoveryItemView = {
-  kind: "task";
+  kind: "task" | "embedding";
   label: string;
   status: string;
   conversationId?: string;
@@ -62,12 +62,53 @@ export type BrokerDiagnostic = {
 
 export type AuditEventView = {
   id: number;
-  category: "project" | "conversation" | "attachment" | "task" | "tool" | "export" | "system";
+  category: "project" | "conversation" | "attachment" | "task" | "tool" | "export" | "memory" | "system";
   summary: string;
   severity: "info" | "warning" | "error";
   actor: string;
   conversationTitle?: string;
   occurredAt: string;
+};
+
+export type MemoryItemView = {
+  id: string;
+  projectId?: string;
+  projectName?: string;
+  category: "preference" | "instruction" | "fact";
+  content: string;
+  sensitivity: "normal" | "sensitive";
+  enabled: boolean;
+  embeddingStatus: "missing" | "indexing" | "ready" | "failed";
+  embeddingModel?: string;
+  embeddingError?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type MemoryOverview = {
+  enabled: boolean;
+  items: MemoryItemView[];
+};
+
+export type MemorySearchResultView = {
+  memoryId: string;
+  content: string;
+  category: "preference" | "instruction" | "fact";
+  projectName?: string;
+  sensitivity: "normal" | "sensitive";
+  score: number;
+  reason: string;
+};
+
+export type MemorySearchView = {
+  id: string;
+  query: string;
+  projectId?: string;
+  status: "searching" | "completed" | "failed";
+  model?: string;
+  error?: string;
+  results: MemorySearchResultView[];
+  createdAt: string;
 };
 
 export type LocalTaskSnapshot = {
@@ -114,6 +155,15 @@ export const canSendMessage = ({
 }): boolean =>
   hasConversation && hasText && attachmentsReady && !attachmentBusy && !turnBlocking;
 
+export const shouldOfferSandboxForPrompt = (text: string): boolean => {
+  const normalized = text
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .toLowerCase();
+  return /\b(ejecuta|ejecutar|ejecutalo|corre|correr|compila|compilar|pruebalo|testea|testear|run|execute|compile)\b/.test(normalized) ||
+    /\b(run|execute)\s+(the\s+)?tests?\b/.test(normalized);
+};
+
 export type ConversationSummary = {
   id: string;
   title: string;
@@ -139,6 +189,11 @@ export type ConversationMessage = {
   taskLocalState?: string;
   text?: string;
   error?: Record<string, unknown>;
+  modelUsed?: {
+    provider: string;
+    deployment: string;
+    model: string;
+  };
   sources: ConversationSource[];
   createdAt: string;
 };

@@ -284,6 +284,7 @@ mod tests {
                 &serde_json::json!({}),
                 &context,
                 &[],
+                &[],
             )
             .expect("turn should be prepared");
         let destination = root.join("conversation.md");

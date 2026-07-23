@@ -4,6 +4,7 @@ import {
   isTaskBlockingConversation,
   isTaskPollingComplete,
   isTerminalTask,
+  shouldOfferSandboxForPrompt,
   type LocalTaskSnapshot
 } from "./domain";
 
@@ -49,5 +50,17 @@ describe("broker task state helpers", () => {
     expect(isTerminalTask(task("completed", "terminal"))).toBe(true);
     expect(isTaskPollingComplete(task("failed", "terminal"))).toBe(true);
     expect(isTaskBlockingConversation(task("not_submitted", "orphaned"))).toBe(false);
+  });
+});
+
+describe("sandbox intent", () => {
+  it("detects explicit requests to execute or test code", () => {
+    expect(shouldOfferSandboxForPrompt("Crea el programa, ejecútalo y pruébalo")).toBe(true);
+    expect(shouldOfferSandboxForPrompt("Run the tests for this Python script")).toBe(true);
+  });
+
+  it("does not interrupt ordinary programming questions", () => {
+    expect(shouldOfferSandboxForPrompt("Explícame qué hace este código")).toBe(false);
+    expect(shouldOfferSandboxForPrompt("¿Qué es una prueba de concepto?")).toBe(false);
   });
 });

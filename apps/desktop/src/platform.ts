@@ -9,6 +9,8 @@ import type {
   ExportPathSelection,
   ExportReport,
   LocalTaskSnapshot,
+  MemoryOverview,
+  MemorySearchView,
   ProjectSummary
 } from "./domain";
 
@@ -21,6 +23,43 @@ export const platform = {
   },
   listAuditEvents(): Promise<AuditEventView[]> {
     return invoke<AuditEventView[]>("list_audit_events");
+  },
+  getMemoryOverview(): Promise<MemoryOverview> {
+    return invoke<MemoryOverview>("get_memory_overview");
+  },
+  setMemoryEnabled(enabled: boolean): Promise<MemoryOverview> {
+    return invoke<MemoryOverview>("set_memory_enabled", { enabled });
+  },
+  createMemoryItem(
+    content: string,
+    category: "preference" | "instruction" | "fact",
+    sensitivity: "normal" | "sensitive",
+    projectId?: string
+  ): Promise<MemoryOverview> {
+    return invoke<MemoryOverview>("create_memory_item", {
+      content,
+      category,
+      sensitivity,
+      projectId
+    });
+  },
+  setMemoryItemEnabled(memoryId: string, enabled: boolean): Promise<MemoryOverview> {
+    return invoke<MemoryOverview>("set_memory_item_enabled", { memoryId, enabled });
+  },
+  deleteMemoryItem(memoryId: string): Promise<MemoryOverview> {
+    return invoke<MemoryOverview>("delete_memory_item", { memoryId, confirmed: true });
+  },
+  reindexMemoryItem(memoryId: string): Promise<MemoryOverview> {
+    return invoke<MemoryOverview>("reindex_memory_item", { memoryId });
+  },
+  startMemorySearch(query: string, projectId?: string): Promise<MemorySearchView> {
+    return invoke<MemorySearchView>("start_memory_search", { query, projectId });
+  },
+  getMemorySearch(searchId: string): Promise<MemorySearchView> {
+    return invoke<MemorySearchView>("get_memory_search", { searchId });
+  },
+  getLatestMemorySearch(): Promise<MemorySearchView | null> {
+    return invoke<MemorySearchView | null>("get_latest_memory_search");
   },
   startSmokeTask(): Promise<LocalTaskSnapshot> {
     return invoke<LocalTaskSnapshot>("start_smoke_task");

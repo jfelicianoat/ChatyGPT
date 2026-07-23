@@ -8,7 +8,7 @@ mod task_runtime;
 use broker::{BrokerClient, BrokerDiagnostic};
 use db::{
     AttachmentView, AuditEventView, ConversationSummary, ConversationView, Database,
-    LocalTaskSnapshot, ProjectSummary, RecoveryItemView,
+    LocalTaskSnapshot, MemoryOverview, MemorySearchView, ProjectSummary, RecoveryItemView,
 };
 use error::AppError;
 use serde::{Deserialize, Serialize};
@@ -200,6 +200,129 @@ fn list_projects(state: State<'_, AppState>) -> Result<Vec<ProjectSummary>, AppE
 #[tauri::command]
 fn list_audit_events(state: State<'_, AppState>) -> Result<Vec<AuditEventView>, AppError> {
     state.database.list_audit_events(50)
+}
+
+#[tauri::command]
+fn get_memory_overview(state: State<'_, AppState>) -> Result<MemoryOverview, AppError> {
+    state.database.memory_overview()
+}
+
+#[tauri::command]
+fn set_memory_enabled(
+    enabled: bool,
+    state: State<'_, AppState>,
+) -> Result<MemoryOverview, AppError> {
+    state.database.set_memory_enabled(enabled)
+}
+
+#[tauri::command]
+fn create_memory_item(
+    content: String,
+    category: String,
+    sensitivity: String,
+    project_id: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<MemoryOverview, AppError> {
+    let content = validated_text(&content, "El recuerdo", 2_000)?;
+    if !matches!(category.as_str(), "preference" | "instruction" | "fact") {
+        return Err(AppError::Validation(
+            "la categoría del recuerdo no es válida".to_owned(),
+        ));
+    }
+    if !matches!(sensitivity.as_str(), "normal" | "sensitive") {
+        return Err(AppError::Validation(
+            "la sensibilidad del recuerdo no es válida".to_owned(),
+        ));
+    }
+    let (memory_id, _) = state.database.create_memory_item(
+        &content,
+        &category,
+        &sensitivity,
+        project_id.as_deref(),
+    )?;
+    task_runtime::start_memory_embedding(
+        state.database.clone(),
+        state.broker.clone(),
+        &memory_id,
+        &content,
+        false,
+    )?;
+    state.database.memory_overview()
+}
+
+#[tauri::command]
+fn set_memory_item_enabled(
+    memory_id: String,
+    enabled: bool,
+    state: State<'_, AppState>,
+) -> Result<MemoryOverview, AppError> {
+    state.database.set_memory_item_enabled(&memory_id, enabled)
+}
+
+#[tauri::command]
+fn delete_memory_item(
+    memory_id: String,
+    confirmed: bool,
+    state: State<'_, AppState>,
+) -> Result<MemoryOverview, AppError> {
+    if !confirmed {
+        return Err(AppError::Validation(
+            "el borrado del recuerdo requiere confirmación".to_owned(),
+        ));
+    }
+    state.database.delete_memory_item(&memory_id)
+}
+
+#[tauri::command]
+fn reindex_memory_item(
+    memory_id: String,
+    state: State<'_, AppState>,
+) -> Result<MemoryOverview, AppError> {
+    let item = state.database.memory_item(&memory_id)?;
+    if item.embedding_status == "indexing" {
+        return Err(AppError::Conflict(
+            "el recuerdo ya se está indexando".to_owned(),
+        ));
+    }
+    state.database.clear_memory_embedding(&memory_id)?;
+    task_runtime::start_memory_embedding(
+        state.database.clone(),
+        state.broker.clone(),
+        &memory_id,
+        &item.content,
+        true,
+    )?;
+    state.database.memory_overview()
+}
+
+#[tauri::command]
+fn start_memory_search(
+    query: String,
+    project_id: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<MemorySearchView, AppError> {
+    let query = validated_text(&query, "La consulta", 500)?;
+    task_runtime::start_memory_search(
+        state.database.clone(),
+        state.broker.clone(),
+        &query,
+        project_id.as_deref(),
+    )
+}
+
+#[tauri::command]
+fn get_memory_search(
+    search_id: String,
+    state: State<'_, AppState>,
+) -> Result<MemorySearchView, AppError> {
+    state.database.memory_search(&search_id)
+}
+
+#[tauri::command]
+fn get_latest_memory_search(
+    state: State<'_, AppState>,
+) -> Result<Option<MemorySearchView>, AppError> {
+    state.database.latest_memory_search()
 }
 
 #[tauri::command]
@@ -490,6 +613,15 @@ pub fn run() {
             create_project,
             list_projects,
             list_audit_events,
+            get_memory_overview,
+            set_memory_enabled,
+            create_memory_item,
+            set_memory_item_enabled,
+            delete_memory_item,
+            reindex_memory_item,
+            start_memory_search,
+            get_memory_search,
+            get_latest_memory_search,
             rename_project,
             archive_project,
             pick_attachment_paths,

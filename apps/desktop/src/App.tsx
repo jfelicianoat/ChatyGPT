@@ -5,6 +5,7 @@ import {
   isTaskBlockingConversation,
   isTaskPollingComplete,
   isTerminalTask,
+  shouldOfferSandboxForPrompt,
   type BootstrapReport,
   type AttachmentView,
   type AuditEventView,
@@ -12,6 +13,8 @@ import {
   type ConversationSummary,
   type ConversationView,
   type LocalTaskSnapshot,
+  type MemoryOverview,
+  type MemorySearchView,
   type ProjectSummary
 } from "./domain";
 import { platform } from "./platform";
@@ -96,6 +99,7 @@ export function App() {
   const [bootstrap, setBootstrap] = useState<Loadable<BootstrapReport>>({ state: "loading" });
   const [broker, setBroker] = useState<Loadable<BrokerDiagnostic> | null>(null);
   const [auditEvents, setAuditEvents] = useState<Loadable<AuditEventView[]>>({ state: "loading" });
+  const [memory, setMemory] = useState<Loadable<MemoryOverview>>({ state: "loading" });
   const [smokeTask, setSmokeTask] = useState<Loadable<LocalTaskSnapshot> | null>(null);
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
@@ -112,6 +116,7 @@ export function App() {
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [toolsEnabled, setToolsEnabled] = useState(false);
   const [sandboxEnabled, setSandboxEnabled] = useState(false);
+  const [sandboxSuggestionPending, setSandboxSuggestionPending] = useState(false);
   const [toolDecisions, setToolDecisions] = useState<Record<string, boolean>>({});
   const [toolDecisionBusy, setToolDecisionBusy] = useState(false);
   const [dialog, setDialog] = useState<DialogState | null>(null);
@@ -121,6 +126,14 @@ export function App() {
   const [exportBusy, setExportBusy] = useState(false);
   const [exportNotice, setExportNotice] = useState<string | null>(null);
   const [recoveryNoticeDismissed, setRecoveryNoticeDismissed] = useState(false);
+  const [memoryDraft, setMemoryDraft] = useState("");
+  const [memoryCategory, setMemoryCategory] = useState<"preference" | "instruction" | "fact">("preference");
+  const [memoryProjectId, setMemoryProjectId] = useState("global");
+  const [memorySensitive, setMemorySensitive] = useState(false);
+  const [memoryBusy, setMemoryBusy] = useState(false);
+  const [memorySearchQuery, setMemorySearchQuery] = useState("");
+  const [memorySearchProjectId, setMemorySearchProjectId] = useState("global");
+  const [memorySearch, setMemorySearch] = useState<Loadable<MemorySearchView> | null>(null);
   const currentTurn =
     conversation?.state === "ready" &&
     activeTurnConversationId === conversation.value.id
@@ -141,6 +154,11 @@ export function App() {
       setAuditEvents({ state: "ready", value: await platform.listAuditEvents() });
     } catch (error) {
       setAuditEvents({ state: "error", message: describeError(error) });
+    }
+    try {
+      setMemory({ state: "ready", value: await platform.getMemoryOverview() });
+    } catch (error) {
+      setMemory({ state: "error", message: describeError(error) });
     }
   };
 
@@ -183,6 +201,17 @@ export function App() {
           setAuditEvents({ state: "ready", value: await platform.listAuditEvents() });
         } catch (error) {
           setAuditEvents({ state: "error", message: describeError(error) });
+        }
+        try {
+          setMemory({ state: "ready", value: await platform.getMemoryOverview() });
+          const latestSearch = await platform.getLatestMemorySearch();
+          if (latestSearch) {
+            setMemorySearch({ state: "ready", value: latestSearch });
+            setMemorySearchQuery(latestSearch.query);
+            setMemorySearchProjectId(latestSearch.projectId ?? "global");
+          }
+        } catch (error) {
+          setMemory({ state: "error", message: describeError(error) });
         }
         if (items[0]) {
           await loadConversation(items[0].id);
@@ -281,6 +310,38 @@ export function App() {
   ]);
 
   useEffect(() => {
+    if (
+      memory.state !== "ready" ||
+      !memory.value.items.some((item) => item.embeddingStatus === "indexing")
+    ) {
+      return;
+    }
+    const interval = window.setInterval(() => {
+      platform.getMemoryOverview()
+        .then((value) => setMemory({ state: "ready", value }))
+        .catch((error) => setMemory({ state: "error", message: describeError(error) }));
+    }, 1_000);
+    return () => window.clearInterval(interval);
+  }, [
+    memory.state === "ready"
+      ? memory.value.items.map((item) => `${item.id}:${item.embeddingStatus}`).join("|")
+      : ""
+  ]);
+
+  useEffect(() => {
+    if (memorySearch?.state !== "ready" || memorySearch.value.status !== "searching") return;
+    const searchId = memorySearch.value.id;
+    const interval = window.setInterval(() => {
+      platform.getMemorySearch(searchId)
+        .then((value) => setMemorySearch({ state: "ready", value }))
+        .catch((error) => setMemorySearch({ state: "error", message: describeError(error) }));
+    }, 1_000);
+    return () => window.clearInterval(interval);
+  }, [
+    memorySearch?.state === "ready" ? `${memorySearch.value.id}:${memorySearch.value.status}` : ""
+  ]);
+
+  useEffect(() => {
     if (activeTurn?.state !== "ready" || isTaskPollingComplete(activeTurn.value)) {
       return;
     }
@@ -338,6 +399,16 @@ export function App() {
     attachmentBusy,
     turnBlocking: Boolean(currentTurnBlocks)
   });
+  const sandboxAvailable =
+    broker?.state === "ready" && broker.value.ready && Boolean(broker.value.sandboxRunCode);
+  const activeMemoryCount =
+    memory.state === "ready" && memory.value.enabled && conversation?.state === "ready"
+      ? memory.value.items.filter(
+          (item) =>
+            item.enabled &&
+            (!item.projectId || item.projectId === conversation.value.projectId)
+        ).length
+      : 0;
 
   async function importAttachmentPaths(conversationId: string, paths: string[]) {
     setAttachmentBusy(true);
@@ -405,6 +476,90 @@ export function App() {
     }
   };
 
+  const toggleMemory = async () => {
+    if (memory.state !== "ready") return;
+    setMemoryBusy(true);
+    try {
+      setMemory({ state: "ready", value: await platform.setMemoryEnabled(!memory.value.enabled) });
+      await refreshAuditEvents();
+    } catch (error) {
+      setMemory({ state: "error", message: describeError(error) });
+    } finally {
+      setMemoryBusy(false);
+    }
+  };
+
+  const createMemory = async () => {
+    if (!memoryDraft.trim()) return;
+    setMemoryBusy(true);
+    try {
+      const overview = await platform.createMemoryItem(
+        memoryDraft,
+        memoryCategory,
+        memorySensitive ? "sensitive" : "normal",
+        memoryProjectId === "global" ? undefined : memoryProjectId
+      );
+      setMemory({ state: "ready", value: overview });
+      setMemoryDraft("");
+      setMemorySensitive(false);
+      await refreshAuditEvents();
+    } catch (error) {
+      setMemory({ state: "error", message: describeError(error) });
+    } finally {
+      setMemoryBusy(false);
+    }
+  };
+
+  const toggleMemoryItem = async (memoryId: string, enabled: boolean) => {
+    setMemoryBusy(true);
+    try {
+      setMemory({ state: "ready", value: await platform.setMemoryItemEnabled(memoryId, enabled) });
+      await refreshAuditEvents();
+    } catch (error) {
+      setMemory({ state: "error", message: describeError(error) });
+    } finally {
+      setMemoryBusy(false);
+    }
+  };
+
+  const removeMemoryItem = async (memoryId: string) => {
+    if (!window.confirm("¿Eliminar este recuerdo de forma permanente?")) return;
+    setMemoryBusy(true);
+    try {
+      setMemory({ state: "ready", value: await platform.deleteMemoryItem(memoryId) });
+      await refreshAuditEvents();
+    } catch (error) {
+      setMemory({ state: "error", message: describeError(error) });
+    } finally {
+      setMemoryBusy(false);
+    }
+  };
+
+  const reindexMemoryItem = async (memoryId: string) => {
+    setMemoryBusy(true);
+    try {
+      setMemory({ state: "ready", value: await platform.reindexMemoryItem(memoryId) });
+    } catch (error) {
+      setMemory({ state: "error", message: describeError(error) });
+    } finally {
+      setMemoryBusy(false);
+    }
+  };
+
+  const runMemorySearch = async () => {
+    if (!memorySearchQuery.trim()) return;
+    setMemorySearch({ state: "loading" });
+    try {
+      const result = await platform.startMemorySearch(
+        memorySearchQuery,
+        memorySearchProjectId === "global" ? undefined : memorySearchProjectId
+      );
+      setMemorySearch({ state: "ready", value: result });
+    } catch (error) {
+      setMemorySearch({ state: "error", message: describeError(error) });
+    }
+  };
+
   const startSmokeTask = async () => {
     setSmokeTask({ state: "loading" });
     try {
@@ -453,10 +608,44 @@ export function App() {
     }
   };
 
-  const sendTurn = async () => {
+  const sendTurn = async (sandboxOverride?: boolean, skipSandboxSuggestion = false) => {
     if (!canSend || conversation?.state !== "ready") return;
     const conversationId = conversation.value.id;
     const text = draft;
+    const useSandbox = sandboxOverride ?? sandboxEnabled;
+    const requestsCodeExecution = shouldOfferSandboxForPrompt(text);
+    let sandboxCanRun = sandboxAvailable;
+    if (
+      !skipSandboxSuggestion &&
+      !useSandbox &&
+      requestsCodeExecution &&
+      broker?.state !== "ready"
+    ) {
+      try {
+        const diagnostic = await platform.diagnoseBroker();
+        setBroker({ state: "ready", value: diagnostic });
+        sandboxCanRun = diagnostic.ready && Boolean(diagnostic.sandboxRunCode);
+      } catch (error) {
+        setNavigationError(`No se pudo comprobar el entorno de código: ${describeError(error)}`);
+        return;
+      }
+    }
+    if (
+      !skipSandboxSuggestion &&
+      !useSandbox &&
+      requestsCodeExecution &&
+      sandboxCanRun
+    ) {
+      setSandboxSuggestionPending(true);
+      return;
+    }
+    if (!skipSandboxSuggestion && !useSandbox && requestsCodeExecution && !sandboxCanRun) {
+      setNavigationError(
+        "Has pedido ejecutar o probar código, pero el contenedor aislado no está disponible en Broker AI. El mensaje no se ha enviado."
+      );
+      return;
+    }
+    setSandboxSuggestionPending(false);
     setDraft("");
     setActiveTurn({ state: "loading" });
     setActiveTurnConversationId(conversationId);
@@ -467,7 +656,7 @@ export function App() {
         text,
         attachmentIds,
         toolsEnabled,
-        sandboxEnabled
+        useSandbox
       );
       setSandboxEnabled(false);
       setActiveTurn({ state: "ready", value: task });
@@ -476,6 +665,7 @@ export function App() {
     } catch (error) {
       setActiveTurn({ state: "error", message: describeError(error) });
       setDraft(text);
+      setSandboxEnabled(useSandbox);
     }
   };
 
@@ -855,6 +1045,11 @@ export function App() {
                     ) : message.error ? (
                       <div className="error">{JSON.stringify(message.error)}</div>
                     ) : null}
+                    {message.role === "assistant" && message.modelUsed && (
+                      <small className="message-model">
+                        Modelo: {message.modelUsed.provider} · {message.modelUsed.model}
+                      </small>
+                    )}
                     {message.sources.length > 0 && (
                       <section className="message-sources" aria-label="Fuentes usadas">
                         <h4>Fuentes usadas</h4>
@@ -994,7 +1189,10 @@ export function App() {
                 )}
                 <textarea
                   value={draft}
-                  onChange={(event) => setDraft(event.target.value)}
+                  onChange={(event) => {
+                    setDraft(event.target.value);
+                    setSandboxSuggestionPending(false);
+                  }}
                   onKeyDown={(event) => {
                     if (event.key === "Enter" && !event.shiftKey && canSend) {
                       event.preventDefault();
@@ -1010,11 +1208,34 @@ export function App() {
                     Este mensaje puede ejecutar Python en un contenedor desechable, sin red ni acceso a tus archivos. El permiso se desactiva al enviarlo.
                   </p>
                 )}
+                {sandboxSuggestionPending && (
+                  <div className="sandbox-suggestion" role="alert">
+                    <div>
+                      <strong>¿Quieres que ChatyGPT ejecute y pruebe el código?</strong>
+                      <span>Necesita permiso para usar el contenedor aislado durante este mensaje.</span>
+                    </div>
+                    <div className="task-actions">
+                      <button
+                        className="primary"
+                        onClick={() => void sendTurn(true, true)}
+                      >
+                        Permitir y enviar
+                      </button>
+                      <button
+                        className="secondary"
+                        onClick={() => void sendTurn(false, true)}
+                      >
+                        Enviar sin ejecutar
+                      </button>
+                    </div>
+                  </div>
+                )}
                 <div className="composer-footer">
                   <span>
                     Enter para enviar · Shift+Enter para nueva línea
                     {selectedAttachments.length > 0 &&
                       ` · ${selectedAttachments.length} adjunto(s) activo(s)`}
+                    {activeMemoryCount > 0 && ` · ${activeMemoryCount} recuerdo(s) activo(s)`}
                   </span>
                   <div className="task-actions">
                     <label className="tools-toggle" title="Permite que el modelo proponga acciones locales confirmables">
@@ -1056,7 +1277,7 @@ export function App() {
                       )}
                     <button
                       className="primary"
-                      onClick={sendTurn}
+                      onClick={() => void sendTurn()}
                       disabled={!canSend}
                     >
                       Enviar
@@ -1145,6 +1366,213 @@ export function App() {
                   {broker?.state === "error" && <p className="error">{broker.message}</p>}
                 </article>
               </div>
+
+              <section className="memory-card">
+                <div className="panel-heading">
+                  <div>
+                    <span className="kicker">Fase 2 · Contexto personal</span>
+                    <h3>Memoria</h3>
+                  </div>
+                  {memory.state === "ready" && (
+                    <button
+                      className={memory.value.enabled ? "secondary" : "primary"}
+                      onClick={toggleMemory}
+                      disabled={memoryBusy}
+                    >
+                      {memory.value.enabled ? "Desactivar memoria" : "Activar memoria"}
+                    </button>
+                  )}
+                </div>
+                <p className="muted">
+                  Solo se reutiliza lo que añadas aquí. ChatyGPT no crea recuerdos automáticamente.
+                </p>
+                {memory.state === "ready" && (
+                  <>
+                    <div className={`memory-status ${memory.value.enabled ? "enabled" : ""}`}>
+                      {memory.value.enabled
+                        ? "Memoria activa: los recuerdos habilitados se añadirán al contexto de los próximos mensajes."
+                        : "Memoria desactivada: ningún recuerdo se enviará al Broker."}
+                    </div>
+                    <div className="memory-form">
+                      <textarea
+                        value={memoryDraft}
+                        onChange={(event) => setMemoryDraft(event.target.value)}
+                        placeholder="Ejemplo: Prefiero respuestas breves y en español."
+                        rows={2}
+                        maxLength={2000}
+                        disabled={memoryBusy}
+                      />
+                      <div className="memory-form-controls">
+                        <select
+                          value={memoryCategory}
+                          onChange={(event) => setMemoryCategory(event.target.value as "preference" | "instruction" | "fact")}
+                          disabled={memoryBusy}
+                          aria-label="Categoría del recuerdo"
+                        >
+                          <option value="preference">Preferencia</option>
+                          <option value="instruction">Instrucción</option>
+                          <option value="fact">Dato</option>
+                        </select>
+                        <select
+                          value={memoryProjectId}
+                          onChange={(event) => setMemoryProjectId(event.target.value)}
+                          disabled={memoryBusy}
+                          aria-label="Ámbito del recuerdo"
+                        >
+                          <option value="global">Todos los chats</option>
+                          {projects.map((project) => (
+                            <option key={project.id} value={project.id}>{project.name}</option>
+                          ))}
+                        </select>
+                        <label className="memory-sensitive">
+                          <input
+                            type="checkbox"
+                            checked={memorySensitive}
+                            onChange={(event) => setMemorySensitive(event.target.checked)}
+                            disabled={memoryBusy}
+                          />
+                          Marcar como sensible
+                        </label>
+                        <button
+                          className="primary"
+                          onClick={createMemory}
+                          disabled={memoryBusy || !memoryDraft.trim()}
+                        >
+                          Guardar recuerdo
+                        </button>
+                      </div>
+                    </div>
+                    <div className="memory-search-box">
+                      <div>
+                        <span className="kicker">Prueba semántica</span>
+                        <h4>Buscar recuerdos por significado</h4>
+                        <p className="muted">
+                          Compara una frase con los recuerdos habilitados que ya tienen el índice preparado.
+                        </p>
+                      </div>
+                      <div className="memory-search-controls">
+                        <input
+                          value={memorySearchQuery}
+                          onChange={(event) => setMemorySearchQuery(event.target.value)}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter" && memorySearchQuery.trim()) {
+                              event.preventDefault();
+                              void runMemorySearch();
+                            }
+                          }}
+                          placeholder="Ejemplo: ¿Cómo prefiere el usuario las respuestas?"
+                          maxLength={500}
+                          disabled={memorySearch?.state === "loading" || (memorySearch?.state === "ready" && memorySearch.value.status === "searching")}
+                        />
+                        <select
+                          value={memorySearchProjectId}
+                          onChange={(event) => setMemorySearchProjectId(event.target.value)}
+                          aria-label="Ámbito de la búsqueda semántica"
+                          disabled={memorySearch?.state === "loading" || (memorySearch?.state === "ready" && memorySearch.value.status === "searching")}
+                        >
+                          <option value="global">Todos los chats</option>
+                          {projects.map((project) => (
+                            <option key={project.id} value={project.id}>{project.name}</option>
+                          ))}
+                        </select>
+                        <button
+                          className="secondary"
+                          onClick={runMemorySearch}
+                          disabled={!memorySearchQuery.trim() || memorySearch?.state === "loading" || (memorySearch?.state === "ready" && memorySearch.value.status === "searching")}
+                        >
+                          {memorySearch?.state === "loading" || (memorySearch?.state === "ready" && memorySearch.value.status === "searching")
+                            ? "Buscando…"
+                            : "Buscar"}
+                        </button>
+                      </div>
+                      {memorySearch?.state === "error" && <p className="error">{memorySearch.message}</p>}
+                      {memorySearch?.state === "ready" && memorySearch.value.status === "failed" && (
+                        <p className="error">No se pudo completar la búsqueda: {memorySearch.value.error ?? "error desconocido"}</p>
+                      )}
+                      {memorySearch?.state === "ready" && memorySearch.value.status === "completed" && (
+                        <div className="memory-search-results">
+                          <small>Modelo local: {memorySearch.value.model ?? "no identificado"}</small>
+                          {memorySearch.value.results.length === 0 ? (
+                            <p className="activity-empty">No hay coincidencias suficientes en este ámbito.</p>
+                          ) : memorySearch.value.results.map((result) => (
+                            <article key={result.memoryId}>
+                              <div className="memory-search-result-heading">
+                                <strong>{Math.round(result.score * 100)}% · {result.reason}</strong>
+                                <span>{result.projectName ?? "Todos los chats"}</span>
+                              </div>
+                              <p>{result.content}</p>
+                            </article>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    {memory.value.items.length === 0 ? (
+                      <p className="activity-empty">Todavía no has guardado recuerdos.</p>
+                    ) : (
+                      <div className="memory-list">
+                        {memory.value.items.map((item) => (
+                          <article className={`memory-item ${item.enabled ? "" : "disabled"}`} key={item.id}>
+                            <div className="memory-item-copy">
+                              <div className="memory-badges">
+                                <span>{item.category === "preference" ? "Preferencia" : item.category === "instruction" ? "Instrucción" : "Dato"}</span>
+                                <span>{item.projectName ?? "Todos los chats"}</span>
+                                {item.sensitivity === "sensitive" && <span className="sensitive">Sensible</span>}
+                                <span
+                                  className={`embedding ${item.embeddingStatus}`}
+                                  title={item.embeddingModel ?? "Índice semántico local"}
+                                >
+                                  {item.embeddingStatus === "ready"
+                                    ? "Índice preparado"
+                                    : item.embeddingStatus === "indexing"
+                                      ? "Indexando…"
+                                      : item.embeddingStatus === "failed"
+                                        ? "Error de índice"
+                                        : "Sin índice"}
+                                </span>
+                              </div>
+                              <p>{item.content}</p>
+                              {item.embeddingStatus === "failed" && item.embeddingError && (
+                                <small className="memory-index-error">
+                                  No se pudo indexar: {item.embeddingError}
+                                </small>
+                              )}
+                            </div>
+                            <div className="memory-actions">
+                              <label>
+                                <input
+                                  type="checkbox"
+                                  checked={item.enabled}
+                                  onChange={(event) => toggleMemoryItem(item.id, event.target.checked)}
+                                  disabled={memoryBusy}
+                                />
+                                Usar
+                              </label>
+                              <button
+                                className="danger-text"
+                                onClick={() => removeMemoryItem(item.id)}
+                                disabled={memoryBusy}
+                              >
+                                Eliminar
+                              </button>
+                              {item.embeddingStatus !== "ready" && item.embeddingStatus !== "indexing" && (
+                                <button
+                                  className="secondary"
+                                  onClick={() => reindexMemoryItem(item.id)}
+                                  disabled={memoryBusy}
+                                >
+                                  Indexar
+                                </button>
+                              )}
+                            </div>
+                          </article>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                )}
+                {memory.state === "loading" && <p className="muted">Cargando memoria…</p>}
+                {memory.state === "error" && <p className="error">{memory.message}</p>}
+              </section>
 
               <section className="task-card">
                 <div className="panel-heading">

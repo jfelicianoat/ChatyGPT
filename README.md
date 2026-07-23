@@ -5,7 +5,7 @@ sin acoplar la interfaz a su API HTTP.
 
 ## Estado
 
-Fase 1 en curso. La base durable y el primer corte de organización local incluyen:
+Fase 2 en curso. La base durable de Fase 1 y el primer corte de memoria incluyen:
 
 - shell Tauri 2 + React + TypeScript;
 - SQLite local con migración inicial y recuperación de tareas activas;
@@ -31,10 +31,21 @@ Fase 1 en curso. La base durable y el primer corte de organización local incluy
 - escritura atómica, comprobación SHA-256, detección de cambios externos y auditoría del exportado;
 - ejecución opcional de Python en el sandbox desechable de Broker AI, habilitada para un solo turno;
 - comprobación redundante de la capacidad `sandbox_run_code` antes de persistir y enviar la tarea;
+- aviso explícito cuando el mensaje pide ejecutar o probar código sin haber concedido todavía el permiso;
+- selección mixta entre Ollama/LM Studio locales y proveedores cloud habilitados en AI Broker, con coste máximo cero;
+- protección automática que conserva en local los turnos que incorporan recuerdos marcados como sensibles;
+- proveedor y modelo utilizados visibles debajo de cada respuesta;
 - inspector de actividad reciente con descripciones legibles y severidad visual;
 - proyección segura de auditoría que excluye prompts, tokens, rutas, hashes y JSON técnico;
 - aviso global de recuperación al reiniciar, con recuento de tareas y adjuntos reanudados;
 - acceso directo desde el aviso a cada conversación recuperada;
+- memoria personal desactivada por defecto y activable explícitamente desde Inicio;
+- recuerdos manuales globales o limitados a un proyecto, con control individual y borrado;
+- inclusión trazable de los recuerdos aprobados en el snapshot exacto de cada turno;
+- indexación durable de recuerdos mediante embeddings locales de AI Broker;
+- estado visible `Indexando`, `Índice preparado`, `Sin índice` o `Error de índice`, con reintento manual;
+- probador de búsqueda semántica local con ámbito, puntuación, motivo y recuerdo original visibles;
+- consultas semánticas durables que se recuperan tras reiniciar y solo comparan vectores compatibles;
 - fixture contractual local-only y sin coste cloud;
 - pruebas ejecutables con la biblioteca estándar de Python.
 
@@ -109,4 +120,5 @@ Credential Manager o Stronghold, tras decidir el modelo de desbloqueo.
 - [Arquitectura y plan](docs/ARCHITECTURE.md)
 - [Evidencias de Fase 0](docs/PHASE_0_VERIFICATION.md)
 - [Evidencias de Fase 1](docs/PHASE_1_VERIFICATION.md)
+- [Evidencias de Fase 2](docs/PHASE_2_VERIFICATION.md)
 - [Contrato local AI Broker 2.5](contracts/broker/2.5/single-task.request.json)
