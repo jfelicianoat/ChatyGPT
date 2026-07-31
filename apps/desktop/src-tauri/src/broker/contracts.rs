@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -8,6 +9,7 @@ pub enum TaskStatus {
     Routing,
     Planning,
     ResourcePlanning,
+    Converting,
     Chunking,
     Generating,
     Proposing,
@@ -15,10 +17,13 @@ pub enum TaskStatus {
     Debating,
     Synthesizing,
     Verifying,
+    WaitingForMemory,
     WaitingForTools,
     Completed,
     Failed,
     Cancelled,
+    #[serde(other)]
+    Unknown,
 }
 
 impl TaskStatus {
@@ -32,6 +37,7 @@ impl TaskStatus {
             Self::Routing => "routing",
             Self::Planning => "planning",
             Self::ResourcePlanning => "resource_planning",
+            Self::Converting => "converting",
             Self::Chunking => "chunking",
             Self::Generating => "generating",
             Self::Proposing => "proposing",
@@ -39,10 +45,12 @@ impl TaskStatus {
             Self::Debating => "debating",
             Self::Synthesizing => "synthesizing",
             Self::Verifying => "verifying",
+            Self::WaitingForMemory => "waiting_for_memory",
             Self::WaitingForTools => "waiting_for_tools",
             Self::Completed => "completed",
             Self::Failed => "failed",
             Self::Cancelled => "cancelled",
+            Self::Unknown => "working",
         }
     }
 }
@@ -61,24 +69,37 @@ pub struct TaskAccepted {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskState {
     pub task_id: String,
+    #[serde(default)]
+    pub kind: Option<String>,
     pub status: TaskStatus,
     pub request_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
-    pub execution_strategy: String,
-    pub execution_preset: String,
-    pub selection_mode: String,
+    #[serde(default)]
+    pub execution_strategy: Option<String>,
+    #[serde(default)]
+    pub execution_preset: Option<String>,
+    #[serde(default)]
+    pub selection_mode: Option<String>,
     #[serde(default)]
     pub progress: Value,
     pub result: Option<Value>,
     pub error: Option<Value>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct BrokerCapabilities {
     pub contract_version: String,
     #[serde(default)]
+    pub derived_data_boundary: bool,
+    #[serde(default)]
+    pub work_lanes: Vec<String>,
+    #[serde(default)]
     pub strategies: Vec<String>,
+    #[serde(default)]
+    pub presets: Value,
+    #[serde(default)]
+    pub scheduling_by_preset: Value,
     #[serde(default)]
     pub agent_skills: Vec<String>,
     #[serde(default)]
@@ -86,9 +107,113 @@ pub struct BrokerCapabilities {
     #[serde(default)]
     pub file_ingestion: bool,
     #[serde(default)]
-    pub ingestion_formats: Vec<String>,
+    pub ingestion_formats: HashMap<String, Vec<String>>,
+    #[serde(default)]
+    pub long_context_map_reduce: bool,
+    #[serde(default)]
+    pub max_active_workflows: Option<u64>,
     #[serde(default)]
     pub client_tool_passthrough: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BrokerCapabilities, TaskState, TaskStatus};
+
+    #[test]
+    fn contract_2_6_accepts_ingestion_states_with_nullable_execution_fields() {
+        let state: TaskState = serde_json::from_value(serde_json::json!({
+            "task_id": "task-ingestion",
+            "kind": "ingestion",
+            "status": "converting",
+            "request_id": null,
+            "created_at": "2026-07-26T10:00:00Z",
+            "updated_at": "2026-07-26T10:00:01Z",
+            "execution_strategy": null,
+            "execution_preset": null,
+            "selection_mode": null,
+            "progress": {"phase": "converting"},
+            "result": null,
+            "error": null
+        }))
+        .expect("2.6 ingestion state should deserialize");
+
+        assert!(matches!(state.status, TaskStatus::Converting));
+        assert_eq!(state.kind.as_deref(), Some("ingestion"));
+        assert!(state.execution_strategy.is_none());
+    }
+
+    #[test]
+    fn contract_2_6_discovers_data_boundary_lanes_and_long_context() {
+        let capabilities: BrokerCapabilities = serde_json::from_value(serde_json::json!({
+            "contract_version": "2.6",
+            "derived_data_boundary": true,
+            "work_lanes": ["inference", "ingestion"],
+            "strategies": ["single", "agent", "auto"],
+            "long_context_map_reduce": true,
+            "max_active_workflows": 1
+        }))
+        .expect("2.6 capabilities should deserialize");
+
+        assert!(capabilities.derived_data_boundary);
+        assert_eq!(capabilities.work_lanes, ["inference", "ingestion"]);
+        assert!(capabilities.long_context_map_reduce);
+        assert_eq!(capabilities.max_active_workflows, Some(1));
+    }
+
+    #[test]
+    fn contract_accepts_grouped_ingestion_formats_and_additive_fields() {
+        let capabilities = serde_json::from_value::<BrokerCapabilities>(serde_json::json!({
+            "contract_version": "2.7",
+            "file_ingestion": true,
+            "ingestion_formats": {
+                "documents": ["pdf", "docx"],
+                "tabular": ["csv", "tsv", "xlsx"]
+            },
+            "future_capability": {
+                "enabled": true
+            }
+        }));
+
+        let capabilities = capabilities
+            .expect("grouped ingestion_formats must follow the Broker capabilities contract");
+        assert_eq!(capabilities.ingestion_formats["documents"], ["pdf", "docx"]);
+        assert_eq!(
+            capabilities.ingestion_formats["tabular"],
+            ["csv", "tsv", "xlsx"]
+        );
+    }
+
+    #[test]
+    fn contract_2_7_treats_memory_wait_as_non_terminal() {
+        let state: TaskState = serde_json::from_value(serde_json::json!({
+            "task_id": "task-memory-wait",
+            "kind": "inference",
+            "status": "waiting_for_memory",
+            "request_id": "request-memory-wait",
+            "created_at": "2026-07-28T10:00:00Z",
+            "updated_at": "2026-07-28T10:00:01Z",
+            "execution_strategy": "single",
+            "execution_preset": "fast",
+            "selection_mode": "auto",
+            "progress": {"phase": "waiting_for_memory"},
+            "result": null,
+            "error": null
+        }))
+        .expect("2.7 memory wait state should deserialize");
+
+        assert_eq!(state.status.as_str(), "waiting_for_memory");
+        assert!(!state.status.is_terminal());
+    }
+
+    #[test]
+    fn unknown_intermediate_task_states_remain_pollable() {
+        let status: TaskStatus =
+            serde_json::from_str("\"future_planning_stage\"").expect("unknown state should parse");
+
+        assert!(!status.is_terminal());
+        assert_eq!(status.as_str(), "working");
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

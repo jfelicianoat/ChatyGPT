@@ -1,0 +1,26 @@
+{
+  "contract_version": "2.7",
+  "derived_data_boundary": true,
+  "work_lanes": [
+    "inference",
+    "ingestion"
+  ],
+  "strategies": [
+    "single",
+    "agent"
+  ],
+  "file_ingestion": true,
+  "ingestion_formats": {
+    "documents": [
+      "pdf",
+      "docx"
+    ],
+    "tabular": [
+      "csv",
+      "tsv",
+      "xlsx"
+    ]
+  },
+  "sandbox_run_code": true,
+  "long_context_map_reduce": true
+}

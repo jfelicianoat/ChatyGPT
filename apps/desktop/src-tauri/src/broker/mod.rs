@@ -11,6 +11,8 @@ pub use contracts::{BrokerCapabilities, FileAccepted, FileState, TaskAccepted, T
 
 use crate::error::AppError;
 
+const DEFAULT_BROKER_BASE_URL: &str = "http://192.168.1.52:8765";
+
 #[derive(Clone)]
 pub struct BrokerClient {
     base_url: Url,
@@ -26,8 +28,14 @@ pub struct BrokerDiagnostic {
     pub base_url: String,
     pub contract_version: Option<String>,
     pub strategies: Vec<String>,
+    pub presets: Value,
+    pub derived_data_boundary: Option<bool>,
+    pub work_lanes: Vec<String>,
+    pub agent_skills: Vec<String>,
     pub sandbox_run_code: Option<bool>,
     pub file_ingestion: Option<bool>,
+    pub long_context_map_reduce: Option<bool>,
+    pub max_active_workflows: Option<u64>,
     pub latency_ms: u128,
     pub message: String,
 }
@@ -35,7 +43,7 @@ pub struct BrokerDiagnostic {
 impl BrokerClient {
     pub fn from_environment() -> Result<Self, AppError> {
         let raw_url = std::env::var("CHATYGPT_BROKER_BASE_URL")
-            .unwrap_or_else(|_| "http://127.0.0.1:8765".to_owned());
+            .unwrap_or_else(|_| DEFAULT_BROKER_BASE_URL.to_owned());
         let mut base_url =
             Url::parse(&raw_url).map_err(|error| AppError::InvalidBrokerUrl(error.to_string()))?;
         if !matches!(base_url.scheme(), "http" | "https") {
@@ -66,6 +74,10 @@ impl BrokerClient {
             http,
             admin_token,
         })
+    }
+
+    pub fn base_url(&self) -> String {
+        self.base_url.as_str().trim_end_matches('/').to_owned()
     }
 
     fn endpoint(&self, path: &str) -> Result<Url, AppError> {
@@ -193,6 +205,42 @@ impl BrokerClient {
         Self::decode(response).await
     }
 
+    pub async fn download_text(&self, location: &str) -> Result<String, AppError> {
+        let url = match Url::parse(location) {
+            Ok(url) if matches!(url.scheme(), "http" | "https") => url,
+            Ok(_) => {
+                return Err(AppError::InvalidBrokerUrl(
+                    "la URL del texto convertido no usa HTTP o HTTPS".to_owned(),
+                ))
+            }
+            Err(url::ParseError::RelativeUrlWithoutBase) => self.endpoint(location)?,
+            Err(error) => return Err(AppError::InvalidBrokerUrl(error.to_string())),
+        };
+        let response = self
+            .authorize(self.http.get(url))
+            .send()
+            .await
+            .map_err(|error| AppError::BrokerTransport(error.to_string()))?;
+        let status = response.status();
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|error| AppError::BrokerTransport(error.to_string()))?;
+        if !status.is_success() {
+            return Err(AppError::BrokerResponse {
+                status: status.as_u16(),
+                message: String::from_utf8_lossy(&bytes).into_owned(),
+            });
+        }
+        if bytes.len() > 64 * 1024 * 1024 {
+            return Err(AppError::BrokerContract(
+                "el texto convertido supera el límite local de 64 MB".to_owned(),
+            ));
+        }
+        String::from_utf8(bytes.to_vec())
+            .map_err(|_| AppError::BrokerContract("el texto convertido no es UTF-8".to_owned()))
+    }
+
     pub async fn get_task(&self, task_id: &str) -> Result<TaskState, AppError> {
         let path = format!("/api/v1/tasks/{task_id}");
         let response = self
@@ -238,8 +286,14 @@ impl BrokerClient {
                     base_url: self.base_url.to_string(),
                     contract_version: None,
                     strategies: vec![],
+                    presets: Value::Null,
+                    derived_data_boundary: None,
+                    work_lanes: vec![],
+                    agent_skills: vec![],
                     sandbox_run_code: None,
                     file_ingestion: None,
+                    long_context_map_reduce: None,
+                    max_active_workflows: None,
                     latency_ms: started.elapsed().as_millis(),
                     message: error.to_string(),
                 };
@@ -255,8 +309,14 @@ impl BrokerClient {
                     base_url: self.base_url.to_string(),
                     contract_version: Some(capabilities.contract_version),
                     strategies: capabilities.strategies,
+                    presets: capabilities.presets,
+                    derived_data_boundary: Some(capabilities.derived_data_boundary),
+                    work_lanes: capabilities.work_lanes,
+                    agent_skills: capabilities.agent_skills,
                     sandbox_run_code: Some(capabilities.sandbox_run_code),
                     file_ingestion: Some(capabilities.file_ingestion),
+                    long_context_map_reduce: Some(capabilities.long_context_map_reduce),
+                    max_active_workflows: capabilities.max_active_workflows,
                     latency_ms,
                     message: "Broker AI está listo".to_owned(),
                 },
@@ -266,8 +326,14 @@ impl BrokerClient {
                     base_url: self.base_url.to_string(),
                     contract_version: None,
                     strategies: vec![],
+                    presets: Value::Null,
+                    derived_data_boundary: None,
+                    work_lanes: vec![],
+                    agent_skills: vec![],
                     sandbox_run_code: None,
                     file_ingestion: None,
+                    long_context_map_reduce: None,
+                    max_active_workflows: None,
                     latency_ms,
                     message: format!("Broker accesible, capacidades no verificadas: {error}"),
                 },
@@ -278,8 +344,14 @@ impl BrokerClient {
                 base_url: self.base_url.to_string(),
                 contract_version: None,
                 strategies: vec![],
+                presets: Value::Null,
+                derived_data_boundary: None,
+                work_lanes: vec![],
+                agent_skills: vec![],
                 sandbox_run_code: None,
                 file_ingestion: None,
+                long_context_map_reduce: None,
+                max_active_workflows: None,
                 latency_ms,
                 message: if response.status() == StatusCode::SERVICE_UNAVAILABLE {
                     "Broker AI responde, pero no está listo".to_owned()
@@ -293,8 +365,14 @@ impl BrokerClient {
                 base_url: self.base_url.to_string(),
                 contract_version: None,
                 strategies: vec![],
+                presets: Value::Null,
+                derived_data_boundary: None,
+                work_lanes: vec![],
+                agent_skills: vec![],
                 sandbox_run_code: None,
                 file_ingestion: None,
+                long_context_map_reduce: None,
+                max_active_workflows: None,
                 latency_ms,
                 message: format!("Broker AI no está accesible: {error}"),
             },

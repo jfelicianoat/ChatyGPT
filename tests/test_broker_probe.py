@@ -33,12 +33,21 @@ class ContractHandler(BaseHTTPRequestHandler):
             return self.send_json(
                 200,
                 {
-                    "contract_version": "2.5",
+                    "contract_version": "2.7",
+                    "derived_data_boundary": True,
+                    "work_lanes": ["inference", "ingestion"],
                     "strategies": ["single", "agent"],
                     "file_ingestion": True,
+                    "ingestion_formats": {
+                        "documents": ["pdf", "docx"],
+                        "tabular": ["csv", "xlsx"],
+                    },
                     "sandbox_run_code": False,
+                    "long_context_map_reduce": True,
                 },
             )
+        if self.path == "/api/v1/queue":
+            return self.send_json(200, {"items": []})
         if self.path.startswith("/api/v1/models/availability"):
             return self.send_json(
                 200,
@@ -63,6 +72,7 @@ class ContractHandler(BaseHTTPRequestHandler):
                     "/api/v1/files": {"post"},
                     "/api/v1/files/{file_id}": {"get"},
                     "/api/v1/capabilities": {"get"},
+                    "/api/v1/queue": {"get"},
                     "/health/ready": {"get"},
                 }.items()
             }
@@ -77,8 +87,9 @@ class ContractHandler(BaseHTTPRequestHandler):
                             "TaskStatus": {
                                 "enum": [
                                     "queued", "routing", "planning", "resource_planning",
-                                    "chunking", "generating", "proposing", "evaluating",
-                                    "debating", "synthesizing", "verifying", "waiting_for_tools",
+                                    "converting", "chunking", "generating", "proposing", "evaluating",
+                                    "debating", "synthesizing", "verifying", "waiting_for_memory",
+                                    "waiting_for_tools",
                                     "completed", "failed", "cancelled",
                                 ]
                             }
@@ -138,10 +149,10 @@ class BrokerProbeTests(unittest.TestCase):
     def test_payload_is_local_and_cost_bounded(self) -> None:
         payload = smoke_payload("stable")
         self.assertEqual("local_only", payload["risk"]["data_classification"])
-        self.assertFalse(payload["model_requirements"]["cloud_allowed"])
+        self.assertNotIn("cloud_allowed", payload["model_requirements"])
+        self.assertNotIn("human_review_required", payload["risk"])
         self.assertEqual(0, payload["model_requirements"]["max_cost_usd"])
 
 
 if __name__ == "__main__":
     unittest.main()
-

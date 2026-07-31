@@ -3,6 +3,7 @@ export const TASK_STATUSES = [
   "routing",
   "planning",
   "resource_planning",
+  "converting",
   "chunking",
   "generating",
   "proposing",
@@ -10,6 +11,7 @@ export const TASK_STATUSES = [
   "debating",
   "synthesizing",
   "verifying",
+  "waiting_for_memory",
   "waiting_for_tools",
   "completed",
   "failed",
@@ -25,6 +27,324 @@ export type BootstrapReport = {
   recoveredTasks: number;
   recoveredAttachments: number;
   recoveryItems: RecoveryItemView[];
+};
+
+export type WindowsStartupStatus = {
+  supported: boolean;
+  enabled: boolean;
+  credentialProtected: boolean;
+  message: string;
+};
+
+export type ScheduledRunView = {
+  id: string;
+  dueAt: string;
+  status: "claimed" | "running" | "completed" | "failed" | "cancelled" | "skipped";
+  brokerTaskId?: string;
+  attempt: number;
+  result?: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ScheduledTaskView = {
+  id: string;
+  name: string;
+  conversationId: string;
+  conversationTitle: string;
+  prompt: string;
+  scheduleExpression: "once" | "daily" | "weekly";
+  timezone: string;
+  enabled: boolean;
+  confirmedAt?: string;
+  nextRunAt?: string;
+  createdAt: string;
+  updatedAt: string;
+  runs: ScheduledRunView[];
+};
+
+export type ScheduledHistorySort = "newest" | "oldest";
+
+export type ScheduledRunPageView = {
+  items: ScheduledRunView[];
+  total: number;
+  page: number;
+  pageSize: 10 | 25 | 50;
+  sort: ScheduledHistorySort;
+};
+
+export type ScheduledTaskTemplateView = {
+  id: string;
+  name: string;
+  prompt: string;
+  scheduleExpression: ScheduledTaskView["scheduleExpression"];
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ScheduledCalendarOccurrence = {
+  id: string;
+  taskId: string;
+  taskName: string;
+  conversationId: string;
+  conversationTitle: string;
+  startsAt: string;
+  scheduleExpression: ScheduledTaskView["scheduleExpression"];
+  timezone: string;
+  projected: boolean;
+  overdue: boolean;
+  conflictingTaskIds: string[];
+};
+
+const nextScheduledOccurrence = (
+  current: Date,
+  scheduleExpression: ScheduledTaskView["scheduleExpression"]
+): Date | null => {
+  if (scheduleExpression === "once") return null;
+  const next = new Date(current);
+  next.setDate(next.getDate() + (scheduleExpression === "daily" ? 1 : 7));
+  return next;
+};
+
+export const scheduledCalendarOccurrences = (
+  tasks: ScheduledTaskView[],
+  now = new Date(),
+  rangeDays = 14,
+  conflictWindowMinutes = 15
+): ScheduledCalendarOccurrence[] => {
+  const start = now.getTime();
+  if (!Number.isFinite(start)) return [];
+  const endDate = new Date(now);
+  endDate.setDate(endDate.getDate() + Math.min(90, Math.max(1, rangeDays)));
+  const end = endDate.getTime();
+  const occurrences: ScheduledCalendarOccurrence[] = [];
+
+  for (const task of tasks) {
+    if (!task.enabled || !task.nextRunAt) continue;
+    let startsAt = new Date(task.nextRunAt);
+    if (!Number.isFinite(startsAt.getTime())) continue;
+    let projected = false;
+    let includedOverdue = false;
+
+    for (let guard = 0; guard < 400 && startsAt.getTime() < end; guard += 1) {
+      const timestamp = startsAt.getTime();
+      const overdue = timestamp < start;
+      if (!overdue || !includedOverdue) {
+        occurrences.push({
+          id: `${task.id}:${startsAt.toISOString()}`,
+          taskId: task.id,
+          taskName: task.name,
+          conversationId: task.conversationId,
+          conversationTitle: task.conversationTitle,
+          startsAt: startsAt.toISOString(),
+          scheduleExpression: task.scheduleExpression,
+          timezone: task.timezone,
+          projected,
+          overdue,
+          conflictingTaskIds: []
+        });
+        if (overdue) includedOverdue = true;
+      }
+      const next = nextScheduledOccurrence(startsAt, task.scheduleExpression);
+      if (!next) break;
+      startsAt = next;
+      projected = true;
+    }
+  }
+
+  occurrences.sort((left, right) => left.startsAt.localeCompare(right.startsAt));
+  const conflictWindow = Math.max(0, conflictWindowMinutes) * 60 * 1000;
+  for (let leftIndex = 0; leftIndex < occurrences.length; leftIndex += 1) {
+    const left = occurrences[leftIndex];
+    if (left.overdue) continue;
+    const leftTime = new Date(left.startsAt).getTime();
+    for (let rightIndex = leftIndex + 1; rightIndex < occurrences.length; rightIndex += 1) {
+      const right = occurrences[rightIndex];
+      if (right.overdue) continue;
+      const distance = new Date(right.startsAt).getTime() - leftTime;
+      if (distance > conflictWindow) break;
+      if (left.taskId === right.taskId) continue;
+      if (!left.conflictingTaskIds.includes(right.taskId)) {
+        left.conflictingTaskIds.push(right.taskId);
+      }
+      if (!right.conflictingTaskIds.includes(left.taskId)) {
+        right.conflictingTaskIds.push(left.taskId);
+      }
+    }
+  }
+  return occurrences;
+};
+
+const normalizeScheduledSearch = (value: string): string =>
+  value
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .toLocaleLowerCase("es");
+
+export const filterScheduledTasks = (
+  tasks: ScheduledTaskView[],
+  query: string
+): ScheduledTaskView[] => {
+  const needle = normalizeScheduledSearch(query.trim());
+  if (!needle) return tasks;
+  return tasks.filter((task) =>
+    normalizeScheduledSearch(
+      `${task.name} ${task.conversationTitle} ${task.prompt}`
+    ).includes(needle)
+  );
+};
+
+export type ScheduledTaskDuplicateDraft = {
+  name: string;
+  conversationId: string;
+  prompt: string;
+  scheduleExpression: ScheduledTaskView["scheduleExpression"];
+  confirmed: false;
+};
+
+export const scheduledTaskDuplicateDraft = (
+  task: ScheduledTaskView
+): ScheduledTaskDuplicateDraft => ({
+  name: `Copia de ${task.name}`.slice(0, 120),
+  conversationId: task.conversationId,
+  prompt: task.prompt,
+  scheduleExpression: task.scheduleExpression,
+  confirmed: false
+});
+
+export type ScheduledNotificationView = {
+  id: string;
+  taskId: string;
+  taskName: string;
+  conversationId: string;
+  conversationTitle: string;
+  status: "completed" | "failed" | "cancelled";
+  attempt: number;
+  updatedAt: string;
+};
+
+export const scheduledNotifications = (
+  tasks: ScheduledTaskView[],
+  limit = 30
+): ScheduledNotificationView[] =>
+  tasks
+    .flatMap((task) =>
+      task.runs
+        .filter(
+          (run): run is typeof run & {
+            status: ScheduledNotificationView["status"];
+          } => ["completed", "failed", "cancelled"].includes(run.status)
+        )
+        .map((run) => ({
+          id: run.id,
+          taskId: task.id,
+          taskName: task.name,
+          conversationId: task.conversationId,
+          conversationTitle: task.conversationTitle,
+          status: run.status,
+          attempt: run.attempt,
+          updatedAt: run.updatedAt
+        }))
+    )
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+    .slice(0, Math.max(0, limit));
+
+export type ScheduledHistoryStatusFilter =
+  "all" | "active" | "completed" | "failed" | "cancelled";
+export type ScheduledHistoryPeriodFilter = "all" | "today" | "7d" | "30d";
+
+export const filterScheduledRuns = (
+  runs: ScheduledRunView[],
+  statusFilter: ScheduledHistoryStatusFilter,
+  periodFilter: ScheduledHistoryPeriodFilter,
+  now = new Date()
+): ScheduledRunView[] => {
+  const activeStatuses = new Set<ScheduledRunView["status"]>(["claimed", "running"]);
+  const maximumAge = periodFilter === "7d"
+    ? 7 * 24 * 60 * 60 * 1000
+    : periodFilter === "30d"
+      ? 30 * 24 * 60 * 60 * 1000
+      : null;
+  return runs.filter((run) => {
+    const statusMatches =
+      statusFilter === "all" ||
+      (statusFilter === "active"
+        ? activeStatuses.has(run.status)
+        : run.status === statusFilter);
+    if (!statusMatches || periodFilter === "all") return statusMatches;
+    const updatedAt = new Date(run.updatedAt);
+    if (!Number.isFinite(updatedAt.getTime())) return false;
+    if (periodFilter === "today") {
+      return updatedAt.toDateString() === now.toDateString();
+    }
+    return maximumAge !== null &&
+      updatedAt.getTime() >= now.getTime() - maximumAge &&
+      updatedAt.getTime() <= now.getTime();
+  });
+};
+
+export const scheduledRunDetail = (
+  run: ScheduledRunView
+): { label: string; text: string } | undefined => {
+  const result = run.result;
+  const nestedError = result?.error;
+  const candidates = [
+    result?.message,
+    result?.result_markdown,
+    result?.text,
+    result?.detail,
+    typeof nestedError === "object" && nestedError !== null
+      ? (nestedError as Record<string, unknown>).message
+      : undefined
+  ];
+  const detail = candidates.find(
+    (value): value is string => typeof value === "string" && value.trim().length > 0
+  );
+  if (detail) {
+    return {
+      label: run.status === "failed" ? "Motivo del fallo" : "Resultado",
+      text: detail.trim().slice(0, 4_000)
+    };
+  }
+  if (run.status === "completed") {
+    return {
+      label: "Resultado",
+      text: "La respuesta completa está guardada en la conversación."
+    };
+  }
+  if (run.status === "cancelled") {
+    return { label: "Detalle", text: "Cancelada por el usuario." };
+  }
+  if (run.status === "failed") {
+    return {
+      label: "Motivo del fallo",
+      text: "El Broker no proporcionó más detalles."
+    };
+  }
+  return undefined;
+};
+
+export type ScheduledHistoryExportReport = {
+  destinationPath: string;
+  destinationHash: string;
+  overwritten: boolean;
+  runCount: number;
+};
+
+export type ScheduledCalendarExportEntry = {
+  occurrenceId: string;
+  taskName: string;
+  conversationTitle: string;
+  startsAt: string;
+  projected: boolean;
+  overdue: boolean;
+};
+
+export type ScheduledCalendarExportReport = {
+  destinationPath: string;
+  destinationHash: string;
+  overwritten: boolean;
+  eventCount: number;
 };
 
 export type RecoveryItemView = {
@@ -45,7 +365,215 @@ export type AttachmentView = {
   brokerFileId?: string;
   ingestionStatus: "local" | "uploading" | "received" | "converting" | "ready" | "failed";
   ingestionError?: Record<string, unknown>;
+  contextStatus: "pending" | "preparing" | "ready" | "unavailable" | "failed";
+  contextError?: Record<string, unknown>;
+  chunkCount: number;
+  indexedCharacters: number;
+  semanticIndexedChunks: number;
+  semanticIndexStatus: "pending" | "indexing" | "ready" | "partial" | "failed" | "unavailable";
+  semanticIndexModel?: string;
   updatedAt: string;
+};
+
+export const attachmentSelectionOnConversationOpen = (
+  attachments: Array<Pick<AttachmentView, "id">>
+): string[] => attachments.map((attachment) => attachment.id);
+
+export const projectFilesAvailableToConversation = <T extends Pick<AttachmentView, "id">>(
+  attachments: Array<Pick<AttachmentView, "id">>,
+  projectFiles: T[]
+): T[] => {
+  const attachedIds = new Set(attachments.map((attachment) => attachment.id));
+  return projectFiles.filter((file) => !attachedIds.has(file.id));
+};
+
+export const attachmentNeedsSandbox = (
+  attachment: Pick<AttachmentView, "displayName" | "mediaType">
+): boolean => {
+  const mediaType = attachment.mediaType?.toLowerCase() ?? "";
+  const displayName = attachment.displayName.toLowerCase();
+  return [
+    "text/csv",
+    "text/tab-separated-values",
+    "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+  ].includes(mediaType) || [".csv", ".tsv", ".xls", ".xlsx"].some(
+    (extension) => displayName.endsWith(extension)
+  );
+};
+
+export const shouldRefreshSandboxDiagnostic = ({
+  requiresCodeExecution,
+  sandboxEnabledForTurn,
+  sandboxAvailable,
+  skipSuggestion
+}: {
+  requiresCodeExecution: boolean;
+  sandboxEnabledForTurn: boolean;
+  sandboxAvailable: boolean;
+  skipSuggestion: boolean;
+}): boolean =>
+  !skipSuggestion &&
+  !sandboxEnabledForTurn &&
+  requiresCodeExecution &&
+  !sandboxAvailable;
+
+export type ComposerErrorGuidance = {
+  title: string;
+  detail: string;
+  action: string;
+};
+
+export const sandboxUnavailableGuidance = (
+  tabularAttachment: boolean,
+  diagnosticMessage?: string
+): ComposerErrorGuidance => ({
+  title: tabularAttachment
+    ? "No se puede analizar el archivo todavía"
+    : "Código aislado no está disponible todavía",
+  detail: diagnosticMessage?.trim() || (
+    tabularAttachment
+      ? "El CSV o la hoja de cálculo necesita Código aislado, pero Broker AI no lo anuncia como disponible."
+      : "La petición necesita ejecutar código, pero Broker AI no anuncia un contenedor aislado disponible."
+  ),
+  action: "Comprueba la conexión y vuelve a intentarlo. El mensaje no se ha enviado."
+});
+
+export type AttachmentFailureGuidance = {
+  title: string;
+  detail: string;
+  action: string;
+  retryLabel: string;
+};
+
+export type AttachmentContextSummary = {
+  label: string;
+  detail: string;
+  tone: "pending" | "ready" | "warning" | "error";
+  retryable: boolean;
+  retryTarget?: "context" | "semantic";
+  retryLabel?: string;
+};
+
+export const attachmentContextSummary = (
+  attachment: AttachmentView
+): AttachmentContextSummary | undefined => {
+  if (attachment.ingestionStatus !== "ready") {
+    return undefined;
+  }
+  if (attachment.contextStatus === "failed") {
+    const message =
+      typeof attachment.contextError?.message === "string"
+        ? attachment.contextError.message.slice(0, 300)
+        : "No se pudo descargar o dividir el contenido convertido.";
+    return {
+      label: "Contexto local no preparado",
+      detail: message,
+      tone: "error",
+      retryable: true
+    };
+  }
+  if (attachment.contextStatus === "preparing") {
+    return {
+      label: "Preparando contexto local",
+      detail: "El archivo ya está en el Broker; ChatyGPT está preparando sus fragmentos.",
+      tone: "pending",
+      retryable: false
+    };
+  }
+  if (attachment.contextStatus === "pending") {
+    return {
+      label: "Contexto local pendiente",
+      detail: "El archivo ya está disponible; su contenido se preparará a continuación.",
+      tone: "pending",
+      retryable: false
+    };
+  }
+  if (attachment.contextStatus === "unavailable") {
+    return {
+      label: "Sin fragmentos locales",
+      detail: "El Broker no ofreció texto convertido; se usará el archivo completo.",
+      tone: "warning",
+      retryable: true
+    };
+  }
+  if (attachment.contextStatus !== "ready") return undefined;
+  const unit = attachment.chunkCount === 1 ? "fragmento" : "fragmentos";
+  const estimatedTokens = Math.ceil(attachment.indexedCharacters / 4);
+  const semanticModel = attachment.semanticIndexModel?.split("/").at(-1);
+  const semanticDetail = (() => {
+    switch (attachment.semanticIndexStatus) {
+      case "ready":
+        return (
+          `Índice semántico preparado (${attachment.semanticIndexedChunks}/${attachment.chunkCount})` +
+          `${semanticModel ? ` con ${semanticModel}` : ""}.`
+        );
+      case "partial":
+        return `Índice semántico parcial (${attachment.semanticIndexedChunks}/${attachment.chunkCount}).`;
+      case "failed":
+        return "No se pudo preparar el índice semántico; la búsqueda por texto sigue disponible.";
+      case "indexing":
+      case "pending":
+        return `Preparando índice semántico (${attachment.semanticIndexedChunks}/${attachment.chunkCount}).`;
+      default:
+        return "Búsqueda por texto disponible.";
+    }
+  })();
+  const semanticRetryable = ["partial", "failed"].includes(attachment.semanticIndexStatus);
+  return {
+    label: `Contexto preparado · ${attachment.chunkCount} ${unit}`,
+    detail:
+      `Cobertura: ${attachment.indexedCharacters.toLocaleString("es-ES")} caracteres consultables ` +
+      `(~${estimatedTokens.toLocaleString("es-ES")} tokens estimados). ` +
+      `${semanticDetail} Se recuperan los fragmentos relevantes y su contexto próximo.`,
+    tone: semanticRetryable ? "warning" : "ready",
+    retryable: semanticRetryable,
+    ...(semanticRetryable
+      ? { retryTarget: "semantic" as const, retryLabel: "Reintentar índice" }
+      : {})
+  };
+};
+
+export const attachmentStatusLabel = (
+  status: AttachmentView["ingestionStatus"]
+): string => ({
+  local: "Pendiente",
+  uploading: "Subiendo",
+  received: "Recibido",
+  converting: "Convirtiendo",
+  ready: "Preparado",
+  failed: "No preparado"
+})[status];
+
+export const attachmentFailureGuidance = (
+  attachment: AttachmentView
+): AttachmentFailureGuidance | undefined => {
+  if (attachment.ingestionStatus !== "failed") return undefined;
+
+  const message =
+    typeof attachment.ingestionError?.message === "string"
+      ? attachment.ingestionError.message
+      : "";
+  const pageLimit = message.match(
+    /Document has\s+(\d+)\s+pages,\s+exceeding the max_num_pages limit of\s+(\d+)/i
+  );
+  if (pageLimit) {
+    const format = (value: string): string =>
+      value.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+    return {
+      title: "El PDF supera el límite de páginas",
+      detail: `Tiene ${format(pageLimit[1])} páginas y el Broker admite ${format(pageLimit[2])} por conversión.`,
+      action: "Divide el PDF en archivos más pequeños o aumenta el límite de páginas del Broker.",
+      retryLabel: "Reintentar tras corregir"
+    };
+  }
+
+  return {
+    title: "No se pudo preparar el archivo",
+    detail: message.slice(0, 300) || "El Broker no proporcionó más detalles sobre el fallo.",
+    action: "Comprueba el Broker y vuelve a intentarlo.",
+    retryLabel: "Reintentar"
+  };
 };
 
 export type BrokerDiagnostic = {
@@ -54,15 +582,33 @@ export type BrokerDiagnostic = {
   baseUrl: string;
   contractVersion?: string;
   strategies: string[];
+  presets: Record<string, string[]> | unknown;
+  derivedDataBoundary?: boolean;
+  workLanes: string[];
+  agentSkills: string[];
   sandboxRunCode?: boolean;
   fileIngestion?: boolean;
+  longContextMapReduce?: boolean;
+  maxActiveWorkflows?: number;
   latencyMs: number;
   message: string;
 };
 
+export const brokerSupportsPreset = (
+  broker: BrokerDiagnostic,
+  strategy: string,
+  preset: string
+): boolean => {
+  if (!broker.presets || typeof broker.presets !== "object" || Array.isArray(broker.presets)) {
+    return true;
+  }
+  const declared = (broker.presets as Record<string, unknown>)[strategy];
+  return !Array.isArray(declared) || declared.includes(preset);
+};
+
 export type AuditEventView = {
   id: number;
-  category: "project" | "conversation" | "attachment" | "task" | "tool" | "export" | "memory" | "system";
+  category: "project" | "conversation" | "attachment" | "task" | "tool" | "export" | "memory" | "gpt" | "system";
   summary: string;
   severity: "info" | "warning" | "error";
   actor: string;
@@ -74,6 +620,8 @@ export type MemoryItemView = {
   id: string;
   projectId?: string;
   projectName?: string;
+  customGptId?: string;
+  customGptName?: string;
   category: "preference" | "instruction" | "fact";
   content: string;
   sensitivity: "normal" | "sensitive";
@@ -89,6 +637,14 @@ export type MemoryOverview = {
   enabled: boolean;
   items: MemoryItemView[];
 };
+
+export const canStartMemoryEdit = (activeMemoryId: string | null): boolean =>
+  activeMemoryId === null;
+
+export const memoryUpdateNotice = (contentChanged: boolean): string =>
+  contentChanged
+    ? "Recuerdo actualizado. ChatyGPT está preparando un índice nuevo."
+    : "Recuerdo actualizado.";
 
 export type MemorySearchResultView = {
   memoryId: string;
@@ -111,16 +667,99 @@ export type MemorySearchView = {
   createdAt: string;
 };
 
+export type ContextSourceView = {
+  kind: "message" | "memory" | string;
+  label: string;
+  reason: string;
+  score?: number;
+  estimatedTokens: number;
+  excerpt: string;
+  sourceReference?: string;
+  sourceAvailable: boolean;
+};
+
+export const canRevealContextSource = (source: ContextSourceView): boolean =>
+  source.kind === "attachment_chunk" &&
+  Boolean(source.sourceReference) &&
+  source.sourceAvailable;
+
+export const shouldApplyContextLoad = (
+  activeTaskId: string | undefined,
+  resolvedTaskId: string
+): boolean => activeTaskId === resolvedTaskId;
+
+export type ContextSnapshotView = {
+  strategy: string;
+  estimatedTokens: number;
+  sources: ContextSourceView[];
+};
+
 export type LocalTaskSnapshot = {
   id: string;
+  activity?: string;
   remoteTaskId?: string;
   remoteStatus: string;
   localState: string;
   consecutivePollErrors: number;
   result?: Record<string, unknown>;
   error?: Record<string, unknown>;
+  progress: {
+    phase?: string;
+    invocationsCompleted?: number;
+    invocationsTotal?: number;
+  };
   pendingToolCalls: ToolCallView[];
   updatedAt: string;
+};
+
+const TASK_PHASE_LABELS: Record<string, string> = {
+  queued: "En cola",
+  routing: "Eligiendo el mejor modelo",
+  planning: "Planificando",
+  resource_planning: "Preparando recursos",
+  converting: "Convirtiendo el archivo",
+  chunking: "Dividiendo el documento",
+  generating: "Generando respuesta",
+  proposing: "Consultando modelos",
+  evaluating: "Comparando propuestas",
+  debating: "Contrastando respuestas",
+  synthesizing: "Preparando la respuesta final",
+  verifying: "Verificando el resultado",
+  waiting_for_memory: "Esperando memoria disponible",
+  waiting_for_tools: "Esperando tu confirmación",
+  completed: "Completado"
+};
+
+export const taskProgressSummary = (task: LocalTaskSnapshot): {
+  label: string;
+  completed?: number;
+  total?: number;
+} => {
+  const phase = task.progress.phase ?? task.remoteStatus;
+  const label = TASK_PHASE_LABELS[phase] ?? task.activity ?? "Procesando";
+  const completed = task.progress.invocationsCompleted;
+  const total = task.progress.invocationsTotal;
+  return total && total > 0 && completed !== undefined
+    ? { label, completed: Math.min(completed, total), total }
+    : { label };
+};
+
+export const taskFailureSummary = (
+  error?: Record<string, unknown>
+): { title: string; detail: string; retryable: boolean } | undefined => {
+  if (!error) return undefined;
+  const code = typeof error.code === "string" ? error.code : "TASK_FAILED";
+  const detail =
+    typeof error.message === "string" && error.message.trim()
+      ? error.message.slice(0, 500)
+      : "El Broker no proporcionó más detalles sobre el fallo.";
+  return {
+    title: code === "CONTEXT_LIMIT_EXCEEDED"
+      ? "El contenido no cabe en el modelo seleccionado"
+      : "La tarea no pudo completarse",
+    detail,
+    retryable: error.retryable === true
+  };
 };
 
 export type ToolCallView = {
@@ -140,6 +779,19 @@ export const isTaskPollingComplete = (task: LocalTaskSnapshot): boolean =>
 export const isTaskBlockingConversation = (task: LocalTaskSnapshot): boolean =>
   !isTerminalTask(task) && task.localState !== "orphaned";
 
+export const shouldFollowConversationScroll = ({
+  scrollHeight,
+  scrollTop,
+  clientHeight,
+  threshold = 96
+}: {
+  scrollHeight: number;
+  scrollTop: number;
+  clientHeight: number;
+  threshold?: number;
+}): boolean =>
+  Math.max(0, scrollHeight - scrollTop - clientHeight) <= threshold;
+
 export const canSendMessage = ({
   hasConversation,
   hasText,
@@ -154,6 +806,17 @@ export const canSendMessage = ({
   turnBlocking: boolean;
 }): boolean =>
   hasConversation && hasText && attachmentsReady && !attachmentBusy && !turnBlocking;
+
+export const canUseSemanticMemory = ({
+  memoryEnabled,
+  hasConversation,
+  readyEligibleMemories
+}: {
+  memoryEnabled: boolean;
+  hasConversation: boolean;
+  readyEligibleMemories: number;
+}): boolean =>
+  memoryEnabled && hasConversation && readyEligibleMemories > 0;
 
 export const shouldOfferSandboxForPrompt = (text: string): boolean => {
   const normalized = text
@@ -171,12 +834,120 @@ export type ConversationSummary = {
   updatedAt: string;
 };
 
+export type ConversationSummaryRevision = {
+  id: string;
+  status: "generating" | "draft" | "approved" | "failed" | "cancelled" | "superseded";
+  draftText?: string;
+  approvedText?: string;
+  sourceThroughSequence: number;
+  brokerTaskId?: string;
+  updatedAt: string;
+};
+
+export type ConversationSummaryOverview = {
+  candidate?: ConversationSummaryRevision;
+  active?: ConversationSummaryRevision;
+  totalMessageCount: number;
+  activeCoveredMessageCount: number;
+  remainingMessageCount: number;
+  candidateCoveredMessageCount?: number;
+};
+
 export type ProjectSummary = {
   id: string;
   name: string;
   description?: string;
+  instructions?: string;
   conversationCount: number;
   updatedAt: string;
+};
+
+export type CustomGptView = {
+  id: string;
+  name: string;
+  description?: string;
+  instructions: string;
+  conversationStarters: string[];
+  toolPermissions: {
+    runCode: "deny" | "confirm";
+    renameConversation: "deny" | "confirm";
+  };
+  versionNo: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type CustomGptExportReport = {
+  path: string;
+  includedKnowledge: number;
+  excludedSensitive: number;
+  excludedDisabled: number;
+  excludedFiles: number;
+};
+
+export type CustomGptImportReport = {
+  customGpt: CustomGptView;
+  importedKnowledge: number;
+  knowledgeRequiresReview: boolean;
+};
+
+export type ProjectKnowledgeOverview = {
+  project: ProjectSummary;
+  files: AttachmentView[];
+  fileUsages: ProjectFileUsage[];
+  memories: MemoryItemView[];
+  memoryEnabled: boolean;
+};
+
+export type ProjectFileUsage = {
+  attachmentId: string;
+  conversations: ConversationSummary[];
+};
+
+export type ProjectKnowledgeFilter = "all" | "files" | "memories";
+
+export type FilteredProjectKnowledge = {
+  files: AttachmentView[];
+  memories: MemoryItemView[];
+  total: number;
+};
+
+const normalizeProjectKnowledgeSearch = (value: string): string =>
+  value
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .toLocaleLowerCase("es");
+
+export const filterProjectKnowledge = (
+  overview: ProjectKnowledgeOverview,
+  query: string,
+  filter: ProjectKnowledgeFilter
+): FilteredProjectKnowledge => {
+  const needle = normalizeProjectKnowledgeSearch(query.trim());
+  const matches = (values: Array<string | undefined>): boolean =>
+    !needle || normalizeProjectKnowledgeSearch(values.filter(Boolean).join(" ")).includes(needle);
+  const files = filter === "memories"
+    ? []
+    : overview.files.filter((file) => matches([
+        file.displayName,
+        file.mediaType,
+        file.ingestionStatus,
+        file.semanticIndexStatus
+      ]));
+  const memories = filter === "files"
+    ? []
+    : overview.memories.filter((item) => matches([
+        item.content,
+        item.category,
+        item.sensitivity,
+        item.enabled ? "activo activado" : "desactivado",
+        item.embeddingStatus
+      ]));
+  return {
+    files,
+    memories,
+    total: files.length + memories.length
+  };
 };
 
 export type ConversationMessage = {
@@ -194,8 +965,23 @@ export type ConversationMessage = {
     deployment: string;
     model: string;
   };
+  responseDurationMs?: number;
   sources: ConversationSource[];
   createdAt: string;
+};
+
+export const formatResponseDuration = (milliseconds?: number): string | null => {
+  if (milliseconds === undefined || !Number.isFinite(milliseconds) || milliseconds < 0) {
+    return null;
+  }
+  if (milliseconds < 60_000) {
+    const seconds = Math.max(0.1, Math.round(milliseconds / 100) / 10);
+    return `${seconds.toLocaleString("es-ES", { maximumFractionDigits: 1 })} s`;
+  }
+  const totalSeconds = Math.round(milliseconds / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes} min ${seconds} s`;
 };
 
 export type ConversationSource = {
@@ -213,7 +999,37 @@ export type ConversationView = {
   id: string;
   title: string;
   projectId?: string;
+  customGptId?: string;
+  executionPreferences: ConversationExecutionPreferences;
   messages: ConversationMessage[];
+  researchRuns: ResearchRunView[];
+};
+
+export type ResearchStepView = {
+  id: string;
+  kind: "plan" | "research" | "synthesis";
+  title: string;
+  status: "pending" | "running" | "completed" | "failed" | "cancelled";
+};
+
+export type ResearchRunView = {
+  id: string;
+  brokerTaskId: string;
+  objective: string;
+  status: "planning" | "researching" | "synthesizing" | "completed" | "failed" | "cancelled";
+  steps: ResearchStepView[];
+  sourceCount: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ConversationExecutionPreferences = {
+  dataClassification: "public" | "internal" | "confidential" | "local_only";
+  strategy: "single" | "auto" | "mixture_of_agents";
+  preset: "fast" | "slow";
+  maxCostUsd: number;
+  longContext: "fail" | "map_reduce";
+  priority: number;
 };
 
 export type ExportPathSelection = {
@@ -226,4 +1042,9 @@ export type ExportReport = {
   sourceHash: string;
   destinationHash: string;
   overwritten: boolean;
+  format: "markdown" | "obsidian";
+  attachmentCount: number;
+  reusedAttachmentCount: number;
+  projectIndexUpdated: boolean;
+  approvedMemoryCount: number;
 };

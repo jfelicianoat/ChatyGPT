@@ -1,0 +1,1265 @@
+{
+  "generated_at": "2026-07-31T14:57:08.473765+00:00",
+  "nodes": {
+    "apps_desktop_src_app_app": {
+      "code_fingerprint": "a126458d837eaf02b516346c87dd54d2f616036807cdcc8f3801a77d9d013db8",
+      "label": "App()",
+      "last": "2026-07-31T14:46:56.277106+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-31T14:46:56.277106+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo"
+        },
+        {
+          "date": "2026-07-31T14:10:02.739873+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo"
+        },
+        {
+          "date": "2026-07-31T13:55:05.095084+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo"
+        },
+        {
+          "date": "2026-07-31T12:41:14.001440+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo"
+        },
+        {
+          "date": "2026-07-31T12:09:09.332232+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo"
+        }
+      ],
+      "score": 29.811575217,
+      "source_file": "apps/desktop/src/App.tsx",
+      "status": "preferred",
+      "uses": 31
+    },
+    "apps_desktop_src_app_dialogcopy": {
+      "code_fingerprint": "a126458d837eaf02b516346c87dd54d2f616036807cdcc8f3801a77d9d013db8",
+      "label": "dialogCopy()",
+      "last": "2026-07-30T15:10:02.080635+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-30T15:10:02.080635+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo"
+        }
+      ],
+      "score": 0.977362141,
+      "source_file": "apps/desktop/src/App.tsx",
+      "status": "tentative",
+      "uses": 1
+    },
+    "apps_desktop_src_domain": {
+      "code_fingerprint": "d4791bef7e1c40f6cdf1a087e57af02248ce52bb3ce016c4da774b33c5903ab3",
+      "label": "domain.ts",
+      "last": "2026-07-31T14:10:02.739873+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-31T14:10:02.739873+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo"
+        },
+        {
+          "date": "2026-07-31T13:55:05.095084+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo"
+        },
+        {
+          "date": "2026-07-31T12:41:14.001440+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo"
+        },
+        {
+          "date": "2026-07-31T12:09:09.332232+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo"
+        },
+        {
+          "date": "2026-07-31T05:02:40.111187+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo"
+        }
+      ],
+      "score": 12.555971134,
+      "source_file": "apps/desktop/src/domain.ts",
+      "status": "preferred",
+      "uses": 13
+    },
+    "apps_desktop_src_domain_attachmentfailureguidance": {
+      "code_fingerprint": "d4791bef7e1c40f6cdf1a087e57af02248ce52bb3ce016c4da774b33c5903ab3",
+      "label": "AttachmentFailureGuidance",
+      "last": "2026-07-28T16:38:03.808682+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-28T16:38:03.808682+00:00",
+          "outcome": "useful",
+          "q": "Estoy subiendo un pdf de 2000 y pico paginas, en el broker he puesto un limite de 5000 paginas, sin embargo, la subida me da error: El PDF supera el límite de páginas. Tiene 2.204 páginas y el Broker admite 2.000 por conversión."
+        }
+      ],
+      "score": 0.93454508,
+      "source_file": "apps/desktop/src/domain.ts",
+      "status": "tentative",
+      "uses": 1
+    },
+    "apps_desktop_src_domain_attachmentselectiononconversationopen": {
+      "code_fingerprint": "d4791bef7e1c40f6cdf1a087e57af02248ce52bb3ce016c4da774b33c5903ab3",
+      "label": "attachmentSelectionOnConversationOpen()",
+      "last": "2026-07-29T20:46:23.823670+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-29T20:46:23.823670+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo"
+        }
+      ],
+      "score": 0.9602074,
+      "source_file": "apps/desktop/src/domain.ts",
+      "status": "tentative",
+      "uses": 1
+    },
+    "apps_desktop_src_domain_istaskpollingcomplete": {
+      "code_fingerprint": "d4791bef7e1c40f6cdf1a087e57af02248ce52bb3ce016c4da774b33c5903ab3",
+      "label": "isTaskPollingComplete()",
+      "last": "2026-07-28T20:41:56.523557+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-28T20:41:56.523557+00:00",
+          "outcome": "useful",
+          "q": "Cuando lanzo una petici?n, la ventana donde aparece la respuesta no hace scroll para que se vea esa ultima respuesta, siempre se queda en la pregunta o instruccion lanzada, y tengo que mover a mano el scroll para ver la respuesta. Esto no puede ser as?. Otra cosa es que vaya apareciendo una respuesta y me interese ver algo que est? mas arriba y me muevo hasta ese punto, en ese caso el scroll no debe ser automatico y volver a la ultima respuesta , sino quedarse donde lo he puesto"
+        }
+      ],
+      "score": 0.938209166,
+      "source_file": "apps/desktop/src/domain.ts",
+      "status": "tentative",
+      "uses": 1
+    },
+    "apps_desktop_src_domain_shouldfollowconversationscroll": {
+      "code_fingerprint": "d4791bef7e1c40f6cdf1a087e57af02248ce52bb3ce016c4da774b33c5903ab3",
+      "label": "shouldFollowConversationScroll()",
+      "last": "2026-07-28T20:41:56.523557+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-28T20:41:56.523557+00:00",
+          "outcome": "useful",
+          "q": "Cuando lanzo una petici?n, la ventana donde aparece la respuesta no hace scroll para que se vea esa ultima respuesta, siempre se queda en la pregunta o instruccion lanzada, y tengo que mover a mano el scroll para ver la respuesta. Esto no puede ser as?. Otra cosa es que vaya apareciendo una respuesta y me interese ver algo que est? mas arriba y me muevo hasta ese punto, en ese caso el scroll no debe ser automatico y volver a la ultima respuesta , sino quedarse donde lo he puesto"
+        }
+      ],
+      "score": 0.938209166,
+      "source_file": "apps/desktop/src/domain.ts",
+      "status": "tentative",
+      "uses": 1
+    },
+    "apps_desktop_src_domain_test": {
+      "code_fingerprint": "ccbcab9ad6b8248e28c8988de0481854e887a0a38655b61fd42b3cbeeef42241",
+      "label": "domain.test.ts",
+      "last": "2026-07-31T13:55:05.095084+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-31T13:55:05.095084+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo"
+        },
+        {
+          "date": "2026-07-29T20:55:20.325185+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo"
+        },
+        {
+          "date": "2026-07-29T18:02:48.370069+00:00",
+          "outcome": "useful",
+          "q": "El error de sandbox sigue apareciendo y está escondido abajo a la izquierda"
+        },
+        {
+          "date": "2026-07-28T20:41:56.523557+00:00",
+          "outcome": "useful",
+          "q": "Cuando lanzo una petici?n, la ventana donde aparece la respuesta no hace scroll para que se vea esa ultima respuesta, siempre se queda en la pregunta o instruccion lanzada, y tengo que mover a mano el scroll para ver la respuesta. Esto no puede ser as?. Otra cosa es que vaya apareciendo una respuesta y me interese ver algo que est? mas arriba y me muevo hasta ese punto, en ese caso el scroll no debe ser automatico y volver a la ultima respuesta , sino quedarse donde lo he puesto"
+        },
+        {
+          "date": "2026-07-25T21:24:48.677480+00:00",
+          "outcome": "useful",
+          "q": "Continua con el desarrollo"
+        }
+      ],
+      "score": 4.731231893,
+      "source_file": "apps/desktop/src/domain.test.ts",
+      "status": "preferred",
+      "uses": 5
+    },
+    "apps_desktop_src_platform": {
+      "code_fingerprint": "ae491f7ff288f2fc13a8a715bce5f81a6e4b27efb63aff6e657b05a8b2a2f22b",
+      "label": "platform.ts",
+      "last": "2026-07-31T14:10:02.739873+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-31T14:10:02.739873+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo"
+        },
+        {
+          "date": "2026-07-31T12:41:14.001440+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo"
+        },
+        {
+          "date": "2026-07-31T12:09:09.332232+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo"
+        },
+        {
+          "date": "2026-07-27T18:42:48.720923+00:00",
+          "outcome": "useful",
+          "q": "Ok, continua"
+        }
+      ],
+      "score": 3.909404377,
+      "source_file": "apps/desktop/src/platform.ts",
+      "status": "preferred",
+      "uses": 4
+    },
+    "apps_desktop_src_platform_platform": {
+      "code_fingerprint": "ae491f7ff288f2fc13a8a715bce5f81a6e4b27efb63aff6e657b05a8b2a2f22b",
+      "label": "platform",
+      "last": "2026-07-31T05:02:40.111187+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-31T05:02:40.111187+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo"
+        }
+      ],
+      "score": 0.990506987,
+      "source_file": "apps/desktop/src/platform.ts",
+      "status": "tentative",
+      "uses": 1
+    },
+    "apps_desktop_src_tauri_capabilities_main_permissions": {
+      "code_fingerprint": "f604ec0b837d0a91bbe7cf49e41388941cd1b140f5ec659bdced0cb94462fbd4",
+      "label": "permissions",
+      "last": "2026-07-30T20:07:15.132868+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-30T20:07:15.132868+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo"
+        },
+        {
+          "date": "2026-07-29T21:15:08.898528+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo"
+        }
+      ],
+      "score": 1.942684653,
+      "source_file": "apps/desktop/src-tauri/capabilities/main.json",
+      "status": "preferred",
+      "uses": 2
+    },
+    "apps_desktop_src_tauri_src_attachment_runtime": {
+      "code_fingerprint": "02a9c4af24d0eedafd87c8e709f5237689f8e349e4e12151dd3c5e767e109b13",
+      "label": "attachment_runtime.rs",
+      "last": "2026-07-30T20:07:15.132868+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-30T20:07:15.132868+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo"
+        },
+        {
+          "date": "2026-07-30T19:35:33.837836+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo"
+        },
+        {
+          "date": "2026-07-29T19:03:09.626598+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo"
+        },
+        {
+          "date": "2026-07-28T16:38:03.808682+00:00",
+          "outcome": "useful",
+          "q": "Estoy subiendo un pdf de 2000 y pico paginas, en el broker he puesto un limite de 5000 paginas, sin embargo, la subida me da error: El PDF supera el límite de páginas. Tiene 2.204 páginas y el Broker admite 2.000 por conversión."
+        },
+        {
+          "date": "2026-07-27T18:24:46.723510+00:00",
+          "outcome": "useful",
+          "q": "Ok, continua"
+        }
+      ],
+      "score": 9.176637032,
+      "source_file": "apps/desktop/src-tauri/src/attachment_runtime.rs",
+      "status": "preferred",
+      "uses": 10
+    },
+    "apps_desktop_src_tauri_src_attachment_runtime_chunk_markdown": {
+      "code_fingerprint": "02a9c4af24d0eedafd87c8e709f5237689f8e349e4e12151dd3c5e767e109b13",
+      "label": "chunk_markdown()",
+      "last": "2026-07-27T18:07:47.201849+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-27T18:07:47.201849+00:00",
+          "outcome": "useful",
+          "q": "Ok, continua"
+        },
+        {
+          "date": "2026-07-25T06:51:43.841952+00:00",
+          "outcome": "useful",
+          "q": "Continua con el desarrollo"
+        }
+      ],
+      "score": 1.778312306,
+      "source_file": "apps/desktop/src-tauri/src/attachment_runtime.rs",
+      "status": "preferred",
+      "uses": 2
+    },
+    "apps_desktop_src_tauri_src_attachment_runtime_poll_remote_file": {
+      "code_fingerprint": "02a9c4af24d0eedafd87c8e709f5237689f8e349e4e12151dd3c5e767e109b13",
+      "label": "poll_remote_file()",
+      "last": "2026-07-25T19:49:55.361806+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-25T19:49:55.361806+00:00",
+          "outcome": "useful",
+          "q": "He intentado adjunta un pdf grande y no deja de fallar"
+        }
+      ],
+      "score": 0.87464977,
+      "source_file": "apps/desktop/src-tauri/src/attachment_runtime.rs",
+      "status": "tentative",
+      "uses": 1
+    },
+    "apps_desktop_src_tauri_src_attachment_runtime_upload_local_file": {
+      "code_fingerprint": "02a9c4af24d0eedafd87c8e709f5237689f8e349e4e12151dd3c5e767e109b13",
+      "label": "upload_local_file()",
+      "last": "2026-07-25T19:49:55.361806+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-25T19:49:55.361806+00:00",
+          "outcome": "useful",
+          "q": "He intentado adjunta un pdf grande y no deja de fallar"
+        }
+      ],
+      "score": 0.87464977,
+      "source_file": "apps/desktop/src-tauri/src/attachment_runtime.rs",
+      "status": "tentative",
+      "uses": 1
+    },
+    "apps_desktop_src_tauri_src_broker_contracts": {
+      "code_fingerprint": "4c51922faa7a5a60b06876873dc6595499afcd209555104ad946ae5fb8cb844d",
+      "label": "contracts.rs",
+      "last": "2026-07-29T18:21:17.051995+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-29T18:21:17.051995+00:00",
+          "outcome": "useful",
+          "q": "Parece ser que hay una divergencia en los parametros de comunicación, mira a ver si lo puedes arreglar"
+        }
+      ],
+      "score": 0.957974305,
+      "source_file": "apps/desktop/src-tauri/src/broker/contracts.rs",
+      "status": "tentative",
+      "uses": 1
+    },
+    "apps_desktop_src_tauri_src_broker_contracts_brokercapabilities": {
+      "code_fingerprint": "4c51922faa7a5a60b06876873dc6595499afcd209555104ad946ae5fb8cb844d",
+      "label": "BrokerCapabilities",
+      "last": "2026-07-29T18:21:17.051995+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-29T18:21:17.051995+00:00",
+          "outcome": "useful",
+          "q": "Parece ser que hay una divergencia en los parametros de comunicación, mira a ver si lo puedes arreglar"
+        },
+        {
+          "date": "2026-07-26T21:07:17.747555+00:00",
+          "outcome": "useful",
+          "q": "Haz los cambios necesarios para que, siguiendo el contrato del ChatyGPT y su proposito, aproveche las nuevas posiblidades que da el Broker AI"
+        },
+        {
+          "date": "2026-07-26T20:41:10.438854+00:00",
+          "outcome": "useful",
+          "q": "He hecho cambios en el Broker AI que afecta a tu comunicación con el"
+        }
+      ],
+      "score": 2.750010059,
+      "source_file": "apps/desktop/src-tauri/src/broker/contracts.rs",
+      "status": "preferred",
+      "uses": 3
+    },
+    "apps_desktop_src_tauri_src_broker_contracts_filestate": {
+      "code_fingerprint": "4c51922faa7a5a60b06876873dc6595499afcd209555104ad946ae5fb8cb844d",
+      "label": "FileState",
+      "last": "2026-07-25T19:49:55.361806+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-25T19:49:55.361806+00:00",
+          "outcome": "useful",
+          "q": "He intentado adjunta un pdf grande y no deja de fallar"
+        }
+      ],
+      "score": 0.87464977,
+      "source_file": "apps/desktop/src-tauri/src/broker/contracts.rs",
+      "status": "tentative",
+      "uses": 1
+    },
+    "apps_desktop_src_tauri_src_broker_contracts_taskstate": {
+      "code_fingerprint": "4c51922faa7a5a60b06876873dc6595499afcd209555104ad946ae5fb8cb844d",
+      "label": "TaskState",
+      "last": "2026-07-26T20:41:10.438854+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-26T20:41:10.438854+00:00",
+          "outcome": "useful",
+          "q": "He hecho cambios en el Broker AI que afecta a tu comunicación con el"
+        }
+      ],
+      "score": 0.895830105,
+      "source_file": "apps/desktop/src-tauri/src/broker/contracts.rs",
+      "status": "tentative",
+      "uses": 1
+    },
+    "apps_desktop_src_tauri_src_broker_contracts_taskstatus": {
+      "code_fingerprint": "4c51922faa7a5a60b06876873dc6595499afcd209555104ad946ae5fb8cb844d",
+      "label": "TaskStatus",
+      "last": "2026-07-26T20:41:10.438854+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-26T20:41:10.438854+00:00",
+          "outcome": "useful",
+          "q": "He hecho cambios en el Broker AI que afecta a tu comunicación con el"
+        }
+      ],
+      "score": 0.895830105,
+      "source_file": "apps/desktop/src-tauri/src/broker/contracts.rs",
+      "status": "tentative",
+      "uses": 1
+    },
+    "apps_desktop_src_tauri_src_broker_mod_brokerclient": {
+      "code_fingerprint": "b287541e231aa3b3e0ab62f7d7a8cf4fd6035439f1baba5a8fb1db19a89a554e",
+      "label": "BrokerClient",
+      "last": "2026-07-31T14:46:56.277106+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-31T14:46:56.277106+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo"
+        },
+        {
+          "date": "2026-07-31T04:37:30.933987+00:00",
+          "outcome": "useful",
+          "q": "Continue ChatyGPT development with cancellation of active scheduled runs and history filters"
+        },
+        {
+          "date": "2026-07-30T20:25:31.049494+00:00",
+          "outcome": "useful",
+          "q": "How should ChatyGPT implement the first durable local scheduler slice without duplicating its broker task system?"
+        },
+        {
+          "date": "2026-07-29T18:21:17.051995+00:00",
+          "outcome": "useful",
+          "q": "Parece ser que hay una divergencia en los parametros de comunicación, mira a ver si lo puedes arreglar"
+        },
+        {
+          "date": "2026-07-29T17:50:40.719521+00:00",
+          "outcome": "useful",
+          "q": "Diagnosticar por qué ChatyGPT consulta capabilities en localhost y pierde el sandbox"
+        }
+      ],
+      "score": 6.647370716,
+      "source_file": "apps/desktop/src-tauri/src/broker/mod.rs",
+      "status": "preferred",
+      "uses": 7
+    },
+    "apps_desktop_src_tauri_src_broker_mod_brokerclient_capabilities": {
+      "code_fingerprint": "b287541e231aa3b3e0ab62f7d7a8cf4fd6035439f1baba5a8fb1db19a89a554e",
+      "label": ".capabilities()",
+      "last": "2026-07-29T18:21:17.051995+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-29T18:21:17.051995+00:00",
+          "outcome": "useful",
+          "q": "Parece ser que hay una divergencia en los parametros de comunicación, mira a ver si lo puedes arreglar"
+        },
+        {
+          "date": "2026-07-29T18:02:48.370069+00:00",
+          "outcome": "useful",
+          "q": "El error de sandbox sigue apareciendo y está escondido abajo a la izquierda"
+        },
+        {
+          "date": "2026-07-29T17:50:40.719521+00:00",
+          "outcome": "useful",
+          "q": "Diagnosticar por qué ChatyGPT consulta capabilities en localhost y pierde el sandbox"
+        }
+      ],
+      "score": 2.87316862,
+      "source_file": "apps/desktop/src-tauri/src/broker/mod.rs",
+      "status": "preferred",
+      "uses": 3
+    },
+    "apps_desktop_src_tauri_src_broker_mod_brokerclient_from_environment": {
+      "code_fingerprint": "b287541e231aa3b3e0ab62f7d7a8cf4fd6035439f1baba5a8fb1db19a89a554e",
+      "label": ".from_environment()",
+      "last": "2026-07-29T17:50:40.719521+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-29T17:50:40.719521+00:00",
+          "outcome": "useful",
+          "q": "Diagnosticar por qué ChatyGPT consulta capabilities en localhost y pierde el sandbox"
+        }
+      ],
+      "score": 0.95750399,
+      "source_file": "apps/desktop/src-tauri/src/broker/mod.rs",
+      "status": "tentative",
+      "uses": 1
+    },
+    "apps_desktop_src_tauri_src_db_mod_audit_inspector_exposes_only_safe_presentation_fields": {
+      "code_fingerprint": "6b27b24bd6137b6b5734b5a95a86e7b270143f2c6d2ada59b3a708f0891970af",
+      "label": "audit_inspector_exposes_only_safe_presentation_fields()",
+      "last": "2026-07-29T21:15:08.898528+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-29T21:15:08.898528+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo"
+        },
+        {
+          "date": "2026-07-29T20:09:12.729030+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo"
+        }
+      ],
+      "score": 1.920285138,
+      "source_file": "apps/desktop/src-tauri/src/db/mod.rs",
+      "status": "preferred",
+      "uses": 2
+    },
+    "apps_desktop_src_tauri_src_db_mod_contextsourcefile": {
+      "code_fingerprint": "6b27b24bd6137b6b5734b5a95a86e7b270143f2c6d2ada59b3a708f0891970af",
+      "label": "ContextSourceFile",
+      "last": "2026-07-27T15:11:48.279105+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-27T15:11:48.279105+00:00",
+          "outcome": "useful",
+          "q": "Ok, continua con el desarrollo"
+        }
+      ],
+      "score": 0.91193702,
+      "source_file": "apps/desktop/src-tauri/src/db/mod.rs",
+      "status": "tentative",
+      "uses": 1
+    },
+    "apps_desktop_src_tauri_src_db_mod_customgptcontext": {
+      "code_fingerprint": "6b27b24bd6137b6b5734b5a95a86e7b270143f2c6d2ada59b3a708f0891970af",
+      "label": "CustomGptContext",
+      "last": "2026-07-30T15:38:13.832668+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-30T15:38:13.832668+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo"
+        }
+      ],
+      "score": 0.977804404,
+      "source_file": "apps/desktop/src-tauri/src/db/mod.rs",
+      "status": "tentative",
+      "uses": 1
+    },
+    "apps_desktop_src_tauri_src_db_mod_database": {
+      "code_fingerprint": "6b27b24bd6137b6b5734b5a95a86e7b270143f2c6d2ada59b3a708f0891970af",
+      "label": "Database",
+      "last": "2026-07-31T14:46:56.277106+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-31T14:46:56.277106+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo"
+        },
+        {
+          "date": "2026-07-31T12:41:14.001440+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo"
+        },
+        {
+          "date": "2026-07-31T12:09:09.332232+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo"
+        },
+        {
+          "date": "2026-07-31T05:02:40.111187+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo"
+        },
+        {
+          "date": "2026-07-31T04:47:44.986937+00:00",
+          "outcome": "useful",
+          "q": "Continue ChatyGPT development with readable scheduled-run details and auditable history export"
+        }
+      ],
+      "score": 31.184690855,
+      "source_file": "apps/desktop/src-tauri/src/db/mod.rs",
+      "status": "preferred",
+      "uses": 33
+    },
+    "apps_desktop_src_tauri_src_db_mod_database_context_source_file": {
+      "code_fingerprint": "6b27b24bd6137b6b5734b5a95a86e7b270143f2c6d2ada59b3a708f0891970af",
+      "label": ".context_source_file()",
+      "last": "2026-07-27T15:11:48.279105+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-27T15:11:48.279105+00:00",
+          "outcome": "useful",
+          "q": "Ok, continua con el desarrollo"
+        }
+      ],
+      "score": 0.91193702,
+      "source_file": "apps/desktop/src-tauri/src/db/mod.rs",
+      "status": "tentative",
+      "uses": 1
+    },
+    "apps_desktop_src_tauri_src_db_mod_database_conversation_summary_input": {
+      "code_fingerprint": "6b27b24bd6137b6b5734b5a95a86e7b270143f2c6d2ada59b3a708f0891970af",
+      "label": ".conversation_summary_input()",
+      "last": "2026-07-24T21:07:32.450376+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-24T21:07:32.450376+00:00",
+          "outcome": "useful",
+          "q": "Continua con el desarrollo"
+        }
+      ],
+      "score": 0.855737804,
+      "source_file": "apps/desktop/src-tauri/src/db/mod.rs",
+      "status": "tentative",
+      "uses": 1
+    },
+    "apps_desktop_src_tauri_src_db_mod_database_conversation_summary_overview": {
+      "code_fingerprint": "6b27b24bd6137b6b5734b5a95a86e7b270143f2c6d2ada59b3a708f0891970af",
+      "label": ".conversation_summary_overview()",
+      "last": "2026-07-24T21:07:32.450376+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-24T21:07:32.450376+00:00",
+          "outcome": "useful",
+          "q": "Continua con el desarrollo"
+        }
+      ],
+      "score": 0.855737804,
+      "source_file": "apps/desktop/src-tauri/src/db/mod.rs",
+      "status": "tentative",
+      "uses": 1
+    },
+    "apps_desktop_src_tauri_src_db_mod_database_conversation_view": {
+      "code_fingerprint": "6b27b24bd6137b6b5734b5a95a86e7b270143f2c6d2ada59b3a708f0891970af",
+      "label": ".conversation_view()",
+      "last": "2026-07-29T18:41:41.211685+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-29T18:41:41.211685+00:00",
+          "outcome": "useful",
+          "q": "Continua con el desarrollo, pero despues de anadir un calculo visible del tiempo que tarda cada respuesta en el chat"
+        }
+      ],
+      "score": 0.958287961,
+      "source_file": "apps/desktop/src-tauri/src/db/mod.rs",
+      "status": "tentative",
+      "uses": 1
+    },
+    "apps_desktop_src_tauri_src_db_mod_database_prepare_chat_turn": {
+      "code_fingerprint": "6b27b24bd6137b6b5734b5a95a86e7b270143f2c6d2ada59b3a708f0891970af",
+      "label": ".prepare_chat_turn()",
+      "last": "2026-07-30T04:59:46.135436+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-30T04:59:46.135436+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo"
+        },
+        {
+          "date": "2026-07-29T19:29:19.407633+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo"
+        },
+        {
+          "date": "2026-07-25T06:51:43.841952+00:00",
+          "outcome": "useful",
+          "q": "Continua con el desarrollo"
+        }
+      ],
+      "score": 2.7906561,
+      "source_file": "apps/desktop/src-tauri/src/db/mod.rs",
+      "status": "preferred",
+      "uses": 3
+    },
+    "apps_desktop_src_tauri_src_db_mod_database_prepare_semantic_chat_turn": {
+      "code_fingerprint": "6b27b24bd6137b6b5734b5a95a86e7b270143f2c6d2ada59b3a708f0891970af",
+      "label": ".prepare_semantic_chat_turn()",
+      "last": "2026-07-30T04:59:46.135436+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-30T04:59:46.135436+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo"
+        }
+      ],
+      "score": 0.967838748,
+      "source_file": "apps/desktop/src-tauri/src/db/mod.rs",
+      "status": "tentative",
+      "uses": 1
+    },
+    "apps_desktop_src_tauri_src_db_mod_database_recent_context": {
+      "code_fingerprint": "6b27b24bd6137b6b5734b5a95a86e7b270143f2c6d2ada59b3a708f0891970af",
+      "label": ".recent_context()",
+      "last": "2026-07-28T20:29:39.508104+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-28T20:29:39.508104+00:00",
+          "outcome": "useful",
+          "q": "Al quitar uno de los dos libros que he cargado en el chat, y al hacer la pregunta \"Cuantos temas tiene?\", el chat sigue pensando que tiene los dos libros y me pregunta por cual de ellos me refiero"
+        },
+        {
+          "date": "2026-07-28T17:14:38.462875+00:00",
+          "outcome": "useful",
+          "q": "Porque en el chat me pide varias veces, o sea cada vez que mando una petición, autorización para cambiar el nombre del chat?"
+        }
+      ],
+      "score": 1.873117988,
+      "source_file": "apps/desktop/src-tauri/src/db/mod.rs",
+      "status": "preferred",
+      "uses": 2
+    },
+    "apps_desktop_src_tauri_src_db_mod_database_record_remote_state": {
+      "code_fingerprint": "6b27b24bd6137b6b5734b5a95a86e7b270143f2c6d2ada59b3a708f0891970af",
+      "label": ".record_remote_state()",
+      "last": "2026-07-29T18:41:41.211685+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-29T18:41:41.211685+00:00",
+          "outcome": "useful",
+          "q": "Continua con el desarrollo, pero despues de anadir un calculo visible del tiempo que tarda cada respuesta en el chat"
+        }
+      ],
+      "score": 0.958287961,
+      "source_file": "apps/desktop/src-tauri/src/db/mod.rs",
+      "status": "tentative",
+      "uses": 1
+    },
+    "apps_desktop_src_tauri_src_db_mod_database_select_attachment_chunks": {
+      "code_fingerprint": "6b27b24bd6137b6b5734b5a95a86e7b270143f2c6d2ada59b3a708f0891970af",
+      "label": ".select_attachment_chunks()",
+      "last": "2026-07-27T18:07:47.201849+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-27T18:07:47.201849+00:00",
+          "outcome": "useful",
+          "q": "Ok, continua"
+        }
+      ],
+      "score": 0.914515645,
+      "source_file": "apps/desktop/src-tauri/src/db/mod.rs",
+      "status": "tentative",
+      "uses": 1
+    },
+    "apps_desktop_src_tauri_src_db_mod_database_select_attachment_chunks_hybrid": {
+      "code_fingerprint": "6b27b24bd6137b6b5734b5a95a86e7b270143f2c6d2ada59b3a708f0891970af",
+      "label": ".select_attachment_chunks_hybrid()",
+      "last": "2026-07-27T18:24:46.723510+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-27T18:24:46.723510+00:00",
+          "outcome": "useful",
+          "q": "Ok, continua"
+        }
+      ],
+      "score": 0.914765011,
+      "source_file": "apps/desktop/src-tauri/src/db/mod.rs",
+      "status": "tentative",
+      "uses": 1
+    },
+    "apps_desktop_src_tauri_src_db_mod_database_task_context": {
+      "code_fingerprint": "6b27b24bd6137b6b5734b5a95a86e7b270143f2c6d2ada59b3a708f0891970af",
+      "label": ".task_context()",
+      "last": "2026-07-29T19:29:19.407633+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-29T19:29:19.407633+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo"
+        },
+        {
+          "date": "2026-07-27T15:11:48.279105+00:00",
+          "outcome": "useful",
+          "q": "Ok, continua con el desarrollo"
+        }
+      ],
+      "score": 1.870957712,
+      "source_file": "apps/desktop/src-tauri/src/db/mod.rs",
+      "status": "preferred",
+      "uses": 2
+    },
+    "apps_desktop_src_tauri_src_db_mod_database_update_attachment_ingestion": {
+      "code_fingerprint": "6b27b24bd6137b6b5734b5a95a86e7b270143f2c6d2ada59b3a708f0891970af",
+      "label": ".update_attachment_ingestion()",
+      "last": "2026-07-25T19:49:55.361806+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-25T19:49:55.361806+00:00",
+          "outcome": "useful",
+          "q": "He intentado adjunta un pdf grande y no deja de fallar"
+        }
+      ],
+      "score": 0.87464977,
+      "source_file": "apps/desktop/src-tauri/src/db/mod.rs",
+      "status": "tentative",
+      "uses": 1
+    },
+    "apps_desktop_src_tauri_src_db_mod_document_chunk_selection_is_relevant_bounded_and_traceable": {
+      "code_fingerprint": "6b27b24bd6137b6b5734b5a95a86e7b270143f2c6d2ada59b3a708f0891970af",
+      "label": "document_chunk_selection_is_relevant_bounded_and_traceable()",
+      "last": "2026-07-25T06:51:43.841952+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-25T06:51:43.841952+00:00",
+          "outcome": "useful",
+          "q": "Continua con el desarrollo"
+        }
+      ],
+      "score": 0.863796661,
+      "source_file": "apps/desktop/src-tauri/src/db/mod.rs",
+      "status": "tentative",
+      "uses": 1
+    },
+    "apps_desktop_src_tauri_src_db_mod_retrying_failed_attachment_discards_terminal_broker_file_id": {
+      "code_fingerprint": "6b27b24bd6137b6b5734b5a95a86e7b270143f2c6d2ada59b3a708f0891970af",
+      "label": "retrying_failed_attachment_discards_terminal_broker_file_id()",
+      "last": "2026-07-28T16:38:03.808682+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-28T16:38:03.808682+00:00",
+          "outcome": "useful",
+          "q": "Estoy subiendo un pdf de 2000 y pico paginas, en el broker he puesto un limite de 5000 paginas, sin embargo, la subida me da error: El PDF supera el límite de páginas. Tiene 2.204 páginas y el Broker admite 2.000 por conversión."
+        }
+      ],
+      "score": 0.93454508,
+      "source_file": "apps/desktop/src-tauri/src/db/mod.rs",
+      "status": "tentative",
+      "uses": 1
+    },
+    "apps_desktop_src_tauri_src_db_mod_semanticchatworkflow": {
+      "code_fingerprint": "6b27b24bd6137b6b5734b5a95a86e7b270143f2c6d2ada59b3a708f0891970af",
+      "label": "SemanticChatWorkflow",
+      "last": "2026-07-30T04:59:46.135436+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-30T04:59:46.135436+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo"
+        }
+      ],
+      "score": 0.967838748,
+      "source_file": "apps/desktop/src-tauri/src/db/mod.rs",
+      "status": "tentative",
+      "uses": 1
+    },
+    "apps_desktop_src_tauri_src_export": {
+      "code_fingerprint": "3744bb67ea3fb18ae03ed9902c2282e21822903ec514653ed87760e0d34bc577",
+      "label": "export.rs",
+      "last": "2026-07-31T14:10:02.739873+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-31T14:10:02.739873+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo"
+        },
+        {
+          "date": "2026-07-31T04:47:44.986937+00:00",
+          "outcome": "useful",
+          "q": "Continue ChatyGPT development with readable scheduled-run details and auditable history export"
+        },
+        {
+          "date": "2026-07-30T15:10:02.080635+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo"
+        },
+        {
+          "date": "2026-07-27T18:42:48.720923+00:00",
+          "outcome": "useful",
+          "q": "Ok, continua"
+        }
+      ],
+      "score": 3.881906423,
+      "source_file": "apps/desktop/src-tauri/src/export.rs",
+      "status": "preferred",
+      "uses": 4
+    },
+    "apps_desktop_src_tauri_src_lib": {
+      "code_fingerprint": "235ff52cb39defda175522dd68246236bf60233b51c18dc0601b65bdb54b0e1c",
+      "label": "lib.rs",
+      "last": "2026-07-30T21:26:36.318425+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-30T21:26:36.318425+00:00",
+          "outcome": "useful",
+          "q": "Continue ChatyGPT development with retryable failed scheduled runs and an in-app notification center"
+        }
+      ],
+      "score": 0.98328534,
+      "source_file": "apps/desktop/src-tauri/src/lib.rs",
+      "status": "tentative",
+      "uses": 1
+    },
+    "apps_desktop_src_tauri_src_lib_appstate": {
+      "code_fingerprint": "235ff52cb39defda175522dd68246236bf60233b51c18dc0601b65bdb54b0e1c",
+      "label": "AppState",
+      "last": "2026-07-29T17:50:40.719521+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-29T17:50:40.719521+00:00",
+          "outcome": "useful",
+          "q": "Diagnosticar por qué ChatyGPT consulta capabilities en localhost y pierde el sandbox"
+        }
+      ],
+      "score": 0.95750399,
+      "source_file": "apps/desktop/src-tauri/src/lib.rs",
+      "status": "tentative",
+      "uses": 1
+    },
+    "apps_desktop_src_tauri_src_lib_diagnose_broker": {
+      "code_fingerprint": "235ff52cb39defda175522dd68246236bf60233b51c18dc0601b65bdb54b0e1c",
+      "label": "diagnose_broker()",
+      "last": "2026-07-29T17:50:40.719521+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-29T17:50:40.719521+00:00",
+          "outcome": "useful",
+          "q": "Diagnosticar por qué ChatyGPT consulta capabilities en localhost y pierde el sandbox"
+        }
+      ],
+      "score": 0.95750399,
+      "source_file": "apps/desktop/src-tauri/src/lib.rs",
+      "status": "tentative",
+      "uses": 1
+    },
+    "apps_desktop_src_tauri_src_lib_list_projects": {
+      "code_fingerprint": "235ff52cb39defda175522dd68246236bf60233b51c18dc0601b65bdb54b0e1c",
+      "label": "list_projects()",
+      "last": "2026-07-29T19:56:38.560179+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-29T19:56:38.560179+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo"
+        }
+      ],
+      "score": 0.95944116,
+      "source_file": "apps/desktop/src-tauri/src/lib.rs",
+      "status": "tentative",
+      "uses": 1
+    },
+    "apps_desktop_src_tauri_src_lib_remove_attachment": {
+      "code_fingerprint": "235ff52cb39defda175522dd68246236bf60233b51c18dc0601b65bdb54b0e1c",
+      "label": "remove_attachment()",
+      "last": "2026-07-28T20:29:39.508104+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-28T20:29:39.508104+00:00",
+          "outcome": "useful",
+          "q": "Al quitar uno de los dos libros que he cargado en el chat, y al hacer la pregunta \"Cuantos temas tiene?\", el chat sigue pensando que tiene los dos libros y me pregunta por cual de ellos me refiero"
+        }
+      ],
+      "score": 0.938024272,
+      "source_file": "apps/desktop/src-tauri/src/lib.rs",
+      "status": "tentative",
+      "uses": 1
+    },
+    "apps_desktop_src_tauri_src_lib_send_chat_turn": {
+      "code_fingerprint": "235ff52cb39defda175522dd68246236bf60233b51c18dc0601b65bdb54b0e1c",
+      "label": "send_chat_turn()",
+      "last": "2026-07-29T18:02:48.370069+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-29T18:02:48.370069+00:00",
+          "outcome": "useful",
+          "q": "El error de sandbox sigue apareciendo y está escondido abajo a la izquierda"
+        }
+      ],
+      "score": 0.957690325,
+      "source_file": "apps/desktop/src-tauri/src/lib.rs",
+      "status": "tentative",
+      "uses": 1
+    },
+    "apps_desktop_src_tauri_src_lib_validated_text": {
+      "code_fingerprint": "235ff52cb39defda175522dd68246236bf60233b51c18dc0601b65bdb54b0e1c",
+      "label": "validated_text()",
+      "last": "2026-07-29T21:15:08.898528+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-29T21:15:08.898528+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo"
+        }
+      ],
+      "score": 0.960650461,
+      "source_file": "apps/desktop/src-tauri/src/lib.rs",
+      "status": "tentative",
+      "uses": 1
+    },
+    "apps_desktop_src_tauri_src_startup": {
+      "code_fingerprint": "7d5449208b219473e8a86884bc30a3f5210b7f53496b688ee4ff278fef4aa785",
+      "label": "startup.rs",
+      "last": "2026-07-31T14:46:56.277106+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-31T14:46:56.277106+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo"
+        }
+      ],
+      "score": 0.999836301,
+      "source_file": "apps/desktop/src-tauri/src/startup.rs",
+      "status": "tentative",
+      "uses": 1
+    },
+    "apps_desktop_src_tauri_src_startup_protect_token": {
+      "code_fingerprint": "7d5449208b219473e8a86884bc30a3f5210b7f53496b688ee4ff278fef4aa785",
+      "label": "protect_token()",
+      "last": "2026-07-31T14:46:56.277106+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-31T14:46:56.277106+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo"
+        }
+      ],
+      "score": 0.999836301,
+      "source_file": "apps/desktop/src-tauri/src/startup.rs",
+      "status": "tentative",
+      "uses": 1
+    },
+    "apps_desktop_src_tauri_src_startup_refresh_protected_token_if_enabled": {
+      "code_fingerprint": "7d5449208b219473e8a86884bc30a3f5210b7f53496b688ee4ff278fef4aa785",
+      "label": "refresh_protected_token_if_enabled()",
+      "last": "2026-07-31T14:46:56.277106+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-31T14:46:56.277106+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo"
+        }
+      ],
+      "score": 0.999836301,
+      "source_file": "apps/desktop/src-tauri/src/startup.rs",
+      "status": "tentative",
+      "uses": 1
+    },
+    "apps_desktop_src_tauri_src_task_runtime_cancel_task": {
+      "code_fingerprint": "4d230434c7f10a1d7717244105b10703512253e5e2473b24ce0e1e4a42e9679d",
+      "label": "cancel_task()",
+      "last": "2026-07-31T04:37:30.933987+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-31T04:37:30.933987+00:00",
+          "outcome": "useful",
+          "q": "Continue ChatyGPT development with cancellation of active scheduled runs and history filters"
+        }
+      ],
+      "score": 0.990107318,
+      "source_file": "apps/desktop/src-tauri/src/task_runtime.rs",
+      "status": "tentative",
+      "uses": 1
+    },
+    "apps_desktop_src_tauri_src_task_runtime_chat_request": {
+      "code_fingerprint": "4d230434c7f10a1d7717244105b10703512253e5e2473b24ce0e1e4a42e9679d",
+      "label": "chat_request()",
+      "last": "2026-07-30T15:38:13.832668+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-30T15:38:13.832668+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo"
+        },
+        {
+          "date": "2026-07-30T04:59:46.135436+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo"
+        },
+        {
+          "date": "2026-07-29T19:29:19.407633+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo"
+        },
+        {
+          "date": "2026-07-28T20:29:39.508104+00:00",
+          "outcome": "useful",
+          "q": "Al quitar uno de los dos libros que he cargado en el chat, y al hacer la pregunta \"Cuantos temas tiene?\", el chat sigue pensando que tiene los dos libros y me pregunta por cual de ellos me refiero"
+        },
+        {
+          "date": "2026-07-28T17:14:38.462875+00:00",
+          "outcome": "useful",
+          "q": "Porque en el chat me pide varias veces, o sea cada vez que mando una petición, autorización para cambiar el nombre del chat?"
+        }
+      ],
+      "score": 6.497064501,
+      "source_file": "apps/desktop/src-tauri/src/task_runtime.rs",
+      "status": "preferred",
+      "uses": 7
+    },
+    "apps_desktop_src_tauri_src_task_runtime_chatexecutionoptions": {
+      "code_fingerprint": "4d230434c7f10a1d7717244105b10703512253e5e2473b24ce0e1e4a42e9679d",
+      "label": "ChatExecutionOptions",
+      "last": "2026-07-26T21:07:17.747555+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-26T21:07:17.747555+00:00",
+          "outcome": "useful",
+          "q": "Haz los cambios necesarios para que, siguiendo el contrato del ChatyGPT y su proposito, aproveche las nuevas posiblidades que da el Broker AI"
+        }
+      ],
+      "score": 0.896205649,
+      "source_file": "apps/desktop/src-tauri/src/task_runtime.rs",
+      "status": "tentative",
+      "uses": 1
+    },
+    "apps_desktop_src_tauri_src_task_runtime_sandbox_is_explicit_and_requires_broker_capability": {
+      "code_fingerprint": "4d230434c7f10a1d7717244105b10703512253e5e2473b24ce0e1e4a42e9679d",
+      "label": "sandbox_is_explicit_and_requires_broker_capability()",
+      "last": "2026-07-29T18:21:17.051995+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-29T18:21:17.051995+00:00",
+          "outcome": "useful",
+          "q": "Parece ser que hay una divergencia en los parametros de comunicación, mira a ver si lo puedes arreglar"
+        }
+      ],
+      "score": 0.957974305,
+      "source_file": "apps/desktop/src-tauri/src/task_runtime.rs",
+      "status": "tentative",
+      "uses": 1
+    },
+    "apps_desktop_src_tauri_src_task_runtime_start_attachment_semantic_index": {
+      "code_fingerprint": "4d230434c7f10a1d7717244105b10703512253e5e2473b24ce0e1e4a42e9679d",
+      "label": "start_attachment_semantic_index()",
+      "last": "2026-07-27T18:24:46.723510+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-27T18:24:46.723510+00:00",
+          "outcome": "useful",
+          "q": "Ok, continua"
+        }
+      ],
+      "score": 0.914765011,
+      "source_file": "apps/desktop/src-tauri/src/task_runtime.rs",
+      "status": "tentative",
+      "uses": 1
+    },
+    "apps_desktop_src_tauri_src_task_runtime_start_chat_turn": {
+      "code_fingerprint": "4d230434c7f10a1d7717244105b10703512253e5e2473b24ce0e1e4a42e9679d",
+      "label": "start_chat_turn()",
+      "last": "2026-07-31T12:09:09.332232+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-31T12:09:09.332232+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo"
+        },
+        {
+          "date": "2026-07-30T15:38:13.832668+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo"
+        },
+        {
+          "date": "2026-07-24T20:49:11.972330+00:00",
+          "outcome": "useful",
+          "q": "Continua con el desarrollo"
+        }
+      ],
+      "score": 2.830598699,
+      "source_file": "apps/desktop/src-tauri/src/task_runtime.rs",
+      "status": "preferred",
+      "uses": 3
+    },
+    "apps_desktop_src_tauri_tauri_conf_app": {
+      "code_fingerprint": "86baec7aeb6548f2598d0e1eaaade7ff623a7068bd20d29a815893e5ce4092c4",
+      "label": "app",
+      "last": "2026-07-30T20:15:02.036353+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-30T20:15:02.036353+00:00",
+          "outcome": "useful",
+          "q": "Where should portable image cropping integrate with screen and camera attachments in ChatyGPT?"
+        }
+      ],
+      "score": 0.982156815,
+      "source_file": "apps/desktop/src-tauri/tauri.conf.json",
+      "status": "tentative",
+      "uses": 1
+    },
+    "docs_architecture_vault_projection": {
+      "code_fingerprint": "40c88abec47d719327581f813df74f3dd307361f37997b6da51e483dd732df2e",
+      "label": "Vault as Projection",
+      "last": "2026-07-27T18:42:48.720923+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-27T18:42:48.720923+00:00",
+          "outcome": "useful",
+          "q": "Ok, continua"
+        }
+      ],
+      "score": 0.915029733,
+      "source_file": "docs/ARCHITECTURE.md",
+      "status": "tentative",
+      "uses": 1
+    },
+    "image": {
+      "code_fingerprint": "",
+      "label": "Image",
+      "last": "2026-07-30T20:15:02.036353+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-30T20:15:02.036353+00:00",
+          "outcome": "useful",
+          "q": "Where should portable image cropping integrate with screen and camera attachments in ChatyGPT?"
+        }
+      ],
+      "score": 0.982156815,
+      "source_file": "",
+      "status": "tentative",
+      "uses": 1
+    },
+    "package_dependencies_react": {
+      "code_fingerprint": "9e47b53c1b40d3adcf576798b6d446845ac2f5e1cf2bd3354f741938b3d1742a",
+      "label": "react",
+      "last": "2026-07-30T19:25:08.683397+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-30T19:25:08.683397+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo. Pero ten en cuenta que los resultados me los estás presentando en Markdown, y me gustaría verlos en texto normal, manteniendo el formato descrito en el markdown"
+        }
+      ],
+      "score": 0.981370936,
+      "source_file": "package.json",
+      "status": "tentative",
+      "uses": 1
+    },
+    "tests_test_foundations_migrationtests": {
+      "code_fingerprint": "e5d5233d973356bedc183b37ed51e988bf2f4afe300ee44438323b7df5f62902",
+      "label": "MigrationTests",
+      "last": "2026-07-31T05:02:40.111187+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-31T05:02:40.111187+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo"
+        }
+      ],
+      "score": 0.990506987,
+      "source_file": "tests/test_foundations.py",
+      "status": "tentative",
+      "uses": 1
+    }
+  },
+  "version": 1
+}

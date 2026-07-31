@@ -1,0 +1,221 @@
+{
+  "node_count": 562,
+  "raw_edge_count": 1919,
+  "non_object_edges": 0,
+  "missing_endpoint_edges": 0,
+  "dangling_endpoint_edges": 110,
+  "self_loop_edges": 0,
+  "valid_candidate_edges": 1809,
+  "exact_duplicate_edges": 20,
+  "directed_unique_endpoint_pairs": 1605,
+  "directed_same_endpoint_collapsed_edges": 204,
+  "undirected_unique_endpoint_pairs": 1604,
+  "undirected_same_endpoint_collapsed_edges": 205,
+  "same_endpoint_group_count": 70,
+  "relation_variant_groups": 2,
+  "source_file_variant_groups": 0,
+  "source_location_variant_groups": 49,
+  "context_variant_groups": 29,
+  "post_build_graph_type": "Graph",
+  "post_build_node_count": 562,
+  "post_build_edge_count": 1605,
+  "post_build_error": "",
+  "producer_suppression": {
+    "path": "C:\\Users\\jfeli\\AppData\\Local\\Programs\\Python\\Python314\\Lib\\site-packages\\graphify\\extract.py",
+    "total_sites": 10,
+    "sites": [
+      {
+        "line": 957,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids = {n[\"id\"] for n in nodes}"
+      },
+      {
+        "line": 1106,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids = {n[\"id\"] for n in nodes}"
+      },
+      {
+        "line": 1108,
+        "name": "seen_doc_refs",
+        "tuple_arity": 0,
+        "sample": "seen_doc_refs: set[str] = set()"
+      },
+      {
+        "line": 1531,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids: set[str] = {n[\"id\"] for n in nodes}"
+      },
+      {
+        "line": 1948,
+        "name": "seen_keys",
+        "tuple_arity": 0,
+        "sample": "seen_keys: set[tuple] = set()"
+      },
+      {
+        "line": 2737,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids: set[str] = set()"
+      },
+      {
+        "line": 2845,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids: set[str] = set()"
+      },
+      {
+        "line": 2924,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids: set[str] = set()"
+      },
+      {
+        "line": 3419,
+        "name": "seen_ids",
+        "tuple_arity": 0,
+        "sample": "seen_ids: set[str] = set()"
+      },
+      {
+        "line": 3420,
+        "name": "seen_edges",
+        "tuple_arity": 4,
+        "sample": "seen_edges: set[tuple[str, str, str, str | None]] = set()"
+      }
+    ],
+    "error": ""
+  },
+  "examples": [
+    {
+      "source": "apps_desktop_src_tauri_src_db_mod_memoryitemview",
+      "target": "apps_desktop_src_tauri_src_db_mod_rs_string",
+      "edge_count": 11,
+      "relations": [
+        "references"
+      ],
+      "source_files": [
+        "apps/desktop/src-tauri/src/db/mod.rs"
+      ],
+      "source_locations": [
+        "L112",
+        "L113",
+        "L114",
+        "L115",
+        "L116",
+        "L117",
+        "L119",
+        "L120",
+        "L121",
+        "L122",
+        "L123"
+      ],
+      "contexts": [
+        "field",
+        "generic_arg"
+      ]
+    },
+    {
+      "source": "apps_desktop_src_tauri_src_broker_contracts_filestate",
+      "target": "apps_desktop_src_tauri_src_broker_contracts_rs_string",
+      "edge_count": 9,
+      "relations": [
+        "references"
+      ],
+      "source_files": [
+        "apps/desktop/src-tauri/src/broker/contracts.rs"
+      ],
+      "source_locations": [
+        "L107",
+        "L108",
+        "L109",
+        "L110",
+        "L111",
+        "L113",
+        "L117",
+        "L118",
+        "L119"
+      ],
+      "contexts": [
+        "field",
+        "generic_arg"
+      ]
+    },
+    {
+      "source": "apps_desktop_src_tauri_src_db_mod_semanticchatworkflow",
+      "target": "apps_desktop_src_tauri_src_db_mod_rs_string",
+      "edge_count": 9,
+      "relations": [
+        "references"
+      ],
+      "source_files": [
+        "apps/desktop/src-tauri/src/db/mod.rs"
+      ],
+      "source_locations": [
+        "L160",
+        "L161",
+        "L162",
+        "L163",
+        "L164",
+        "L165",
+        "L166",
+        "L168",
+        "L171"
+      ],
+      "contexts": [
+        "field",
+        "generic_arg"
+      ]
+    },
+    {
+      "source": "apps_desktop_src_tauri_src_db_mod_conversationmessage",
+      "target": "apps_desktop_src_tauri_src_db_mod_rs_string",
+      "edge_count": 8,
+      "relations": [
+        "references"
+      ],
+      "source_files": [
+        "apps/desktop/src-tauri/src/db/mod.rs"
+      ],
+      "source_locations": [
+        "L249",
+        "L250",
+        "L251",
+        "L253",
+        "L254",
+        "L255",
+        "L256",
+        "L260"
+      ],
+      "contexts": [
+        "field",
+        "generic_arg"
+      ]
+    },
+    {
+      "source": "apps_desktop_src_tauri_src_error_apperror",
+      "target": "apps_desktop_src_tauri_src_error_rs_string",
+      "edge_count": 8,
+      "relations": [
+        "references"
+      ],
+      "source_files": [
+        "apps/desktop/src-tauri/src/error.rs"
+      ],
+      "source_locations": [
+        "L11",
+        "L13",
+        "L15",
+        "L17",
+        "L19",
+        "L21",
+        "L23",
+        "L7"
+      ],
+      "contexts": [
+        "field"
+      ]
+    }
+  ]
+}

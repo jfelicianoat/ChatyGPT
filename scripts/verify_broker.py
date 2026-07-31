@@ -1,4 +1,4 @@
-"""Verificación reproducible y sin persistencia de secretos para AI Broker 2.5."""
+"""Verificación reproducible y sin persistencia de secretos para AI Broker 2.7."""
 
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ REQUIRED_TASK_STATES = {
     "routing",
     "planning",
     "resource_planning",
+    "converting",
     "chunking",
     "generating",
     "proposing",
@@ -27,6 +28,7 @@ REQUIRED_TASK_STATES = {
     "debating",
     "synthesizing",
     "verifying",
+    "waiting_for_memory",
     "waiting_for_tools",
     *TERMINAL_STATES,
 }
@@ -37,6 +39,7 @@ REQUIRED_PATHS = {
     "/api/v1/files": {"post"},
     "/api/v1/files/{file_id}": {"get"},
     "/api/v1/capabilities": {"get"},
+    "/api/v1/queue": {"get"},
     "/health/ready": {"get"},
 }
 
@@ -111,45 +114,19 @@ def smoke_payload(idempotency_key: str) -> dict[str, Any]:
             "attachments": [],
             "metadata": {"origin": "chatygpt_phase_0_smoke"},
         },
-        "output": {"format": "markdown", "json_schema": None, "language": "es"},
+        "output": {"format": "markdown", "language": "es"},
         "generation": {"temperature": 0, "max_output_tokens": 32},
         "model_requirements": {
-            "preferred_model": None,
-            "target_model": None,
             "fallback_allowed": True,
-            "cloud_allowed": False,
-            "allowed_providers": ["ollama"],
             "max_cost_usd": 0,
         },
         "execution": {
             "strategy": "single",
             "preset": "fast",
             "long_context": "fail",
-            "scheduling": "adaptive",
-            "max_proposers": 1,
-            "max_judges": 0,
-            "max_rounds": 1,
             "timeout_seconds": 120,
-            "early_stop": True,
-            "selection": {
-                "mode": "auto",
-                "diversity_policy": "different_families",
-                "arbiter_policy": "strongest_available",
-                "preferred_arbiter": None,
-                "allow_substitution": True,
-                "proposers": [],
-                "required_proposers": [],
-                "arbiter": None,
-                "proposer_count": 1,
-            },
-            "agent": {
-                "skills": ["web_search", "fetch_url", "calculator", "current_datetime"],
-                "max_iterations": 6,
-                "client_tools": [],
-            },
-            "proposer_skills": [],
         },
-        "risk": {"data_classification": "local_only", "human_review_required": False},
+        "risk": {"data_classification": "local_only"},
         "priority": 100,
         "prompt_compression": "off",
     }
@@ -166,17 +143,31 @@ def verify_read_contract(probe: BrokerProbe) -> list[Check]:
 
     _, capabilities = probe.request("GET", "/api/v1/capabilities")
     contract_version = capabilities.get("contract_version")
-    if contract_version != "2.5":
+    if contract_version != "2.7":
         raise VerificationError(f"versión contractual inesperada: {contract_version!r}")
+    ingestion_formats = capabilities.get("ingestion_formats")
+    if not isinstance(ingestion_formats, dict) or any(
+        not isinstance(group, str)
+        or not isinstance(extensions, list)
+        or any(not isinstance(extension, str) for extension in extensions)
+        for group, extensions in ingestion_formats.items()
+    ):
+        raise VerificationError(
+            "ingestion_formats debe ser un objeto de grupos con listas de extensiones"
+        )
     checks.append(
         Check(
             "capabilities",
             "passed",
             {
                 "contract_version": contract_version,
+                "derived_data_boundary": capabilities.get("derived_data_boundary"),
+                "work_lanes": capabilities.get("work_lanes", []),
                 "strategies": capabilities.get("strategies", []),
                 "file_ingestion": capabilities.get("file_ingestion"),
+                "ingestion_formats": ingestion_formats,
                 "sandbox_run_code": capabilities.get("sandbox_run_code"),
+                "long_context_map_reduce": capabilities.get("long_context_map_reduce"),
             },
         )
     )
@@ -325,4 +316,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-

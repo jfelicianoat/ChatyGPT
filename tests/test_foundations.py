@@ -10,7 +10,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATION = ROOT / "apps" / "desktop" / "src-tauri" / "migrations" / "0001_initial.sql"
-CONTRACT = ROOT / "contracts" / "broker" / "2.5" / "single-task.request.json"
+CONTRACT = ROOT / "contracts" / "broker" / "2.7" / "single-task.request.json"
 RECOVERY_QUERY = (
     ROOT
     / "apps"
@@ -445,7 +445,9 @@ class ContractFixtureTests(unittest.TestCase):
         self.assertTrue(payload["idempotency_key"])
         self.assertEqual("single", payload["execution"]["strategy"])
         self.assertEqual("local_only", payload["risk"]["data_classification"])
-        self.assertFalse(payload["model_requirements"]["cloud_allowed"])
+        self.assertNotIn("cloud_allowed", payload["model_requirements"])
+        self.assertNotIn("allowed_providers", payload["model_requirements"])
+        self.assertNotIn("human_review_required", payload["risk"])
         self.assertEqual(0, payload["model_requirements"]["max_cost_usd"])
 
     def test_no_secret_values_are_declared_in_persisted_settings(self) -> None:
@@ -456,6 +458,49 @@ class ContractFixtureTests(unittest.TestCase):
 
 
 class BuildConfigurationTests(unittest.TestCase):
+    def test_appearance_is_resolved_before_the_react_bundle_starts(self) -> None:
+        index = (ROOT / "apps" / "desktop" / "index.html").read_text(encoding="utf-8")
+        appearance = (
+            ROOT / "apps" / "desktop" / "src" / "appearance.ts"
+        ).read_text(encoding="utf-8")
+        storage_key = "chatygpt.appearance.v1"
+        self.assertIn(storage_key, index)
+        self.assertIn(storage_key, appearance)
+        self.assertIn('document.documentElement.dataset.theme = resolved', index)
+        self.assertIn('matchMedia("(prefers-color-scheme: dark)")', index)
+        self.assertLess(index.index(storage_key), index.index('src="/src/main.tsx"'))
+
+    def test_desktop_never_falls_back_to_broker_loopback(self) -> None:
+        broker_source = (
+            ROOT / "apps" / "desktop" / "src-tauri" / "src" / "broker" / "mod.rs"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            'const DEFAULT_BROKER_BASE_URL: &str = "http://192.168.1.52:8765";',
+            broker_source,
+        )
+        self.assertNotIn(
+            'unwrap_or_else(|_| "http://127.0.0.1:8765".to_owned())',
+            broker_source,
+        )
+
+    def test_windows_launcher_starts_the_release_app_with_broker_environment(self) -> None:
+        launcher = (ROOT / "Arrancar ChatyGPT.bat").read_text(encoding="utf-8")
+        self.assertIn(
+            "$env:CHATYGPT_BROKER_BASE_URL = 'http://192.168.1.52:8765'",
+            launcher,
+        )
+        self.assertIn(
+            "$releaseExe = Join-Path (Get-Location) "
+            "'apps\\desktop\\src-tauri\\target\\release\\chatygpt.exe'",
+            launcher,
+        )
+        self.assertIn("& $releaseExe", launcher)
+        self.assertIn(
+            'set "STAGED_EXE=apps\\desktop\\src-tauri\\target-next\\release\\chatygpt.exe"',
+            launcher,
+        )
+        self.assertIn('copy /y "%STAGED_EXE%" "%RELEASE_EXE%"', launcher)
+
     def test_windows_icon_required_by_tauri_is_a_real_ico(self) -> None:
         content = WINDOWS_ICON.read_bytes()
         self.assertGreater(len(content), 1_024)

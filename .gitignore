@@ -1,6 +1,10 @@
 node_modules/
+node_modules-broken-recovery/
+.pnpm-store/
+pnpm-recovery.log
 dist/
 target/
+target-next/
 *.db
 *.db-shm
 *.db-wal
