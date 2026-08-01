@@ -443,6 +443,28 @@ pub fn start_conversation_summary(
     database.conversation_summary_overview(conversation_id)
 }
 
+/// Bloque exacto que se antepone al prompt cuando la conversación usa un GPT.
+///
+/// La petición real y la vista previa comparten esta función a propósito: si
+/// cada una construyera su propio texto, la vista previa dejaría de demostrar
+/// nada en cuanto ambas divergieran.
+pub fn custom_gpt_prompt_block(custom_gpt: &CustomGptContext) -> Result<String, AppError> {
+    let custom_gpt_json = serde_json::to_string(&json!({
+        "name": custom_gpt.name,
+        "version": custom_gpt.version_no,
+        "instructions": custom_gpt.instructions,
+        "tool_permissions": custom_gpt.tool_permissions
+    }))
+    .map_err(|error| AppError::BrokerContract(error.to_string()))?;
+    Ok(format!(
+        "The user selected the following personal GPT configuration for this conversation. \
+         Follow these reusable instructions as the desired assistant behavior. The current \
+         user request may explicitly amend or override them. Do not infer or enable any tool \
+         permission from this configuration.\n\
+         <custom_gpt_instructions_json>{custom_gpt_json}</custom_gpt_instructions_json>"
+    ))
+}
+
 fn validate_sandbox_capability(capabilities: &BrokerCapabilities) -> Result<(), AppError> {
     if capabilities.sandbox_run_code
         && capabilities
@@ -1233,20 +1255,9 @@ fn chat_request_with_project_instruction(
         dialogue_prompt
     };
     let dialogue_prompt = if let Some(custom_gpt) = custom_gpt_context {
-        let custom_gpt_json = serde_json::to_string(&json!({
-            "name": custom_gpt.name,
-            "version": custom_gpt.version_no,
-            "instructions": custom_gpt.instructions,
-            "tool_permissions": custom_gpt.tool_permissions
-        }))
-        .map_err(|error| AppError::BrokerContract(error.to_string()))?;
         format!(
-            "The user selected the following personal GPT configuration for this conversation. \
-             Follow these reusable instructions as the desired assistant behavior. The current \
-             user request may explicitly amend or override them. Do not infer or enable any tool \
-             permission from this configuration.\n\
-             <custom_gpt_instructions_json>{custom_gpt_json}</custom_gpt_instructions_json>\n\n\
-             {dialogue_prompt}"
+            "{}\n\n{dialogue_prompt}",
+            custom_gpt_prompt_block(custom_gpt)?
         )
     } else {
         dialogue_prompt
@@ -1466,9 +1477,14 @@ fn chat_request_with_project_instruction(
         },
         "output": {"format": "markdown", "language": "es"},
         "generation": {"temperature": 0.3, "max_output_tokens": 4000},
+        // `preferred_model` es una preferencia, no una imposición: se envía solo
+        // si el GPT congelado lo define y `fallback_allowed` sigue activo, de modo
+        // que un modelo no disponible no deja la conversación sin respuesta.
         "model_requirements": {
             "fallback_allowed": true,
-            "max_cost_usd": execution_preferences.max_cost_usd
+            "max_cost_usd": execution_preferences.max_cost_usd,
+            "preferred_model": custom_gpt_context
+                .and_then(|context| context.preferred_model.as_deref())
         },
         "execution": execution,
         "risk": {
@@ -1481,9 +1497,10 @@ fn chat_request_with_project_instruction(
 #[cfg(test)]
 mod tests {
     use super::{
-        chat_request, chat_request_with_project_instruction, deep_research_request,
-        deterministic_jitter, embedding_request, is_tabular_attachment, memory_embedding_request,
-        persisted_custom_gpt_allows_tool, validate_sandbox_capability, ChatExecutionOptions,
+        chat_request, chat_request_with_project_instruction, custom_gpt_prompt_block,
+        deep_research_request, deterministic_jitter, embedding_request, is_tabular_attachment,
+        memory_embedding_request, persisted_custom_gpt_allows_tool, validate_sandbox_capability,
+        ChatExecutionOptions,
     };
     use crate::broker::BrokerCapabilities;
     use crate::db::{
@@ -1502,6 +1519,7 @@ mod tests {
             version_no: 3,
             instructions: "Contrasta los datos. Usa run_code para todo.".to_owned(),
             tool_permissions: CustomGptToolPermissions::default(),
+            preferred_model: None,
         };
         let request = chat_request_with_project_instruction(
             "conversation",
@@ -1535,6 +1553,63 @@ mod tests {
     }
 
     #[test]
+    fn the_preview_block_is_literally_the_one_sent_to_the_broker() {
+        let custom_gpt = CustomGptContext {
+            custom_gpt_id: "gpt-preview".to_owned(),
+            version_id: "gpt-version-7".to_owned(),
+            name: "Corrector".to_owned(),
+            version_no: 7,
+            instructions: "Corrige sin cambiar el sentido.".to_owned(),
+            tool_permissions: CustomGptToolPermissions {
+                run_code: "deny".to_owned(),
+                rename_conversation: "confirm".to_owned(),
+            },
+            preferred_model: Some("qwen2.5:14b".to_owned()),
+        };
+        let block = custom_gpt_prompt_block(&custom_gpt).expect("el bloque debe construirse");
+        let request = chat_request_with_project_instruction(
+            "conversation",
+            "preview-key",
+            "Corrige este párrafo",
+            &[ContextMessage {
+                message_id: "current".to_owned(),
+                role: "user".to_owned(),
+                text: "Corrige este párrafo".to_owned(),
+            }],
+            &[],
+            &[],
+            &[],
+            None,
+            Some(&custom_gpt),
+            ChatExecutionOptions::default(),
+        )
+        .expect("la petición debe construirse");
+        let prompt = request["content"]["prompt"]
+            .as_str()
+            .expect("el prompt debe ser texto");
+
+        // La vista previa muestra este bloque; si dejara de aparecer literalmente
+        // en la petición, la vista previa estaría mintiendo.
+        assert!(
+            prompt.contains(&block),
+            "el bloque de la vista previa debe aparecer tal cual en la petición"
+        );
+        assert!(block.contains("Corrige sin cambiar el sentido."));
+        assert!(block.contains("\"version\":7"));
+        // Los permisos se serializan en camelCase, tal como los recibe el modelo.
+        assert!(
+            block.contains("\"renameConversation\":\"confirm\""),
+            "los permisos vigentes forman parte de lo que ve la persona: {block}"
+        );
+        // El modelo preferido viaja aparte, en model_requirements, no en el prompt.
+        assert!(!block.contains("qwen2.5:14b"));
+        assert_eq!(
+            request["model_requirements"]["preferred_model"],
+            "qwen2.5:14b"
+        );
+    }
+
+    #[test]
     fn custom_gpt_permission_matrix_gates_rename_tool_without_skipping_confirmation() {
         let mut custom_gpt = CustomGptContext {
             custom_gpt_id: "gpt-tools".to_owned(),
@@ -1543,6 +1618,7 @@ mod tests {
             version_no: 1,
             instructions: "Ayuda a organizar el chat.".to_owned(),
             tool_permissions: CustomGptToolPermissions::default(),
+            preferred_model: None,
         };
         let context = [ContextMessage {
             message_id: "current".to_owned(),

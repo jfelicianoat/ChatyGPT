@@ -983,9 +983,64 @@ export type CustomGptView = {
     runCode: "deny" | "confirm";
     renameConversation: "deny" | "confirm";
   };
+  /** Modelo que el Broker intentará primero; null deja decidir al Broker. */
+  preferredModel: string | null;
+  /** Proyecto al que van los chats nuevos que eligen este GPT. */
+  defaultProjectId: string | null;
   versionNo: number;
   createdAt: string;
   updatedAt: string;
+};
+
+/** Lo que recibiría el modelo con este GPT, calculado sin enviar nada. */
+export type CustomGptPreview = {
+  customGptId: string;
+  name: string;
+  versionNo: number;
+  /** Texto exacto que se antepone al mensaje en la petición real. */
+  promptBlock: string;
+  preferredModel: string | null;
+  defaultProjectName: string | null;
+  conversationStarters: string[];
+  toolPermissions: CustomGptView["toolPermissions"];
+  activeKnowledgeCount: number;
+  disabledKnowledgeCount: number;
+  sensitiveKnowledgeCount: number;
+  unindexedKnowledgeCount: number;
+  readyFileCount: number;
+  pendingFileCount: number;
+  warnings: string[];
+};
+
+/** Revisión guardada de un GPT personal. */
+export type CustomGptVersionView = {
+  id: string;
+  versionNo: number;
+  instructions: string;
+  conversationStarters: string[];
+  preferredModel: string | null;
+  createdAt: string;
+  active: boolean;
+  toolPermissions: CustomGptView["toolPermissions"];
+  /** Respuestas que quedaron congeladas con esta versión exacta. */
+  taskCount: number;
+};
+
+/**
+ * Explica en una línea qué representa una revisión dentro del historial.
+ *
+ * Se apoya en `taskCount` para distinguir una revisión que llegó a usarse de
+ * otra que se sustituyó antes de enviar nada.
+ */
+export const customGptVersionSummary = (version: CustomGptVersionView): string => {
+  if (version.active) {
+    return version.taskCount === 0
+      ? "Versión en uso · todavía sin respuestas"
+      : `Versión en uso · ${version.taskCount} respuesta(s)`;
+  }
+  return version.taskCount === 0
+    ? "Revisión anterior · no llegó a usarse"
+    : `Revisión anterior · ${version.taskCount} respuesta(s) conservan esta versión`;
 };
 
 export type CustomGptExportReport = {

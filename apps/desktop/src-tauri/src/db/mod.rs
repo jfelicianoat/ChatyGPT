@@ -410,9 +410,30 @@ pub struct CustomGptView {
     pub instructions: String,
     pub conversation_starters: Vec<String>,
     pub tool_permissions: CustomGptToolPermissions,
+    /// Modelo que el Broker debe intentar primero; `None` deja decidir al Broker.
+    pub preferred_model: Option<String>,
+    /// Proyecto al que van los chats nuevos que eligen este GPT.
+    pub default_project_id: Option<String>,
     pub version_no: i64,
     pub created_at: String,
     pub updated_at: String,
+}
+
+/// Revisión guardada de un GPT personal, tal como se muestra en su historial.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomGptVersionView {
+    pub id: String,
+    pub version_no: i64,
+    pub instructions: String,
+    pub conversation_starters: Vec<String>,
+    pub preferred_model: Option<String>,
+    pub created_at: String,
+    /// Verdadero solo para la versión que se usaría ahora mismo.
+    pub active: bool,
+    pub tool_permissions: CustomGptToolPermissions,
+    /// Respuestas que quedaron congeladas con esta versión exacta.
+    pub task_count: i64,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -487,6 +508,9 @@ pub struct CustomGptContext {
     pub version_no: i64,
     pub instructions: String,
     pub tool_permissions: CustomGptToolPermissions,
+    /// Se congela con la versión: cambiar el GPT no altera respuestas ya pedidas.
+    #[serde(default)]
+    pub preferred_model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -749,6 +773,30 @@ fn validated_custom_gpt_fields(
         ));
     }
     Ok((name.to_owned(), description, instructions.to_owned()))
+}
+
+/// Normaliza el modelo preferido de un GPT contra el límite real del Broker.
+///
+/// `ModelRequirements.preferred_model` admite hasta 128 caracteres; validarlo
+/// aquí evita que una configuración inválida se descubra al fallar la tarea.
+fn validated_preferred_model(preferred_model: Option<&str>) -> Result<Option<String>, AppError> {
+    let Some(model) = preferred_model
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+    if model.chars().count() > 128 {
+        return Err(AppError::Validation(
+            "el modelo preferido supera los 128 caracteres que admite el Broker".to_owned(),
+        ));
+    }
+    if model.chars().any(|character| character.is_whitespace()) {
+        return Err(AppError::Validation(
+            "el modelo preferido no puede contener espacios".to_owned(),
+        ));
+    }
+    Ok(Some(model.to_owned()))
 }
 
 fn validated_conversation_starters(starters: &[String]) -> Result<Vec<String>, AppError> {
@@ -1531,9 +1579,12 @@ impl Database {
             instructions,
             &[],
             &CustomGptToolPermissions::default(),
+            None,
+            None,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn create_custom_gpt_with_starters(
         &self,
         name: &str,
@@ -1541,18 +1592,21 @@ impl Database {
         instructions: &str,
         conversation_starters: &[String],
         tool_permissions: &CustomGptToolPermissions,
+        preferred_model: Option<&str>,
+        default_project_id: Option<&str>,
     ) -> Result<CustomGptView, AppError> {
         let (name, description, instructions) =
             validated_custom_gpt_fields(name, description, instructions)?;
         let conversation_starters = validated_conversation_starters(conversation_starters)?;
         let tool_permissions = validated_custom_gpt_tool_permissions(tool_permissions)?;
+        let preferred_model = validated_preferred_model(preferred_model)?;
         let custom_gpt_id = format!("gpt_{}", Uuid::new_v4().simple());
         let version_id = format!("gpt_version_{}", Uuid::new_v4().simple());
         let configuration = CustomGptConfiguration {
             schema_version: 1,
             instructions,
             conversation_starters,
-            preferred_model: None,
+            preferred_model,
             tools_enabled: tool_permissions.requires_confirmation("run_code")
                 || tool_permissions.requires_confirmation("rename_conversation"),
         };
@@ -1561,9 +1615,9 @@ impl Database {
         let connection = self.connect()?;
         let transaction = connection.unchecked_transaction()?;
         transaction.execute(
-            "INSERT INTO custom_gpts(id, name, description)
-             VALUES (?1, ?2, ?3)",
-            params![custom_gpt_id, name, description],
+            "INSERT INTO custom_gpts(id, name, description, default_project_id)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![custom_gpt_id, name, description, default_project_id],
         )?;
         transaction.execute(
             "INSERT INTO gpt_versions(
@@ -1617,18 +1671,20 @@ impl Database {
         description: Option<&str>,
         instructions: &str,
     ) -> Result<CustomGptView, AppError> {
-        let starters = self.custom_gpt_view(custom_gpt_id)?.conversation_starters;
-        let permissions = self.custom_gpt_view(custom_gpt_id)?.tool_permissions;
+        let current = self.custom_gpt_view(custom_gpt_id)?;
         self.update_custom_gpt_with_starters(
             custom_gpt_id,
             name,
             description,
             instructions,
-            &starters,
-            &permissions,
+            &current.conversation_starters,
+            &current.tool_permissions,
+            current.preferred_model.as_deref(),
+            current.default_project_id.as_deref(),
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn update_custom_gpt_with_starters(
         &self,
         custom_gpt_id: &str,
@@ -1637,17 +1693,20 @@ impl Database {
         instructions: &str,
         conversation_starters: &[String],
         tool_permissions: &CustomGptToolPermissions,
+        preferred_model: Option<&str>,
+        default_project_id: Option<&str>,
     ) -> Result<CustomGptView, AppError> {
         let (name, description, instructions) =
             validated_custom_gpt_fields(name, description, instructions)?;
         let conversation_starters = validated_conversation_starters(conversation_starters)?;
         let tool_permissions = validated_custom_gpt_tool_permissions(tool_permissions)?;
+        let preferred_model = validated_preferred_model(preferred_model)?;
         let version_id = format!("gpt_version_{}", Uuid::new_v4().simple());
         let configuration = CustomGptConfiguration {
             schema_version: 1,
             instructions,
             conversation_starters,
-            preferred_model: None,
+            preferred_model,
             tools_enabled: tool_permissions.requires_confirmation("run_code")
                 || tool_permissions.requires_confirmation("rename_conversation"),
         };
@@ -1676,9 +1735,15 @@ impl Database {
         transaction.execute(
             "UPDATE custom_gpts
              SET name = ?2, description = ?3, active_version_id = ?4,
-                 updated_at = datetime('now')
+                 default_project_id = ?5, updated_at = datetime('now')
              WHERE id = ?1 AND archived_at IS NULL",
-            params![custom_gpt_id, name, description, version_id],
+            params![
+                custom_gpt_id,
+                name,
+                description,
+                version_id,
+                default_project_id
+            ],
         )?;
         for (tool_name, effect) in [
             ("run_code", tool_permissions.run_code.as_str()),
@@ -1717,6 +1782,7 @@ impl Database {
         let mut statement = connection.prepare(
             "SELECT gpt.id, gpt.name, gpt.description, version.configuration_json,
                     version.version_no, gpt.created_at, gpt.updated_at,
+                    gpt.default_project_id,
                     COALESCE((
                       SELECT permission.effect FROM gpt_tool_permissions permission
                       WHERE permission.gpt_version_id = version.id
@@ -1742,8 +1808,9 @@ impl Database {
                     row.get::<_, i64>(4)?,
                     row.get::<_, String>(5)?,
                     row.get::<_, String>(6)?,
-                    row.get::<_, String>(7)?,
+                    row.get::<_, Option<String>>(7)?,
                     row.get::<_, String>(8)?,
+                    row.get::<_, String>(9)?,
                 ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -1757,6 +1824,7 @@ impl Database {
                     version_no,
                     created_at,
                     updated_at,
+                    default_project_id,
                     run_code,
                     rename_conversation,
                 )| {
@@ -1776,6 +1844,8 @@ impl Database {
                             run_code,
                             rename_conversation,
                         },
+                        preferred_model: configuration.preferred_model,
+                        default_project_id,
                         version_no,
                         created_at,
                         updated_at,
@@ -1783,6 +1853,202 @@ impl Database {
                 },
             )
             .collect()
+    }
+
+    /// Crea una copia independiente de un GPT a partir de su versión activa.
+    ///
+    /// Deliberadamente **no** arrastra permisos, conocimiento ni archivos: un
+    /// duplicado nace tan restringido como un GPT importado, para que copiar un
+    /// asistente no sea una vía silenciosa de propagar accesos o datos sensibles.
+    pub fn duplicate_custom_gpt(
+        &self,
+        custom_gpt_id: &str,
+        new_name: Option<&str>,
+    ) -> Result<CustomGptView, AppError> {
+        let source = self.custom_gpt_view(custom_gpt_id)?;
+        let proposed = match new_name.map(str::trim).filter(|value| !value.is_empty()) {
+            Some(name) => name.to_owned(),
+            None => {
+                // El sufijo se recorta para no superar el límite de nombre.
+                let suffix = " (copia)";
+                let room = 80 - suffix.chars().count();
+                let base: String = source.name.chars().take(room).collect();
+                format!("{base}{suffix}")
+            }
+        };
+        let duplicate = self.create_custom_gpt_with_starters(
+            &proposed,
+            source.description.as_deref(),
+            &source.instructions,
+            &source.conversation_starters,
+            // Permisos denegados por defecto, como en la importación.
+            &CustomGptToolPermissions::default(),
+            // El modelo y el proyecto sí se heredan: son preferencias, no accesos.
+            source.preferred_model.as_deref(),
+            source.default_project_id.as_deref(),
+        )?;
+        self.connect()?.execute(
+            "INSERT INTO audit_events(event_type, actor, payload_json)
+             VALUES ('custom_gpt.duplicated', 'user', ?1)",
+            params![serde_json::json!({
+                "source_custom_gpt_id": custom_gpt_id,
+                "custom_gpt_id": duplicate.id
+            })
+            .to_string()],
+        )?;
+        Ok(duplicate)
+    }
+
+    /// Devuelve todas las revisiones guardadas, de la más reciente a la primera.
+    ///
+    /// El historial es solo lectura: ninguna versión anterior se modifica jamás,
+    /// porque las tareas ya enviadas conservan congelada la que usaron.
+    pub fn list_custom_gpt_versions(
+        &self,
+        custom_gpt_id: &str,
+    ) -> Result<Vec<CustomGptVersionView>, AppError> {
+        let connection = self.connect()?;
+        let mut statement = connection.prepare(
+            "SELECT version.id, version.version_no, version.configuration_json,
+                    version.created_at,
+                    version.id = COALESCE(gpt.active_version_id, ''),
+                    COALESCE((
+                      SELECT permission.effect FROM gpt_tool_permissions permission
+                      WHERE permission.gpt_version_id = version.id
+                        AND permission.tool_name = 'run_code'
+                    ), 'deny'),
+                    COALESCE((
+                      SELECT permission.effect FROM gpt_tool_permissions permission
+                      WHERE permission.gpt_version_id = version.id
+                        AND permission.tool_name = 'rename_conversation'
+                    ), 'deny'),
+                    (SELECT COUNT(*) FROM broker_tasks task
+                     WHERE task.gpt_version_id = version.id)
+             FROM gpt_versions version
+             JOIN custom_gpts gpt ON gpt.id = version.custom_gpt_id
+             WHERE version.custom_gpt_id = ?1
+             ORDER BY version.version_no DESC",
+        )?;
+        let versions = statement
+            .query_map(params![custom_gpt_id], |row| {
+                let configuration_json: String = row.get(2)?;
+                let configuration: CustomGptConfiguration =
+                    serde_json::from_str(&configuration_json).map_err(|error| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            configuration_json.len(),
+                            rusqlite::types::Type::Text,
+                            Box::new(error),
+                        )
+                    })?;
+                Ok(CustomGptVersionView {
+                    id: row.get(0)?,
+                    version_no: row.get(1)?,
+                    instructions: configuration.instructions,
+                    conversation_starters: configuration.conversation_starters,
+                    preferred_model: configuration.preferred_model,
+                    created_at: row.get(3)?,
+                    active: row.get(4)?,
+                    tool_permissions: CustomGptToolPermissions {
+                        run_code: row.get(5)?,
+                        rename_conversation: row.get(6)?,
+                    },
+                    task_count: row.get(7)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        if versions.is_empty() {
+            return Err(AppError::NotFound(format!("GPT personal {custom_gpt_id}")));
+        }
+        Ok(versions)
+    }
+
+    /// Restaura una revisión anterior **creando una versión nueva** con su
+    /// contenido.
+    ///
+    /// No se reactiva la fila antigua ni se borra nada: así el historial sigue
+    /// siendo un registro fiel de lo que ocurrió y las respuestas ya emitidas
+    /// mantienen intacta la versión con la que se generaron.
+    pub fn restore_custom_gpt_version(
+        &self,
+        custom_gpt_id: &str,
+        version_id: &str,
+        confirmed: bool,
+    ) -> Result<CustomGptView, AppError> {
+        if !confirmed {
+            return Err(AppError::Validation(
+                "restaurar una versión anterior requiere confirmación".to_owned(),
+            ));
+        }
+        let connection = self.connect()?;
+        let transaction = connection.unchecked_transaction()?;
+        let (source_version_no, configuration_json): (i64, String) = transaction
+            .query_row(
+                "SELECT version.version_no, version.configuration_json
+                 FROM gpt_versions version
+                 JOIN custom_gpts gpt ON gpt.id = version.custom_gpt_id
+                 WHERE version.id = ?1 AND version.custom_gpt_id = ?2
+                   AND gpt.archived_at IS NULL",
+                params![version_id, custom_gpt_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?
+            .ok_or_else(|| {
+                AppError::NotFound(format!("la versión {version_id} no pertenece a este GPT"))
+            })?;
+        let active_version_id: Option<String> = transaction.query_row(
+            "SELECT active_version_id FROM custom_gpts WHERE id = ?1",
+            params![custom_gpt_id],
+            |row| row.get(0),
+        )?;
+        if active_version_id.as_deref() == Some(version_id) {
+            return Err(AppError::Conflict("esa versión ya es la activa".to_owned()));
+        }
+        let next_version: i64 = transaction.query_row(
+            "SELECT COALESCE(MAX(version_no), 0) + 1 FROM gpt_versions WHERE custom_gpt_id = ?1",
+            params![custom_gpt_id],
+            |row| row.get(0),
+        )?;
+        let new_version_id = format!("gpt_version_{}", Uuid::new_v4().simple());
+        transaction.execute(
+            "INSERT INTO gpt_versions(
+                id, custom_gpt_id, version_no, configuration_json
+             ) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                new_version_id,
+                custom_gpt_id,
+                next_version,
+                configuration_json
+            ],
+        )?;
+        // Los permisos también se copian de la versión restaurada: restaurar sin
+        // ellos daría un GPT que se comporta distinto al que se pidió recuperar.
+        transaction.execute(
+            "INSERT INTO gpt_tool_permissions(
+                id, gpt_version_id, tool_name, effect, scope_json
+             )
+             SELECT lower(hex(randomblob(16))), ?1, tool_name, effect, scope_json
+             FROM gpt_tool_permissions
+             WHERE gpt_version_id = ?2",
+            params![new_version_id, version_id],
+        )?;
+        transaction.execute(
+            "UPDATE custom_gpts
+             SET active_version_id = ?2, updated_at = datetime('now')
+             WHERE id = ?1 AND archived_at IS NULL",
+            params![custom_gpt_id, new_version_id],
+        )?;
+        transaction.execute(
+            "INSERT INTO audit_events(event_type, actor, payload_json)
+             VALUES ('custom_gpt.version_restored', 'user', ?1)",
+            params![serde_json::json!({
+                "custom_gpt_id": custom_gpt_id,
+                "restored_from_version_no": source_version_no,
+                "version_no": next_version
+            })
+            .to_string()],
+        )?;
+        transaction.commit()?;
+        self.custom_gpt_view(custom_gpt_id)
     }
 
     fn custom_gpt_view(&self, custom_gpt_id: &str) -> Result<CustomGptView, AppError> {
@@ -1924,6 +2190,10 @@ impl Database {
             &portable.instructions,
             &portable.conversation_starters,
             &CustomGptToolPermissions::default(),
+            // Un paquete importado no impone modelo ni proyecto: ambos son
+            // decisiones locales de quien lo recibe.
+            None,
+            None,
         )?;
         let connection = self.connect()?;
         let transaction = connection.unchecked_transaction()?;
@@ -1957,6 +2227,29 @@ impl Database {
             custom_gpt: imported,
             imported_knowledge: normalized_knowledge.len(),
             knowledge_requires_review: !normalized_knowledge.is_empty(),
+        })
+    }
+
+    /// Contexto congelable de un GPT por su identificador, sin conversación.
+    ///
+    /// Lo usa la vista previa para mostrar exactamente lo que se enviaría si se
+    /// eligiera este GPT, sin crear ninguna tarea.
+    pub fn custom_gpt_context(&self, custom_gpt_id: &str) -> Result<CustomGptContext, AppError> {
+        let view = self.custom_gpt_view(custom_gpt_id)?;
+        let version_id: String = self.connect()?.query_row(
+            "SELECT active_version_id FROM custom_gpts
+             WHERE id = ?1 AND archived_at IS NULL AND active_version_id IS NOT NULL",
+            params![custom_gpt_id],
+            |row| row.get(0),
+        )?;
+        Ok(CustomGptContext {
+            custom_gpt_id: view.id,
+            version_id,
+            name: view.name,
+            version_no: view.version_no,
+            instructions: view.instructions,
+            tool_permissions: view.tool_permissions,
+            preferred_model: view.preferred_model,
         })
     }
 
@@ -2027,6 +2320,7 @@ impl Database {
                         run_code,
                         rename_conversation,
                     },
+                    preferred_model: configuration.preferred_model,
                 })
             },
         )
@@ -3530,6 +3824,35 @@ impl Database {
         )?;
         if changed == 0 {
             return Err(AppError::NotFound(format!("conversación activa {id}")));
+        }
+        // El proyecto predeterminado del GPT solo se aplica a una conversación que
+        // todavía no pertenece a ninguno: nunca mueve un chat ya clasificado.
+        if let Some(custom_gpt_id) = custom_gpt_id {
+            let adopted = transaction.execute(
+                "UPDATE conversations
+                 SET project_id = (
+                       SELECT gpt.default_project_id FROM custom_gpts gpt
+                       WHERE gpt.id = ?2 AND gpt.default_project_id IS NOT NULL
+                     ),
+                     updated_at = datetime('now')
+                 WHERE id = ?1 AND project_id IS NULL
+                   AND EXISTS(
+                     SELECT 1 FROM custom_gpts gpt
+                     WHERE gpt.id = ?2 AND gpt.default_project_id IS NOT NULL
+                   )",
+                params![id, custom_gpt_id],
+            )?;
+            if adopted > 0 {
+                transaction.execute(
+                    "INSERT INTO audit_events(
+                        event_type, actor, conversation_id, payload_json
+                     ) VALUES ('conversation.default_project_applied', 'user', ?1, ?2)",
+                    params![
+                        id,
+                        serde_json::json!({"custom_gpt_id": custom_gpt_id}).to_string()
+                    ],
+                )?;
+            }
         }
         transaction.execute(
             "INSERT INTO audit_events(
@@ -8933,8 +9256,9 @@ fn lexical_terms(text: &str) -> HashSet<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        markdown_web_sources, ContextMessage, ConversationExecutionPreferences,
-        CustomGptToolPermissions, Database, ToolOutcomeRecord, INITIAL_MIGRATION, SCHEMA_VERSION,
+        markdown_web_sources, validated_preferred_model, ContextMessage,
+        ConversationExecutionPreferences, CustomGptToolPermissions, Database, ToolOutcomeRecord,
+        INITIAL_MIGRATION, SCHEMA_VERSION,
     };
     use crate::broker::TaskState;
     use crate::error::AppError;
@@ -9154,6 +9478,8 @@ mod tests {
                     "hazme cinco preguntas".to_owned(),
                 ],
                 &permissions,
+                Some("qwen2.5:14b"),
+                None,
             )
             .expect("custom GPT with starters should be created");
         assert_eq!(
@@ -9202,11 +9528,167 @@ mod tests {
                 None,
                 "Instrucciones",
                 &vec!["Inicio".to_owned(); 7],
-                &CustomGptToolPermissions::default()
+                &CustomGptToolPermissions::default(),
+                None,
+                None
             ),
             Err(AppError::Validation(_))
         ));
         cleanup(&database);
+    }
+
+    #[test]
+    fn custom_gpt_history_restores_a_previous_version_without_losing_any() {
+        let database = test_database();
+        let created = database
+            .create_custom_gpt_with_starters(
+                "Revisor",
+                Some("Revisa textos"),
+                "Versión uno de las instrucciones.",
+                &["Revisa este texto".to_owned()],
+                &CustomGptToolPermissions {
+                    run_code: "deny".to_owned(),
+                    rename_conversation: "confirm".to_owned(),
+                },
+                Some("qwen2.5:14b"),
+                None,
+            )
+            .expect("el GPT debe crearse");
+        assert_eq!(created.preferred_model.as_deref(), Some("qwen2.5:14b"));
+
+        database
+            .update_custom_gpt_with_starters(
+                &created.id,
+                "Revisor",
+                Some("Revisa textos"),
+                "Versión dos de las instrucciones.",
+                &[],
+                &CustomGptToolPermissions::default(),
+                None,
+                None,
+            )
+            .expect("la edición debe crear otra versión");
+
+        let history = database
+            .list_custom_gpt_versions(&created.id)
+            .expect("el historial debe cargarse");
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].version_no, 2);
+        assert!(history[0].active, "la más reciente es la activa");
+        assert!(!history[1].active);
+        assert_eq!(history[1].instructions, "Versión uno de las instrucciones.");
+        assert_eq!(history[1].preferred_model.as_deref(), Some("qwen2.5:14b"));
+        assert_eq!(history[1].tool_permissions.rename_conversation, "confirm");
+
+        // Restaurar exige confirmación explícita.
+        assert!(matches!(
+            database.restore_custom_gpt_version(&created.id, &history[1].id, false),
+            Err(AppError::Validation(_))
+        ));
+        // Y no tiene sentido restaurar la que ya está activa.
+        assert!(matches!(
+            database.restore_custom_gpt_version(&created.id, &history[0].id, true),
+            Err(AppError::Conflict(_))
+        ));
+
+        let restored = database
+            .restore_custom_gpt_version(&created.id, &history[1].id, true)
+            .expect("la restauración debe funcionar");
+        assert_eq!(restored.version_no, 3, "restaurar crea una versión nueva");
+        assert_eq!(restored.instructions, "Versión uno de las instrucciones.");
+        assert_eq!(restored.preferred_model.as_deref(), Some("qwen2.5:14b"));
+        assert_eq!(
+            restored.tool_permissions.rename_conversation, "confirm",
+            "los permisos de la versión restaurada la acompañan"
+        );
+
+        let history = database
+            .list_custom_gpt_versions(&created.id)
+            .expect("el historial debe recargarse");
+        assert_eq!(history.len(), 3, "no se borra ninguna revisión");
+        assert_eq!(
+            history.iter().filter(|version| version.active).count(),
+            1,
+            "solo puede haber una versión activa"
+        );
+        cleanup(&database);
+    }
+
+    #[test]
+    fn duplicating_a_custom_gpt_never_carries_permissions_or_knowledge() {
+        let database = test_database();
+        let source = database
+            .create_custom_gpt_with_starters(
+                "Asistente con permisos",
+                None,
+                "Instrucciones originales.",
+                &["Empieza aquí".to_owned()],
+                &CustomGptToolPermissions {
+                    run_code: "confirm".to_owned(),
+                    rename_conversation: "confirm".to_owned(),
+                },
+                Some("qwen2.5:14b"),
+                None,
+            )
+            .expect("el GPT origen debe crearse");
+        database
+            .create_custom_gpt_memory_item(
+                &source.id,
+                "Dato reservado del asistente",
+                "fact",
+                "sensitive",
+            )
+            .expect("el conocimiento debe guardarse");
+
+        let copy = database
+            .duplicate_custom_gpt(&source.id, None)
+            .expect("la duplicación debe funcionar");
+
+        assert_ne!(copy.id, source.id);
+        assert_eq!(copy.name, "Asistente con permisos (copia)");
+        assert_eq!(copy.instructions, source.instructions);
+        assert_eq!(copy.conversation_starters, source.conversation_starters);
+        assert_eq!(copy.preferred_model.as_deref(), Some("qwen2.5:14b"));
+        assert_eq!(copy.version_no, 1, "la copia empieza su propio historial");
+        assert_eq!(
+            copy.tool_permissions.run_code, "deny",
+            "un duplicado nunca hereda permisos concedidos"
+        );
+        assert_eq!(copy.tool_permissions.rename_conversation, "deny");
+        assert!(
+            database
+                .custom_gpt_knowledge(&copy.id)
+                .expect("el conocimiento de la copia debe consultarse")
+                .is_empty(),
+            "el conocimiento no se copia con el asistente"
+        );
+        // El original permanece intacto.
+        let originals = database
+            .custom_gpt_knowledge(&source.id)
+            .expect("el conocimiento original debe seguir ahí");
+        assert_eq!(originals.len(), 1);
+        cleanup(&database);
+    }
+
+    #[test]
+    fn preferred_model_is_validated_against_the_broker_limit() {
+        assert_eq!(
+            validated_preferred_model(Some("  qwen2.5:14b  ")).expect("debe normalizarse"),
+            Some("qwen2.5:14b".to_owned())
+        );
+        assert_eq!(
+            validated_preferred_model(Some("   ")).expect("vacío es ninguno"),
+            None
+        );
+        assert_eq!(validated_preferred_model(None).expect("sin valor"), None);
+        assert!(matches!(
+            validated_preferred_model(Some(&"a".repeat(129))),
+            Err(AppError::Validation(_))
+        ));
+        assert!(matches!(
+            validated_preferred_model(Some("modelo con espacios")),
+            Err(AppError::Validation(_))
+        ));
     }
 
     #[test]

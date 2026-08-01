@@ -13,6 +13,8 @@ import type {
   ConversationView,
   CustomGptExportReport,
   CustomGptImportReport,
+  CustomGptPreview,
+  CustomGptVersionView,
   CustomGptView,
   ExportPathSelection,
   ExportReport,
@@ -388,14 +390,40 @@ export const platform = {
     description: string,
     instructions: string,
     conversationStarters: string[],
-    toolPermissions: CustomGptView["toolPermissions"]
+    toolPermissions: CustomGptView["toolPermissions"],
+    preferredModel: string | null,
+    defaultProjectId: string | null
   ): Promise<CustomGptView> {
     return invoke<CustomGptView>("create_custom_gpt", {
       name,
       description: description.trim() || undefined,
       instructions,
       conversationStarters,
-      toolPermissions
+      toolPermissions,
+      preferredModel,
+      defaultProjectId
+    });
+  },
+  listCustomGptVersions(customGptId: string): Promise<CustomGptVersionView[]> {
+    return invoke<CustomGptVersionView[]>("list_custom_gpt_versions", { customGptId });
+  },
+  restoreCustomGptVersion(
+    customGptId: string,
+    versionId: string
+  ): Promise<CustomGptView> {
+    return invoke<CustomGptView>("restore_custom_gpt_version", {
+      customGptId,
+      versionId,
+      confirmed: true
+    });
+  },
+  previewCustomGpt(customGptId: string): Promise<CustomGptPreview> {
+    return invoke<CustomGptPreview>("preview_custom_gpt", { customGptId });
+  },
+  duplicateCustomGpt(customGptId: string): Promise<CustomGptView> {
+    return invoke<CustomGptView>("duplicate_custom_gpt", {
+      customGptId,
+      newName: null
     });
   },
   updateCustomGpt(
@@ -404,7 +432,9 @@ export const platform = {
     description: string,
     instructions: string,
     conversationStarters: string[],
-    toolPermissions: CustomGptView["toolPermissions"]
+    toolPermissions: CustomGptView["toolPermissions"],
+    preferredModel: string | null,
+    defaultProjectId: string | null
   ): Promise<CustomGptView> {
     return invoke<CustomGptView>("update_custom_gpt", {
       customGptId,
@@ -412,7 +442,9 @@ export const platform = {
       description: description.trim() || undefined,
       instructions,
       conversationStarters,
-      toolPermissions
+      toolPermissions,
+      preferredModel,
+      defaultProjectId
     });
   },
   pickCustomGptImportPath(): Promise<string | null> {

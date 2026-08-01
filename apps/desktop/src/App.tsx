@@ -34,6 +34,7 @@ import {
   taskProgressSummary,
   authorizedFolderPurpose,
   brokerCredentialLabel,
+  customGptVersionSummary,
   type BootstrapReport,
   type BrokerCredentialStatus,
   type AttachmentView,
@@ -46,6 +47,8 @@ import {
   type ConversationExecutionPreferences,
   type ComposerErrorGuidance,
   type ConversationView,
+  type CustomGptPreview,
+  type CustomGptVersionView,
   type CustomGptView,
   type LocalTaskSnapshot,
   type MemoryItemView,
@@ -404,6 +407,13 @@ export function App() {
   const [customGptStartersText, setCustomGptStartersText] = useState("");
   const [customGptRunCodePermission, setCustomGptRunCodePermission] = useState(false);
   const [customGptRenamePermission, setCustomGptRenamePermission] = useState(false);
+  const [customGptPreferredModel, setCustomGptPreferredModel] = useState("");
+  const [customGptDefaultProject, setCustomGptDefaultProject] = useState("");
+  const [customGptHistoryId, setCustomGptHistoryId] = useState<string | null>(null);
+  const [customGptPreview, setCustomGptPreview] =
+    useState<Loadable<CustomGptPreview> | null>(null);
+  const [customGptVersions, setCustomGptVersions] =
+    useState<Loadable<CustomGptVersionView[]>>({ state: "loading" });
   const [customGptBusy, setCustomGptBusy] = useState(false);
   const [customGptError, setCustomGptError] = useState<string | null>(null);
   const [customGptNotice, setCustomGptNotice] = useState<string | null>(null);
@@ -1611,7 +1621,78 @@ export function App() {
     setCustomGptStartersText("");
     setCustomGptRunCodePermission(false);
     setCustomGptRenamePermission(false);
+    setCustomGptPreferredModel("");
+    setCustomGptDefaultProject("");
     setCustomGptError(null);
+  };
+
+  const loadCustomGptVersions = async (customGptId: string) => {
+    if (customGptHistoryId === customGptId) {
+      setCustomGptHistoryId(null);
+      return;
+    }
+    setCustomGptHistoryId(customGptId);
+    setCustomGptVersions({ state: "loading" });
+    try {
+      setCustomGptVersions({
+        state: "ready",
+        value: await platform.listCustomGptVersions(customGptId)
+      });
+    } catch (error) {
+      setCustomGptVersions({ state: "error", message: describeError(error) });
+    }
+  };
+
+  const restoreCustomGptVersion = async (customGptId: string, versionId: string) => {
+    setCustomGptBusy(true);
+    setCustomGptError(null);
+    try {
+      const restored = await platform.restoreCustomGptVersion(customGptId, versionId);
+      setCustomGpts({ state: "ready", value: await platform.listCustomGpts() });
+      setCustomGptVersions({
+        state: "ready",
+        value: await platform.listCustomGptVersions(customGptId)
+      });
+      setCustomGptNotice(
+        `${restored.name}: restaurado como versión ${restored.versionNo}. Las anteriores se conservan.`
+      );
+      await refreshAuditEvents();
+    } catch (error) {
+      setCustomGptError(describeError(error));
+    } finally {
+      setCustomGptBusy(false);
+    }
+  };
+
+  const openCustomGptPreview = async (customGptId: string) => {
+    // La vista previa no envía nada al Broker ni genera coste: solo compone
+    // localmente lo que recibiría el modelo si se usara este GPT.
+    setCustomGptPreview({ state: "loading" });
+    try {
+      setCustomGptPreview({
+        state: "ready",
+        value: await platform.previewCustomGpt(customGptId)
+      });
+    } catch (error) {
+      setCustomGptPreview({ state: "error", message: describeError(error) });
+    }
+  };
+
+  const duplicateCustomGpt = async (customGptId: string) => {
+    setCustomGptBusy(true);
+    setCustomGptError(null);
+    try {
+      const copy = await platform.duplicateCustomGpt(customGptId);
+      setCustomGpts({ state: "ready", value: await platform.listCustomGpts() });
+      setCustomGptNotice(
+        `${copy.name}: copia creada sin permisos ni conocimiento del original.`
+      );
+      await refreshAuditEvents();
+    } catch (error) {
+      setCustomGptError(describeError(error));
+    } finally {
+      setCustomGptBusy(false);
+    }
   };
 
   const beginCustomGptEdit = (item: CustomGptView) => {
@@ -1622,6 +1703,8 @@ export function App() {
     setCustomGptStartersText(item.conversationStarters.join("\n"));
     setCustomGptRunCodePermission(item.toolPermissions.runCode === "confirm");
     setCustomGptRenamePermission(item.toolPermissions.renameConversation === "confirm");
+    setCustomGptPreferredModel(item.preferredModel ?? "");
+    setCustomGptDefaultProject(item.defaultProjectId ?? "");
     setCustomGptError(null);
     setCustomGptNotice(null);
   };
@@ -1646,7 +1729,9 @@ export function App() {
             {
               runCode: customGptRunCodePermission ? "confirm" : "deny",
               renameConversation: customGptRenamePermission ? "confirm" : "deny"
-            }
+            },
+            customGptPreferredModel.trim() || null,
+            customGptDefaultProject || null
           )
         : await platform.createCustomGpt(
             customGptName,
@@ -1656,7 +1741,9 @@ export function App() {
             {
               runCode: customGptRunCodePermission ? "confirm" : "deny",
               renameConversation: customGptRenamePermission ? "confirm" : "deny"
-            }
+            },
+            customGptPreferredModel.trim() || null,
+            customGptDefaultProject || null
           );
       setCustomGpts({ state: "ready", value: await platform.listCustomGpts() });
       setCustomGptNotice(
@@ -3030,11 +3117,13 @@ export function App() {
     ? "keyboard-help"
     : dialog
       ? "dialog"
-      : projectKnowledge
-        ? "project-knowledge"
-        : summaryPanel
-          ? "summary"
-          : null;
+      : customGptPreview
+        ? "custom-gpt-preview"
+        : projectKnowledge
+          ? "project-knowledge"
+          : summaryPanel
+            ? "summary"
+            : null;
 
   useEffect(() => {
     const handleShortcut = (event: KeyboardEvent) => {
@@ -3093,6 +3182,7 @@ export function App() {
       if (event.key === "Escape") {
         if (activeModalKind === "keyboard-help") setKeyboardHelpOpen(false);
         if (activeModalKind === "dialog" && !dialogBusyRef.current) setDialog(null);
+        if (activeModalKind === "custom-gpt-preview") setCustomGptPreview(null);
         if (activeModalKind === "project-knowledge") setProjectKnowledge(null);
         if (activeModalKind === "summary") setSummaryPanel(null);
         return;
@@ -5692,6 +5782,40 @@ export function App() {
                       </span>
                     </label>
                   </fieldset>
+                  <fieldset className="custom-gpt-preferences">
+                    <legend>Preferencias de ejecución</legend>
+                    <p>
+                      Son preferencias, no imposiciones: si el modelo no está
+                      disponible, el Broker elegirá otro y la respuesta seguirá llegando.
+                    </p>
+                    <label htmlFor="custom-gpt-model">Modelo preferido</label>
+                    <input
+                      id="custom-gpt-model"
+                      value={customGptPreferredModel}
+                      onChange={(event) => setCustomGptPreferredModel(event.target.value)}
+                      placeholder="Por ejemplo, qwen2.5:14b (vacío = decide el Broker)"
+                      spellCheck={false}
+                      disabled={customGptBusy}
+                    />
+                    <label htmlFor="custom-gpt-project">Proyecto predeterminado</label>
+                    <select
+                      id="custom-gpt-project"
+                      value={customGptDefaultProject}
+                      onChange={(event) => setCustomGptDefaultProject(event.target.value)}
+                      disabled={customGptBusy}
+                    >
+                      <option value="">Sin proyecto predeterminado</option>
+                      {projects.map((project) => (
+                        <option key={project.id} value={project.id}>
+                          {project.name}
+                        </option>
+                      ))}
+                    </select>
+                    <small>
+                      Solo se aplica a los chats que aún no pertenecen a ningún
+                      proyecto; nunca mueve una conversación ya clasificada.
+                    </small>
+                  </fieldset>
                   {customGptError && (
                     <p className="error" role="alert">{customGptError}</p>
                   )}
@@ -5796,12 +5920,70 @@ export function App() {
                             </button>
                             <button
                               className="secondary"
+                              onClick={() => void openCustomGptPreview(item.id)}
+                              disabled={customGptBusy}
+                              title="Muestra lo que recibiría el modelo. No envía nada ni genera coste."
+                            >
+                              Vista previa
+                            </button>
+                            <button
+                              className="secondary"
+                              onClick={() => void duplicateCustomGpt(item.id)}
+                              disabled={customGptBusy}
+                              title="Crea una copia con la misma configuración, sin permisos ni conocimiento."
+                            >
+                              Duplicar
+                            </button>
+                            <button
+                              className={customGptHistoryId === item.id ? "primary" : "secondary"}
+                              onClick={() => void loadCustomGptVersions(item.id)}
+                              disabled={customGptBusy}
+                              aria-expanded={customGptHistoryId === item.id}
+                            >
+                              Historial
+                            </button>
+                            <button
+                              className="secondary"
                               onClick={() => beginCustomGptEdit(item)}
                               disabled={customGptBusy}
                             >
                               Editar
                             </button>
                           </div>
+                          {customGptHistoryId === item.id && (
+                            <div className="custom-gpt-history" aria-live="polite">
+                              {customGptVersions.state === "loading" && (
+                                <small>Cargando historial…</small>
+                              )}
+                              {customGptVersions.state === "error" && (
+                                <small role="alert">{customGptVersions.message}</small>
+                              )}
+                              {customGptVersions.state === "ready" && (
+                                <ul>
+                                  {customGptVersions.value.map((version) => (
+                                    <li key={version.id}>
+                                      <div>
+                                        <strong>Versión {version.versionNo}</strong>
+                                        <span>{customGptVersionSummary(version)}</span>
+                                        <small>{version.instructions}</small>
+                                      </div>
+                                      {!version.active && (
+                                        <button
+                                          className="secondary"
+                                          onClick={() =>
+                                            void restoreCustomGptVersion(item.id, version.id)}
+                                          disabled={customGptBusy}
+                                          title="Crea una versión nueva con este contenido. No borra ninguna revisión."
+                                        >
+                                          Restaurar
+                                        </button>
+                                      )}
+                                    </li>
+                                  ))}
+                                </ul>
+                              )}
+                            </div>
+                          )}
                         </article>
                       ))}
                     </div>
@@ -6435,6 +6617,103 @@ export function App() {
         </main>
       </section>
 
+      {customGptPreview && (
+        <div className="modal-backdrop" role="presentation">
+          <section
+            ref={activeModalRef}
+            className="modal custom-gpt-preview-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="custom-gpt-preview-title"
+            aria-describedby="custom-gpt-preview-description"
+            tabIndex={-1}
+          >
+            <span className="kicker">Vista previa</span>
+            <h2 id="custom-gpt-preview-title">
+              {customGptPreview.state === "ready"
+                ? `${customGptPreview.value.name} · versión ${customGptPreview.value.versionNo}`
+                : "GPT personal"}
+            </h2>
+            <p id="custom-gpt-preview-description">
+              Esto es exactamente lo que recibiría el modelo. No se ha enviado nada a
+              Broker AI ni se ha generado ningún coste.
+            </p>
+            {customGptPreview.state === "loading" && <small>Preparando la vista previa…</small>}
+            {customGptPreview.state === "error" && (
+              <p className="error" role="alert">{customGptPreview.message}</p>
+            )}
+            {customGptPreview.state === "ready" && (
+              <div className="custom-gpt-preview-body">
+                {customGptPreview.value.warnings.length > 0 && (
+                  <ul className="custom-gpt-preview-warnings">
+                    {customGptPreview.value.warnings.map((warning) => (
+                      <li key={warning}>{warning}</li>
+                    ))}
+                  </ul>
+                )}
+                <dl className="custom-gpt-preview-facts">
+                  <div>
+                    <dt>Modelo preferido</dt>
+                    <dd>{customGptPreview.value.preferredModel ?? "Lo elige el Broker"}</dd>
+                  </div>
+                  <div>
+                    <dt>Proyecto predeterminado</dt>
+                    <dd>{customGptPreview.value.defaultProjectName ?? "Ninguno"}</dd>
+                  </div>
+                  <div>
+                    <dt>Código aislado</dt>
+                    <dd>
+                      {customGptPreview.value.toolPermissions.runCode === "confirm"
+                        ? "Puede solicitarlo, con tu confirmación"
+                        : "Denegado"}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Renombrar conversación</dt>
+                    <dd>
+                      {customGptPreview.value.toolPermissions.renameConversation === "confirm"
+                        ? "Puede proponerlo, con tu confirmación"
+                        : "Denegado"}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Conocimiento</dt>
+                    <dd>
+                      {customGptPreview.value.activeKnowledgeCount} activo(s),{" "}
+                      {customGptPreview.value.disabledKnowledgeCount} desactivado(s),{" "}
+                      {customGptPreview.value.sensitiveKnowledgeCount} sensible(s)
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Archivos</dt>
+                    <dd>
+                      {customGptPreview.value.readyFileCount} preparado(s),{" "}
+                      {customGptPreview.value.pendingFileCount} pendiente(s)
+                    </dd>
+                  </div>
+                </dl>
+                <h3>Bloque exacto que se antepone al mensaje</h3>
+                <pre>{customGptPreview.value.promptBlock}</pre>
+                {customGptPreview.value.conversationStarters.length > 0 && (
+                  <>
+                    <h3>Iniciadores visibles en un chat vacío</h3>
+                    <ul className="custom-gpt-preview-starters">
+                      {customGptPreview.value.conversationStarters.map((starter) => (
+                        <li key={starter}>{starter}</li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+              </div>
+            )}
+            <div className="modal-actions">
+              <button className="primary" autoFocus onClick={() => setCustomGptPreview(null)}>
+                Cerrar
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
       {keyboardHelpOpen && (
         <div className="modal-backdrop" role="presentation">
           <section

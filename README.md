@@ -21,6 +21,14 @@ el primer workflow de investigación incluyen:
 - proyectos locales con asociación reversible de conversaciones;
 - catálogo local de GPTs personales con nombre, descripción e instrucciones;
 - versiones inmutables: cada edición crea una revisión numerada y conserva las anteriores;
+- historial de versiones consultable y restauración de una revisión anterior, que
+  crea una versión nueva sin borrar ninguna ni alterar las respuestas ya emitidas;
+- duplicación de un GPT sin arrastrar permisos concedidos ni conocimiento privado;
+- vista previa que muestra el bloque exacto que recibiría el modelo, los permisos
+  vigentes y qué conocimiento o archivos no se usarían todavía, sin enviar nada
+  a Broker AI ni generar coste;
+- modelo preferido por GPT, enviado como preferencia con reserva automática, y
+  proyecto predeterminado que solo alcanza a los chats aún sin clasificar;
 - selección reversible de un GPT personal por conversación;
 - captura por valor de la versión activa al enviar, incluso antes de una búsqueda
   semántica, con sus instrucciones visibles en el contexto exacto de la respuesta;
@@ -298,6 +306,7 @@ Credencial de Broker AI:
 
 - [Arquitectura y plan](docs/ARCHITECTURE.md)
 - [Endurecimiento de Fase 0](docs/PHASE_0_HARDENING.md)
+- [Cierre de huecos de Fase 3](docs/PHASE_3_COMPLETION.md)
 - [Evidencias de Fase 0](docs/PHASE_0_VERIFICATION.md)
 - [Evidencias de Fase 1](docs/PHASE_1_VERIFICATION.md)
 - [Evidencias de Fase 2](docs/PHASE_2_VERIFICATION.md)

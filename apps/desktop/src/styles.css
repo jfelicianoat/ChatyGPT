@@ -187,6 +187,28 @@ nav { margin-top: 14px; overflow-y: auto; min-height: 0; padding-right: 2px; }
 .tool-call-card strong, .tool-call-card small { display: block; }
 .tool-call-card strong { color: #3f3528; font-size: 12px; }
 .tool-call-card small { margin-top: 4px; color: #7e705d; font: 10px/1.4 ui-monospace, Consolas, monospace; }
+.custom-gpt-preview-modal { max-width: 720px; }
+.custom-gpt-preview-body { display: grid; gap: 12px; max-height: 58vh; overflow-y: auto; }
+.custom-gpt-preview-body h3 { margin: 0; color: #4a3f30; font-size: 11px; }
+.custom-gpt-preview-body pre { margin: 0; padding: 11px 12px; border: 1px solid #e0d3ba; border-radius: 9px; background: #fffaf0; color: #4f4436; font: 10px/1.5 ui-monospace, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.custom-gpt-preview-warnings { display: grid; gap: 5px; margin: 0; padding: 10px 12px 10px 26px; border-left: 3px solid #b8863f; border-radius: 6px; background: #fdf3e0; color: #6b5327; font-size: 10px; line-height: 1.45; }
+.custom-gpt-preview-facts { display: grid; gap: 6px; margin: 0; }
+.custom-gpt-preview-facts > div { display: grid; grid-template-columns: 168px 1fr; gap: 10px; align-items: start; }
+.custom-gpt-preview-facts dt { color: #8a7c67; font-size: 9px; text-transform: uppercase; letter-spacing: .04em; }
+.custom-gpt-preview-facts dd { margin: 0; color: #55493a; font-size: 10px; line-height: 1.45; }
+.custom-gpt-preview-starters { display: grid; gap: 4px; margin: 0; padding-left: 18px; color: #6f6252; font-size: 10px; }
+.custom-gpt-preferences { display: grid; gap: 6px; margin: 0; padding: 12px 14px; border: 1px solid #e0d3ba; border-radius: 11px; }
+.custom-gpt-preferences legend { padding: 0 6px; color: #6f6252; font-size: 10px; }
+.custom-gpt-preferences p { margin: 0 0 4px; color: #7b6f5e; font-size: 10px; line-height: 1.45; }
+.custom-gpt-preferences label { color: #6f6252; font-size: 10px; }
+.custom-gpt-preferences small { color: #8f8371; font-size: 9px; line-height: 1.4; }
+.custom-gpt-history { margin-top: 10px; padding-top: 10px; border-top: 1px dashed #ded0b4; }
+.custom-gpt-history ul { display: grid; gap: 7px; margin: 0; padding: 0; list-style: none; }
+.custom-gpt-history li { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 8px 10px; border: 1px solid #e4d9c4; border-radius: 9px; background: #fffaf0; }
+.custom-gpt-history li > div { display: grid; gap: 2px; min-width: 0; }
+.custom-gpt-history strong { color: #4a3f30; font-size: 11px; }
+.custom-gpt-history span { color: #6f6252; font-size: 9px; }
+.custom-gpt-history small { color: #8f8371; font-size: 9px; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .broker-credential { display: grid; gap: 12px; padding: 16px 18px; border: 1px solid #e2d6bf; border-radius: 14px; background: #fffdf7; }
 .broker-credential p { margin: 6px 0 0; color: #7b6f5e; font-size: 11px; line-height: 1.5; }
 .credential-state { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
@@ -795,6 +817,7 @@ nav { margin-top: 14px; overflow-y: auto; min-height: 0; padding-right: 2px; }
   .scheduler-calendar-occurrence,
   .scheduler-run-detail,
   .custom-gpt-item,
+  .custom-gpt-history li,
   .custom-gpt-knowledge-item,
   .custom-gpt-file-item,
   .memory-search-results article,
@@ -805,6 +828,11 @@ nav { margin-top: 14px; overflow-y: auto; min-height: 0; padding-right: 2px; }
 :root[data-theme="dark"] .authorized-folder-list :is(strong, span, small) { color: #ded6cc; }
 :root[data-theme="dark"] .tool-call-disclosure dt { color: #a4998a; }
 :root[data-theme="dark"] .tool-call-disclosure dd { color: #ded6cc; }
+:root[data-theme="dark"] .custom-gpt-preview-body pre { border-color: #4a433a; background: #211e1a; color: #ded6cc; }
+:root[data-theme="dark"] .custom-gpt-preview-warnings { background: #33291b; color: #e2cfa8; }
+:root[data-theme="dark"] .custom-gpt-preview-facts dt { color: #a4998a; }
+:root[data-theme="dark"] .custom-gpt-preview-facts dd,
+:root[data-theme="dark"] .custom-gpt-preview-starters { color: #ded6cc; }
 :root[data-theme="dark"] .composer { border-color: #403a33; background: #1d1a17; }
 :root[data-theme="dark"] .message.user { background: #3a332b; }
 :root[data-theme="dark"] .markdown-content,

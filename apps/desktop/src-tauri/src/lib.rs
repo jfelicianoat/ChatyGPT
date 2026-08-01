@@ -589,12 +589,15 @@ fn list_custom_gpts(state: State<'_, AppState>) -> Result<Vec<CustomGptView>, Ap
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 fn create_custom_gpt(
     name: String,
     description: Option<String>,
     instructions: String,
     conversation_starters: Vec<String>,
     tool_permissions: CustomGptToolPermissions,
+    preferred_model: Option<String>,
+    default_project_id: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<CustomGptView, AppError> {
     state.database.create_custom_gpt_with_starters(
@@ -603,10 +606,13 @@ fn create_custom_gpt(
         &instructions,
         &conversation_starters,
         &tool_permissions,
+        preferred_model.as_deref(),
+        default_project_id.as_deref(),
     )
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 fn update_custom_gpt(
     custom_gpt_id: String,
     name: String,
@@ -614,6 +620,8 @@ fn update_custom_gpt(
     instructions: String,
     conversation_starters: Vec<String>,
     tool_permissions: CustomGptToolPermissions,
+    preferred_model: Option<String>,
+    default_project_id: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<CustomGptView, AppError> {
     state.database.update_custom_gpt_with_starters(
@@ -623,7 +631,161 @@ fn update_custom_gpt(
         &instructions,
         &conversation_starters,
         &tool_permissions,
+        preferred_model.as_deref(),
+        default_project_id.as_deref(),
     )
+}
+
+#[tauri::command]
+fn list_custom_gpt_versions(
+    custom_gpt_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<db::CustomGptVersionView>, AppError> {
+    state.database.list_custom_gpt_versions(&custom_gpt_id)
+}
+
+#[tauri::command]
+fn restore_custom_gpt_version(
+    custom_gpt_id: String,
+    version_id: String,
+    confirmed: bool,
+    state: State<'_, AppState>,
+) -> Result<CustomGptView, AppError> {
+    state
+        .database
+        .restore_custom_gpt_version(&custom_gpt_id, &version_id, confirmed)
+}
+
+/// Lo que recibiría el modelo si se usara este GPT, sin enviar nada.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CustomGptPreview {
+    custom_gpt_id: String,
+    name: String,
+    version_no: i64,
+    /// Texto exacto que se antepone al mensaje, generado por el mismo código
+    /// que construye la petición real.
+    prompt_block: String,
+    preferred_model: Option<String>,
+    default_project_name: Option<String>,
+    conversation_starters: Vec<String>,
+    tool_permissions: CustomGptToolPermissions,
+    active_knowledge_count: usize,
+    disabled_knowledge_count: usize,
+    sensitive_knowledge_count: usize,
+    unindexed_knowledge_count: usize,
+    ready_file_count: usize,
+    pending_file_count: usize,
+    /// Avisos accionables sobre lo que hoy no se usaría.
+    warnings: Vec<String>,
+}
+
+/// Compone la vista previa de un GPT sin crear tareas ni generar coste.
+#[tauri::command]
+fn preview_custom_gpt(
+    custom_gpt_id: String,
+    state: State<'_, AppState>,
+) -> Result<CustomGptPreview, AppError> {
+    let context = state.database.custom_gpt_context(&custom_gpt_id)?;
+    let view = state
+        .database
+        .list_custom_gpts()?
+        .into_iter()
+        .find(|item| item.id == custom_gpt_id)
+        .ok_or_else(|| AppError::NotFound(format!("GPT personal {custom_gpt_id}")))?;
+    let knowledge = state.database.custom_gpt_knowledge(&custom_gpt_id)?;
+    let files = state.database.list_custom_gpt_files(&custom_gpt_id)?;
+
+    let active_knowledge: Vec<_> = knowledge.iter().filter(|item| item.enabled).collect();
+    let sensitive_knowledge_count = active_knowledge
+        .iter()
+        .filter(|item| item.sensitivity == "sensitive")
+        .count();
+    let unindexed_knowledge_count = active_knowledge
+        .iter()
+        .filter(|item| item.embedding_status != "ready")
+        .count();
+    let ready_file_count = files
+        .iter()
+        .filter(|file| file.ingestion_status == "ready" && file.context_status == "ready")
+        .count();
+    let pending_file_count = files.len() - ready_file_count;
+
+    let default_project_name = view.default_project_id.as_deref().and_then(|project_id| {
+        state
+            .database
+            .list_projects()
+            .ok()?
+            .into_iter()
+            .find(|project| project.id == project_id)
+            .map(|project| project.name)
+    });
+
+    let mut warnings = Vec::new();
+    if active_knowledge.is_empty() && !knowledge.is_empty() {
+        warnings.push(
+            "Todo el conocimiento de este GPT está desactivado: hoy no se usaría ninguno."
+                .to_owned(),
+        );
+    }
+    if unindexed_knowledge_count > 0 {
+        warnings.push(format!(
+            "{unindexed_knowledge_count} dato(s) activos aún no están indexados y solo se \
+             recuperarán por coincidencia literal."
+        ));
+    }
+    if pending_file_count > 0 {
+        warnings.push(format!(
+            "{pending_file_count} archivo(s) todavía no están preparados y no se consultarán."
+        ));
+    }
+    if sensitive_knowledge_count > 0 {
+        warnings.push(format!(
+            "{sensitive_knowledge_count} dato(s) marcados como sensibles obligan a mantener \
+             la respuesta en local."
+        ));
+    }
+    if view.default_project_id.is_some() && default_project_name.is_none() {
+        warnings.push(
+            "El proyecto predeterminado ya no existe; los chats nuevos quedarán sin proyecto."
+                .to_owned(),
+        );
+    }
+    if view.preferred_model.is_some() {
+        warnings.push(
+            "El modelo preferido es una preferencia: si no está disponible, el Broker elegirá otro."
+                .to_owned(),
+        );
+    }
+
+    Ok(CustomGptPreview {
+        custom_gpt_id: context.custom_gpt_id.clone(),
+        name: context.name.clone(),
+        version_no: context.version_no,
+        prompt_block: task_runtime::custom_gpt_prompt_block(&context)?,
+        preferred_model: view.preferred_model,
+        default_project_name,
+        conversation_starters: view.conversation_starters,
+        tool_permissions: view.tool_permissions,
+        active_knowledge_count: active_knowledge.len(),
+        disabled_knowledge_count: knowledge.len() - active_knowledge.len(),
+        sensitive_knowledge_count,
+        unindexed_knowledge_count,
+        ready_file_count,
+        pending_file_count,
+        warnings,
+    })
+}
+
+#[tauri::command]
+fn duplicate_custom_gpt(
+    custom_gpt_id: String,
+    new_name: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<CustomGptView, AppError> {
+    state
+        .database
+        .duplicate_custom_gpt(&custom_gpt_id, new_name.as_deref())
 }
 
 #[tauri::command]
@@ -1908,6 +2070,10 @@ pub fn run() {
             list_custom_gpts,
             create_custom_gpt,
             update_custom_gpt,
+            list_custom_gpt_versions,
+            restore_custom_gpt_version,
+            duplicate_custom_gpt,
+            preview_custom_gpt,
             pick_custom_gpt_import_path,
             pick_custom_gpt_export_path,
             import_custom_gpt,

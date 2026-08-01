@@ -13,6 +13,7 @@ import {
   canUseSemanticMemory,
   canRevealContextSource,
   confirmationSummary,
+  customGptVersionSummary,
   formatResponseDuration,
   filterProjectKnowledge,
   filterScheduledRuns,
@@ -33,6 +34,7 @@ import {
   scheduledTaskDuplicateDraft,
   taskFailureSummary,
   taskProgressSummary,
+  type CustomGptVersionView,
   type ToolCallView,
   type LocalTaskSnapshot,
   type ProjectKnowledgeOverview,
@@ -771,6 +773,41 @@ describe("sandbox intent", () => {
   it("does not interrupt ordinary programming questions", () => {
     expect(shouldOfferSandboxForPrompt("Explícame qué hace este código")).toBe(false);
     expect(shouldOfferSandboxForPrompt("¿Qué es una prueba de concepto?")).toBe(false);
+  });
+});
+
+describe("historial de versiones de un GPT", () => {
+  const version = (
+    overrides: Partial<CustomGptVersionView> = {}
+  ): CustomGptVersionView => ({
+    id: "version-1",
+    versionNo: 1,
+    instructions: "Explica con ejemplos.",
+    conversationStarters: [],
+    preferredModel: null,
+    createdAt: "2026-08-01T09:00:00Z",
+    active: false,
+    toolPermissions: { runCode: "deny", renameConversation: "deny" },
+    taskCount: 0,
+    ...overrides
+  });
+
+  it("distingue la versión en uso de las revisiones anteriores", () => {
+    expect(customGptVersionSummary(version({ active: true, taskCount: 4 }))).toBe(
+      "Versión en uso · 4 respuesta(s)"
+    );
+    expect(customGptVersionSummary(version({ active: true }))).toBe(
+      "Versión en uso · todavía sin respuestas"
+    );
+  });
+
+  it("avisa de que una revisión sigue respaldando respuestas ya emitidas", () => {
+    expect(customGptVersionSummary(version({ taskCount: 2 }))).toBe(
+      "Revisión anterior · 2 respuesta(s) conservan esta versión"
+    );
+    expect(customGptVersionSummary(version())).toBe(
+      "Revisión anterior · no llegó a usarse"
+    );
   });
 });
 
