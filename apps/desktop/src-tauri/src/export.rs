@@ -14,6 +14,23 @@ use crate::db::{
 };
 use crate::error::AppError;
 
+/// Comprueba que el destino cae dentro de una carpeta autorizada y vigente.
+///
+/// La autorización solo la concede una elección humana en el selector nativo,
+/// de modo que ningún camino de código puede escribir en una carpeta arbitraria
+/// del equipo aunque reciba la ruta ya construida.
+fn ensure_write_authorized(database: &Database, destination: &Path) -> Result<(), AppError> {
+    let folder = destination.parent().unwrap_or(destination);
+    if database.write_is_authorized(folder)? {
+        return Ok(());
+    }
+    Err(AppError::Conflict(
+        "esa carpeta no está autorizada para escribir; vuelve a elegir el destino \
+         en el selector para autorizarla"
+            .to_owned(),
+    ))
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExportReport {
@@ -67,6 +84,7 @@ pub fn export_scheduled_history(
     let rows = database.scheduled_history_export_rows(status_filter, period_filter)?;
     let content = render_scheduled_history_text(&rows, status_filter, period_filter);
     let destination = validate_text_destination(destination_path)?;
+    ensure_write_authorized(&database, &destination)?;
     let destination_string = destination.to_string_lossy().into_owned();
     let existed = destination.exists();
     if existed && !overwrite_confirmed {
@@ -116,6 +134,7 @@ pub fn export_scheduled_calendar(
     }
     let content = render_scheduled_calendar(entries, range_days)?;
     let destination = validate_calendar_destination(destination_path)?;
+    ensure_write_authorized(&database, &destination)?;
     let destination_string = destination.to_string_lossy().into_owned();
     let existed = destination.exists();
     if existed && !overwrite_confirmed {
@@ -155,6 +174,7 @@ pub fn export_conversation(
     let markdown = render_conversation_markdown(&view);
     let source_hash = hash_bytes(markdown.as_bytes());
     let destination = validate_destination(destination_path)?;
+    ensure_write_authorized(&database, &destination)?;
     let destination_string = destination.to_string_lossy().into_owned();
     let stable_export_id = format!("conversation:{conversation_id}:markdown:v1");
     let existed = destination.exists();
@@ -265,6 +285,7 @@ pub fn export_conversation_to_obsidian(
     let metadata = database.conversation_export_metadata(conversation_id)?;
     let attachments = database.conversation_attachment_records(conversation_id)?;
     let vault = validate_vault_directory(vault_path)?;
+    ensure_write_authorized(&database, &vault.join("ChatyGPT"))?;
     let root = vault.join("ChatyGPT");
     let conversations_dir = root.join("Conversaciones");
     let attachments_dir = root.join("Adjuntos");
@@ -1261,6 +1282,13 @@ mod tests {
     use rusqlite::params;
     use uuid::Uuid;
 
+    /// Concede la carpeta de destino igual que haría el selector nativo.
+    fn authorize(database: &Database, folder: &std::path::Path) {
+        database
+            .authorize_folder(folder, &folder.to_string_lossy(), "test")
+            .expect("la carpeta de prueba debe autorizarse");
+    }
+
     #[test]
     fn atomic_write_replaces_file_and_hashes_final_bytes() {
         let path = std::env::temp_dir().join(format!("chatygpt-export-{}.md", Uuid::new_v4()));
@@ -1275,11 +1303,75 @@ mod tests {
     }
 
     #[test]
+    fn writing_outside_an_authorized_folder_is_refused_until_it_is_granted() {
+        let root = std::env::temp_dir().join(format!("chatygpt-unauthorized-{}", Uuid::new_v4()));
+        let outside = root.join("carpeta-ajena");
+        std::fs::create_dir_all(&outside).expect("test directory should exist");
+        let database = Database::open(root.join("chatygpt.sqlite")).expect("database should open");
+        let conversation = database
+            .create_conversation("Conversación exportable", None)
+            .expect("conversation should be created");
+        let destination = outside.join("conversation.md");
+
+        // Sin concesión previa no se escribe nada, ni siquiera un archivo vacío.
+        let refused = export_conversation(
+            database.clone(),
+            &conversation.id,
+            &destination.to_string_lossy(),
+            false,
+        );
+        assert!(
+            matches!(refused, Err(AppError::Conflict(_))),
+            "una carpeta sin autorizar no puede recibir la exportación: {refused:?}"
+        );
+        assert!(
+            !destination.exists(),
+            "no debe crearse el archivo de destino"
+        );
+
+        // Autorizar la carpeta equivale a haberla elegido en el selector nativo.
+        authorize(&database, &outside);
+        export_conversation(
+            database.clone(),
+            &conversation.id,
+            &destination.to_string_lossy(),
+            false,
+        )
+        .expect("con la carpeta autorizada la exportación funciona");
+        assert!(destination.exists());
+
+        // Revocarla vuelve a cerrar la puerta sin borrar lo ya exportado.
+        let granted = database
+            .list_authorized_folders()
+            .expect("las carpetas deben listarse");
+        let folder = granted
+            .iter()
+            .find(|folder| folder.revoked_at.is_none())
+            .expect("debe haber una carpeta vigente");
+        database
+            .revoke_authorized_folder(&folder.id)
+            .expect("la revocación debe funcionar");
+        let after_revocation = export_conversation(
+            database,
+            &conversation.id,
+            &destination.to_string_lossy(),
+            true,
+        );
+        assert!(
+            matches!(after_revocation, Err(AppError::Conflict(_))),
+            "tras revocar, la carpeta deja de admitir escrituras: {after_revocation:?}"
+        );
+        assert!(destination.exists(), "lo ya exportado no se toca");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn scheduled_history_export_is_filtered_readable_and_verified() {
         let root =
             std::env::temp_dir().join(format!("chatygpt-scheduler-export-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&root).expect("test directory should exist");
         let database = Database::open(root.join("chatygpt.sqlite")).expect("database should open");
+        authorize(&database, &root);
         let conversation = database
             .create_conversation("Informe semanal", None)
             .expect("conversation should be created");
@@ -1344,6 +1436,7 @@ mod tests {
             std::env::temp_dir().join(format!("chatygpt-calendar-export-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&root).expect("test directory should exist");
         let database = Database::open(root.join("chatygpt.sqlite")).expect("database should open");
+        authorize(&database, &root);
         let destination = root.join("automatizaciones.ics");
         let entries = vec![
             ScheduledCalendarExportEntry {
@@ -1404,6 +1497,7 @@ mod tests {
         std::fs::create_dir_all(&root).expect("test directory should exist");
         let database_path = root.join("chatygpt.sqlite");
         let database = Database::open(&database_path).expect("database should open");
+        authorize(&database, &root);
         let conversation = database
             .create_conversation("Conversación exportable", None)
             .expect("conversation should be created");
@@ -1471,6 +1565,7 @@ mod tests {
         let vault = root.join("vault");
         std::fs::create_dir_all(&vault).expect("vault should exist");
         let database = Database::open(root.join("chatygpt.sqlite")).expect("database should open");
+        authorize(&database, &root);
         let project = database
             .create_project("Análisis de precios", None)
             .expect("project should be created");

@@ -3,6 +3,8 @@ import type {
   BootstrapReport,
   AttachmentView,
   AuditEventView,
+  AuthorizedFolderView,
+  BrokerCredentialStatus,
   BrokerDiagnostic,
   ContextSnapshotView,
   ConversationSummary,
@@ -50,6 +52,26 @@ export const platform = {
   },
   listAuditEvents(): Promise<AuditEventView[]> {
     return invoke<AuditEventView[]>("list_audit_events");
+  },
+  getBrokerCredential(): Promise<BrokerCredentialStatus> {
+    return invoke<BrokerCredentialStatus>("get_broker_credential");
+  },
+  setBrokerCredential(token: string): Promise<BrokerCredentialStatus> {
+    return invoke<BrokerCredentialStatus>("set_broker_credential", { token });
+  },
+  clearBrokerCredential(): Promise<BrokerCredentialStatus> {
+    return invoke<BrokerCredentialStatus>("clear_broker_credential", {
+      confirmed: true
+    });
+  },
+  listAuthorizedFolders(): Promise<AuthorizedFolderView[]> {
+    return invoke<AuthorizedFolderView[]>("list_authorized_folders");
+  },
+  revokeAuthorizedFolder(folderId: string): Promise<AuthorizedFolderView[]> {
+    return invoke<AuthorizedFolderView[]>("revoke_authorized_folder", {
+      folderId,
+      confirmed: true
+    });
   },
   getMemoryOverview(): Promise<MemoryOverview> {
     return invoke<MemoryOverview>("get_memory_overview");

@@ -1,0 +1,116 @@
+# Integración continua de ChatyGPT.
+#
+# La aplicación es Windows-only por diseño (selectores nativos, DPAPI, registro
+# de Windows), así que la verificación completa se ejecuta en `windows-latest`.
+# Un segundo trabajo repite en Linux solo lo que es independiente del sistema,
+# para detectar pronto errores de tipos o de lógica pura.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  # Evita que la CI intente hablar con un Broker real.
+  CHATYGPT_BROKER_BASE_URL: http://127.0.0.1:8765
+
+jobs:
+  windows:
+    name: Verificación completa (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy, llvm-tools-preview
+
+      - uses: taiki-e/install-action@cargo-llvm-cov
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.9.0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Cachear dependencias de Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            apps/desktop/src-tauri/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('apps/desktop/src-tauri/Cargo.lock') }}
+
+      - name: Instalar dependencias JavaScript
+        run: pnpm install --frozen-lockfile
+
+      - name: Formato de Rust
+        run: cargo fmt --check --manifest-path apps/desktop/src-tauri/Cargo.toml
+
+      - name: Clippy sin avisos
+        run: cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- -D warnings
+
+      # El umbral global protege la lógica no visual del núcleo Rust: dominio,
+      # persistencia, polling, exportación, permisos y custodia de secretos.
+      - name: Pruebas de Rust con cobertura
+        run: >
+          cargo llvm-cov --manifest-path apps/desktop/src-tauri/Cargo.toml
+          --lib --fail-under-lines 70 --summary-only
+
+      - name: Comprobación de tipos
+        run: pnpm typecheck
+
+      - name: Pruebas de TypeScript con cobertura
+        run: pnpm test:coverage
+
+      - name: Construcción de producción del frontend
+        run: pnpm build
+
+      - name: Pruebas de fundamentos en Python
+        run: python -m unittest discover -s tests -v
+
+      - name: Espacios en blanco y saltos de línea
+        run: git diff --check
+
+  linux:
+    name: Comprobaciones independientes del sistema (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.9.0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Instalar dependencias JavaScript
+        run: pnpm install --frozen-lockfile
+
+      - name: Comprobación de tipos
+        run: pnpm typecheck
+
+      - name: Pruebas de TypeScript
+        run: pnpm test
+
+      - name: Pruebas de fundamentos en Python
+        run: python -m unittest discover -s tests -v

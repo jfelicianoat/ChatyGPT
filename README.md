@@ -116,6 +116,15 @@ el primer workflow de investigación incluyen:
 - resumen aprobado visible y explicado en el inspector exacto de contexto de cada respuesta;
 - actualización incremental del resumen en lotes seguros de hasta 48.000 caracteres, reutilizando el resumen aprobado y sin reenviar todo el historial;
 - cobertura visible de mensajes resumidos y pendientes, con los mensajes recientes fuera del lote conservados en la ventana normal;
+- registro estructurado local con correlación por tarea, incapaz por construcción
+  de contener prompts, rutas ni secretos, con rotación acotada;
+- expediente durable de cada confirmación de herramienta, con acción, recursos,
+  datos, destino, alcance y consecuencias, resuelto antes de ejecutar y sin
+  posibilidad de repetirse;
+- carpetas autorizadas revisables y revocables desde Inicio: ChatyGPT solo
+  escribe donde la persona eligió en un selector de Windows;
+- credencial de Broker AI cifrada con DPAPI para la cuenta de Windows, con alta
+  y retirada desde la aplicación y sustitución en caliente;
 - fixture contractual local-only y sin coste cloud;
 - pruebas ejecutables con la biblioteca estándar de Python.
 
@@ -191,6 +200,13 @@ En **Inicio → Apariencia** puede elegirse tema **Windows**, **Claro** u
 antes de cargar React, evitando el destello de un tema distinto al abrir la
 aplicación. En modo Windows, un cambio del tema del sistema se refleja mientras
 ChatyGPT está abierto.
+La barra lateral incorpora **Atajos de teclado**. Además de mostrar la ayuda,
+ChatyGPT permite crear un chat con `Ctrl+N`, buscar con `Ctrl+F` o `/`, llevar el
+foco al compositor con `Ctrl+Mayús+M`, volver a Inicio con `Alt+1` y abrir la
+propia ayuda con `?`. Las teclas simples no se capturan mientras se escribe. Al
+recorrer la página con Tab aparece **Saltar al contenido principal**; las
+ventanas mantienen el foco dentro, admiten `Esc` y lo devuelven al control que
+las abrió.
 
 ## Desarrollo
 
@@ -266,17 +282,22 @@ de interfaz cambian temporalmente ese envío al modo agente. Si la conversación
 usa **Análisis en equipo**, Código aislado se entrega a sus proponentes mediante
 `run_code`, sin perder la estrategia colaborativa guardada.
 
-Secreto de transición:
+Credencial de Broker AI:
 
-- `AI_BROKER_ADMIN_TOKEN`, leído solo del entorno y enviado como
-  `x-admin-token`. No se persiste ni se registra.
-
-Antes de distribuir la aplicación se sustituirá el entorno por Windows
-Credential Manager o Stronghold, tras decidir el modelo de desbloqueo.
+- Se guarda desde **Inicio → Credencial de Broker AI**, cifrada con DPAPI para
+  la cuenta de Windows que la introduce. No se persiste en SQLite, ni en los
+  registros, ni en el script de arranque, y no vuelve a mostrarse.
+- `AI_BROKER_ADMIN_TOKEN` sigue admitiéndose como vía de transición: solo se usa
+  cuando no hay credencial guardada. La app prefiere siempre el almacén cifrado.
+- Guardar una credencial nueva la aplica sin reiniciar y actualiza la copia
+  protegida del inicio con Windows si estaba activo.
+- `Arrancar ChatyGPT.bat` reutiliza la credencial guardada y solo pide el token
+  cuando no existe o no puede descifrarse.
 
 ## Documentación
 
 - [Arquitectura y plan](docs/ARCHITECTURE.md)
+- [Endurecimiento de Fase 0](docs/PHASE_0_HARDENING.md)
 - [Evidencias de Fase 0](docs/PHASE_0_VERIFICATION.md)
 - [Evidencias de Fase 1](docs/PHASE_1_VERIFICATION.md)
 - [Evidencias de Fase 2](docs/PHASE_2_VERIFICATION.md)

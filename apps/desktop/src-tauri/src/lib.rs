@@ -3,17 +3,19 @@ mod broker;
 mod db;
 mod error;
 mod export;
+mod logging;
 mod scheduler_runtime;
+mod secrets;
 mod startup;
 mod task_runtime;
 
 use broker::{BrokerClient, BrokerDiagnostic};
 use db::{
-    AttachmentView, AuditEventView, ContextSnapshotView, ConversationExecutionPreferences,
-    ConversationSummary, ConversationSummaryOverview, ConversationView, CustomGptImportReport,
-    CustomGptToolPermissions, CustomGptView, Database, LocalTaskSnapshot, MemoryOverview,
-    MemorySearchView, ProjectKnowledgeOverview, ProjectSummary, RecoveryItemView,
-    ScheduledRunPageView, ScheduledTaskTemplateView, ScheduledTaskView,
+    AttachmentView, AuditEventView, AuthorizedFolderView, ContextSnapshotView,
+    ConversationExecutionPreferences, ConversationSummary, ConversationSummaryOverview,
+    ConversationView, CustomGptImportReport, CustomGptToolPermissions, CustomGptView, Database,
+    LocalTaskSnapshot, MemoryOverview, MemorySearchView, ProjectKnowledgeOverview, ProjectSummary,
+    RecoveryItemView, ScheduledRunPageView, ScheduledTaskTemplateView, ScheduledTaskView,
 };
 use error::AppError;
 use serde::{Deserialize, Serialize};
@@ -34,6 +36,8 @@ struct AppState {
 struct BootstrapReport {
     app_version: &'static str,
     database_path: String,
+    /// Ruta del registro estructurado, para poder revisarlo sin buscarlo a mano.
+    log_path: Option<String>,
     schema_version: i64,
     recovered_tasks: usize,
     recovered_attachments: usize,
@@ -57,6 +61,45 @@ struct CustomGptExportReport {
     excluded_files: usize,
 }
 
+/// Autoriza la carpeta que contiene un archivo recién elegido por la persona.
+///
+/// Elegir un destino en el selector nativo de Windows *es* la concesión: solo
+/// desde ahí puede una carpeta pasar a estar autorizada para escritura.
+fn authorize_selected_file(
+    database: &Database,
+    selected_file: &str,
+    purpose: &str,
+) -> Result<(), AppError> {
+    let path = std::path::Path::new(selected_file);
+    let folder = path.parent().ok_or_else(|| {
+        AppError::Validation("el destino elegido no tiene carpeta contenedora".to_owned())
+    })?;
+    let display_name = folder.to_string_lossy().into_owned();
+    database.authorize_folder(folder, &display_name, purpose)
+}
+
+#[tauri::command]
+fn list_authorized_folders(
+    state: State<'_, AppState>,
+) -> Result<Vec<AuthorizedFolderView>, AppError> {
+    state.database.list_authorized_folders()
+}
+
+#[tauri::command]
+fn revoke_authorized_folder(
+    folder_id: String,
+    confirmed: bool,
+    state: State<'_, AppState>,
+) -> Result<Vec<AuthorizedFolderView>, AppError> {
+    if !confirmed {
+        return Err(AppError::Validation(
+            "revocar una carpeta autorizada requiere confirmación".to_owned(),
+        ));
+    }
+    state.database.revoke_authorized_folder(&folder_id)?;
+    state.database.list_authorized_folders()
+}
+
 fn validated_text(value: &str, field: &str, maximum: usize) -> Result<String, AppError> {
     let value = value.trim();
     if value.is_empty() {
@@ -77,6 +120,7 @@ fn bootstrap_app(state: State<'_, AppState>) -> Result<BootstrapReport, AppError
     Ok(BootstrapReport {
         app_version: env!("CARGO_PKG_VERSION"),
         database_path: state.database.path().display().to_string(),
+        log_path: logging::log_path().map(|path| path.display().to_string()),
         schema_version: state.database.schema_version()?,
         recovered_tasks: state.recovered_at_start,
         recovered_attachments: state.recovered_attachments_at_start,
@@ -87,6 +131,51 @@ fn bootstrap_app(state: State<'_, AppState>) -> Result<BootstrapReport, AppError
 #[tauri::command]
 async fn diagnose_broker(state: State<'_, AppState>) -> Result<BrokerDiagnostic, AppError> {
     Ok(state.broker.diagnose().await)
+}
+
+#[tauri::command]
+fn get_broker_credential(
+    state: State<'_, AppState>,
+) -> Result<secrets::BrokerCredentialStatus, AppError> {
+    Ok(secrets::credential_status(&state.data_dir))
+}
+
+/// Guarda el token del Broker cifrado para esta cuenta de Windows.
+///
+/// El valor nunca se devuelve al frontend ni se persiste en SQLite: solo se
+/// informa del estado resultante.
+#[tauri::command]
+fn set_broker_credential(
+    token: String,
+    state: State<'_, AppState>,
+) -> Result<secrets::BrokerCredentialStatus, AppError> {
+    secrets::store_broker_token(&state.data_dir, &token)?;
+    state.broker.replace_admin_token(Some(token.trim()))?;
+    // Si el inicio con Windows está activo, su copia protegida se pone al día.
+    let _ = startup::refresh_protected_token_if_enabled(&state.data_dir);
+    state.database.record_broker_credential_changed(true)?;
+    logging::info("broker.credential_stored", None, &[]);
+    Ok(secrets::credential_status(&state.data_dir))
+}
+
+#[tauri::command]
+fn clear_broker_credential(
+    confirmed: bool,
+    state: State<'_, AppState>,
+) -> Result<secrets::BrokerCredentialStatus, AppError> {
+    if !confirmed {
+        return Err(AppError::Validation(
+            "retirar la credencial requiere confirmación".to_owned(),
+        ));
+    }
+    secrets::clear_broker_token(&state.data_dir)?;
+    // Tras retirarla, solo queda lo que aporte el entorno de este proceso.
+    state
+        .broker
+        .replace_admin_token(secrets::environment_token().as_deref())?;
+    state.database.record_broker_credential_changed(false)?;
+    logging::info("broker.credential_cleared", None, &[]);
+    Ok(secrets::credential_status(&state.data_dir))
 }
 
 #[tauri::command]
@@ -575,7 +664,10 @@ fn pick_custom_gpt_import_path() -> Result<Option<String>, AppError> {
 }
 
 #[tauri::command]
-fn pick_custom_gpt_export_path(suggested_name: String) -> Result<Option<String>, AppError> {
+fn pick_custom_gpt_export_path(
+    suggested_name: String,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, AppError> {
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
@@ -624,7 +716,11 @@ fn pick_custom_gpt_export_path(suggested_name: String) -> Result<Option<String>,
             ));
         }
         let path = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-        Ok((!path.is_empty()).then_some(path))
+        if path.is_empty() {
+            return Ok(None);
+        }
+        authorize_selected_file(&state.database, &path, "custom_gpt_export")?;
+        Ok(Some(path))
     }
     #[cfg(not(target_os = "windows"))]
     Err(AppError::Validation(
@@ -1286,7 +1382,10 @@ fn pick_attachment_paths() -> Result<Vec<String>, AppError> {
 }
 
 #[tauri::command]
-fn pick_export_path(suggested_name: String) -> Result<Option<ExportPathSelection>, AppError> {
+fn pick_export_path(
+    suggested_name: String,
+    state: State<'_, AppState>,
+) -> Result<Option<ExportPathSelection>, AppError> {
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
@@ -1341,8 +1440,9 @@ fn pick_export_path(suggested_name: String) -> Result<Option<ExportPathSelection
         if raw.is_empty() {
             return Ok(None);
         }
-        let selection = serde_json::from_str(raw)
+        let selection: ExportPathSelection = serde_json::from_str(raw)
             .map_err(|error| AppError::Validation(format!("selector inválido: {error}")))?;
+        authorize_selected_file(&state.database, &selection.path, "conversation_markdown")?;
         Ok(Some(selection))
     }
     #[cfg(not(target_os = "windows"))]
@@ -1352,7 +1452,9 @@ fn pick_export_path(suggested_name: String) -> Result<Option<ExportPathSelection
 }
 
 #[tauri::command]
-fn pick_scheduled_history_export_path() -> Result<Option<ExportPathSelection>, AppError> {
+fn pick_scheduled_history_export_path(
+    state: State<'_, AppState>,
+) -> Result<Option<ExportPathSelection>, AppError> {
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
@@ -1390,8 +1492,9 @@ fn pick_scheduled_history_export_path() -> Result<Option<ExportPathSelection>, A
         if raw.is_empty() {
             return Ok(None);
         }
-        let selection = serde_json::from_str(raw)
+        let selection: ExportPathSelection = serde_json::from_str(raw)
             .map_err(|error| AppError::Validation(format!("selector inválido: {error}")))?;
+        authorize_selected_file(&state.database, &selection.path, "scheduled_history")?;
         Ok(Some(selection))
     }
     #[cfg(not(target_os = "windows"))]
@@ -1401,7 +1504,9 @@ fn pick_scheduled_history_export_path() -> Result<Option<ExportPathSelection>, A
 }
 
 #[tauri::command]
-fn pick_scheduled_calendar_export_path() -> Result<Option<ExportPathSelection>, AppError> {
+fn pick_scheduled_calendar_export_path(
+    state: State<'_, AppState>,
+) -> Result<Option<ExportPathSelection>, AppError> {
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
@@ -1439,8 +1544,9 @@ fn pick_scheduled_calendar_export_path() -> Result<Option<ExportPathSelection>, 
         if raw.is_empty() {
             return Ok(None);
         }
-        let selection = serde_json::from_str(raw)
+        let selection: ExportPathSelection = serde_json::from_str(raw)
             .map_err(|error| AppError::Validation(format!("selector inválido: {error}")))?;
+        authorize_selected_file(&state.database, &selection.path, "scheduled_calendar")?;
         Ok(Some(selection))
     }
     #[cfg(not(target_os = "windows"))]
@@ -1450,7 +1556,7 @@ fn pick_scheduled_calendar_export_path() -> Result<Option<ExportPathSelection>, 
 }
 
 #[tauri::command]
-fn pick_obsidian_vault() -> Result<Option<String>, AppError> {
+fn pick_obsidian_vault(state: State<'_, AppState>) -> Result<Option<String>, AppError> {
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
@@ -1477,7 +1583,14 @@ fn pick_obsidian_vault() -> Result<Option<String>, AppError> {
             ));
         }
         let path = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-        Ok((!path.is_empty()).then_some(path))
+        if path.is_empty() {
+            return Ok(None);
+        }
+        // La bóveda se autoriza entera: su proyección crea subcarpetas dentro.
+        state
+            .database
+            .authorize_folder(std::path::Path::new(&path), &path, "obsidian_vault")?;
+        Ok(Some(path))
     }
     #[cfg(not(target_os = "windows"))]
     Err(AppError::Validation(
@@ -1703,14 +1816,39 @@ pub fn run() {
                 .map_err(|error| AppError::DataDirectory(error.to_string()))?;
             std::fs::create_dir_all(&data_dir)
                 .map_err(|error| AppError::DataDirectory(error.to_string()))?;
+            // El registro se prepara antes que nada para que un fallo posterior
+            // de migración o de recuperación deje rastro observable.
+            let _ = logging::init(&data_dir);
+            let boot = logging::new_correlation_id();
             let _ = startup::refresh_protected_token_if_enabled(&data_dir);
-            let database = Database::open(data_dir.join("chatygpt.db"))?;
-            let broker = BrokerClient::from_environment()?;
+            let database = Database::open(data_dir.join("chatygpt.db")).inspect_err(|error| {
+                logging::error(
+                    "app.database_failed",
+                    Some(&boot),
+                    &[("error_kind", logging::error_kind(error))],
+                );
+            })?;
+            let broker = BrokerClient::bootstrap(&data_dir)?;
             let recovery_items_at_start = database.recovery_candidates()?;
             let recovered_at_start =
                 task_runtime::recover_at_start(database.clone(), broker.clone())?;
             let recovered_attachments_at_start =
                 attachment_runtime::recover_at_start(database.clone(), broker.clone())?;
+            logging::info(
+                "app.started",
+                Some(&boot),
+                &[
+                    (
+                        "schema_version",
+                        logging::count(database.schema_version().unwrap_or(-1)),
+                    ),
+                    ("recovered_tasks", logging::count(recovered_at_start as i64)),
+                    (
+                        "recovered_attachments",
+                        logging::count(recovered_attachments_at_start as i64),
+                    ),
+                ],
+            );
             scheduler_runtime::start(database.clone(), broker.clone());
             let attachments_dir = data_dir.join("attachments");
             app.manage(AppState {
@@ -1729,6 +1867,9 @@ pub fn run() {
             diagnose_broker,
             get_windows_startup_status,
             set_windows_startup_enabled,
+            get_broker_credential,
+            set_broker_credential,
+            clear_broker_credential,
             start_smoke_task,
             get_local_task,
             cancel_local_task,
@@ -1775,6 +1916,8 @@ pub fn run() {
             remove_project_file,
             set_project_memory_item_enabled,
             list_audit_events,
+            list_authorized_folders,
+            revoke_authorized_folder,
             get_memory_overview,
             get_custom_gpt_knowledge,
             list_custom_gpt_files,

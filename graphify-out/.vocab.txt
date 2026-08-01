@@ -6,6 +6,7 @@ accepts
 accesibilidad
 aceptaci
 across
+action
 active
 adapter
 additive
@@ -32,6 +33,7 @@ aparece
 apareciendo
 api
 app
+appearance
 application
 apply
 approve
@@ -193,6 +195,7 @@ cuenta
 current
 curso
 custom
+dark
 data
 database
 datos
@@ -265,6 +268,7 @@ duplicating
 durable
 duration
 edit
+editable
 edited
 editing
 edits
@@ -340,6 +344,7 @@ finish
 first
 fixture
 flow
+focus
 folded
 follow
 for
@@ -387,6 +392,7 @@ haz
 header
 health
 hecho
+help
 hidden
 hide
 history
@@ -451,9 +457,11 @@ jitter
 json
 jsx
 keeps
+keyboard
 knowledge
 label
 labels
+landmarks
 lanes
 lanzada
 lanzo
@@ -490,6 +498,7 @@ los
 losing
 main
 managed
+management
 manager
 mando
 mano
@@ -518,6 +527,7 @@ mira
 missing
 mite
 mod
+modal
 mode
 model
 modelo
@@ -536,6 +546,7 @@ name
 named
 names
 narrow
+navigation
 nearby
 necesarios
 needing
@@ -635,6 +646,7 @@ portable
 posiblidades
 post
 powershell
+preference
 preferences
 preferred
 prefers
@@ -740,6 +752,7 @@ research
 reset
 resolution
 resolve
+resolved
 respects
 response
 respuesta
@@ -806,6 +819,7 @@ service
 servicio
 set
 settings
+shortcut
 should
 sidecar
 siempre
@@ -860,6 +874,7 @@ submission
 submit
 submitted
 submitting
+subscribe
 summary
 supera
 suposiciones

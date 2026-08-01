@@ -136,5 +136,11 @@
   "134": "Q: How should the first durable Deep Research slice integrate with ChatyGPT's existing task lifecycle?",
   "135": "Q: Which preset is valid for Deep Research when ChatyGPT uses Broker execution strategy agent?",
   "136": "Q: How can ChatyGPT persist Deep Research web sources without inventing unsupported Broker agent iteration fields?",
-  "137": "scheduledCalendarOccurrences"
+  "137": "scheduledCalendarOccurrences",
+  "138": "contracts.rs",
+  "139": "mod.rs",
+  "140": "appearance.ts",
+  "141": ".attachment_view",
+  "142": ".list_scheduled_task_templates",
+  "143": "Q: Ok, sigue con el desarrollo"
 }

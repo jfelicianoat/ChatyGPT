@@ -11,6 +11,7 @@ import {
   canStartMemoryEdit,
   canUseSemanticMemory,
   canRevealContextSource,
+  confirmationSummary,
   formatResponseDuration,
   filterProjectKnowledge,
   filterScheduledRuns,
@@ -31,9 +32,13 @@ import {
   scheduledTaskDuplicateDraft,
   taskFailureSummary,
   taskProgressSummary,
+  authorizedFolderPurpose,
+  brokerCredentialLabel,
   type BootstrapReport,
+  type BrokerCredentialStatus,
   type AttachmentView,
   type AuditEventView,
+  type AuthorizedFolderView,
   type BrokerDiagnostic,
   type ContextSnapshotView,
   type ConversationSummary,
@@ -79,6 +84,7 @@ import {
   type AppearancePreference,
   type ResolvedAppearance
 } from "./appearance";
+import { isEditableKeyboardTarget, keyboardShortcutAction } from "./keyboard";
 
 type Loadable<T> =
   | { state: "loading" }
@@ -238,6 +244,10 @@ function dialogCopy(dialog: DialogState): {
 
 export function App() {
   const messageListRef = useRef<HTMLDivElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
+  const activeModalRef = useRef<HTMLElement>(null);
+  const dialogBusyRef = useRef(false);
   const followConversationScrollRef = useRef(true);
   const [bootstrap, setBootstrap] = useState<Loadable<BootstrapReport>>({ state: "loading" });
   const [appearancePreference, setAppearancePreference] =
@@ -245,9 +255,18 @@ export function App() {
   const [resolvedAppearance, setResolvedAppearance] = useState<ResolvedAppearance>(() =>
     document.documentElement.dataset.theme === "dark" ? "dark" : "light"
   );
+  const [keyboardHelpOpen, setKeyboardHelpOpen] = useState(false);
   const [broker, setBroker] = useState<Loadable<BrokerDiagnostic> | null>(null);
   const [auditEvents, setAuditEvents] = useState<Loadable<AuditEventView[]>>({ state: "loading" });
   const [memory, setMemory] = useState<Loadable<MemoryOverview>>({ state: "loading" });
+  const [authorizedFolders, setAuthorizedFolders] =
+    useState<Loadable<AuthorizedFolderView[]>>({ state: "loading" });
+  const [folderBusy, setFolderBusy] = useState<string | null>(null);
+  const [brokerCredential, setBrokerCredential] =
+    useState<Loadable<BrokerCredentialStatus>>({ state: "loading" });
+  const [credentialDraft, setCredentialDraft] = useState("");
+  const [credentialBusy, setCredentialBusy] = useState(false);
+  const [credentialNotice, setCredentialNotice] = useState<string | null>(null);
   const [scheduledTasks, setScheduledTasks] =
     useState<Loadable<ScheduledTaskView[]>>({ state: "loading" });
   const [scheduledTaskTemplates, setScheduledTaskTemplates] =
@@ -474,6 +493,10 @@ export function App() {
   );
 
   useEffect(() => {
+    dialogBusyRef.current = dialogBusy;
+  }, [dialogBusy]);
+
+  useEffect(() => {
     if (!cameraOpen) return;
     const video = cameraVideoRef.current;
     const stream = cameraStreamRef.current;
@@ -610,6 +633,64 @@ export function App() {
       setMemory({ state: "ready", value: await platform.getMemoryOverview() });
     } catch (error) {
       setMemory({ state: "error", message: describeError(error) });
+    }
+    try {
+      setAuthorizedFolders({
+        state: "ready",
+        value: await platform.listAuthorizedFolders()
+      });
+    } catch (error) {
+      setAuthorizedFolders({ state: "error", message: describeError(error) });
+    }
+    try {
+      setBrokerCredential({ state: "ready", value: await platform.getBrokerCredential() });
+    } catch (error) {
+      setBrokerCredential({ state: "error", message: describeError(error) });
+    }
+  };
+
+  const saveBrokerCredential = async () => {
+    // El valor solo existe en memoria hasta que Windows lo cifra; después se
+    // borra del formulario para no dejarlo visible en pantalla.
+    setCredentialBusy(true);
+    setCredentialNotice(null);
+    try {
+      const status = await platform.setBrokerCredential(credentialDraft);
+      setBrokerCredential({ state: "ready", value: status });
+      setCredentialDraft("");
+      setCredentialNotice("Credencial guardada y cifrada para tu cuenta de Windows.");
+    } catch (error) {
+      setCredentialNotice(describeError(error));
+    } finally {
+      setCredentialBusy(false);
+    }
+  };
+
+  const removeBrokerCredential = async () => {
+    setCredentialBusy(true);
+    setCredentialNotice(null);
+    try {
+      const status = await platform.clearBrokerCredential();
+      setBrokerCredential({ state: "ready", value: status });
+      setCredentialNotice("Credencial retirada de este equipo.");
+    } catch (error) {
+      setCredentialNotice(describeError(error));
+    } finally {
+      setCredentialBusy(false);
+    }
+  };
+
+  const revokeFolder = async (folderId: string) => {
+    setFolderBusy(folderId);
+    try {
+      setAuthorizedFolders({
+        state: "ready",
+        value: await platform.revokeAuthorizedFolder(folderId)
+      });
+    } catch (error) {
+      setAuthorizedFolders({ state: "error", message: describeError(error) });
+    } finally {
+      setFolderBusy(null);
     }
   };
 
@@ -821,17 +902,6 @@ export function App() {
     }, 250);
     return () => window.clearTimeout(timeout);
   }, [searchQuery]);
-
-  useEffect(() => {
-    if (!dialog) return;
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !dialogBusy) {
-        setDialog(null);
-      }
-    };
-    window.addEventListener("keydown", closeOnEscape);
-    return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [dialog, dialogBusy]);
 
   useEffect(() => {
     if (conversation?.state !== "ready") return;
@@ -2956,23 +3026,131 @@ export function App() {
     ? filterScheduledTasks(scheduledTasks.value, scheduleSearchQuery)
     : [];
 
+  const activeModalKind = keyboardHelpOpen
+    ? "keyboard-help"
+    : dialog
+      ? "dialog"
+      : projectKnowledge
+        ? "project-knowledge"
+        : summaryPanel
+          ? "summary"
+          : null;
+
+  useEffect(() => {
+    const handleShortcut = (event: KeyboardEvent) => {
+      if (event.repeat) return;
+      const action = keyboardShortcutAction({
+        key: event.key,
+        ctrlKey: event.ctrlKey,
+        shiftKey: event.shiftKey,
+        altKey: event.altKey,
+        metaKey: event.metaKey,
+        isComposing: event.isComposing,
+        editableTarget: isEditableKeyboardTarget(event.target),
+        modalOpen: activeModalKind !== null
+      });
+      if (!action) return;
+      if (action === "focus-composer" && !composerRef.current) return;
+      event.preventDefault();
+      switch (action) {
+        case "new-conversation":
+          void createConversation();
+          break;
+        case "focus-search":
+          searchInputRef.current?.focus();
+          searchInputRef.current?.select();
+          break;
+        case "focus-composer":
+          composerRef.current?.focus();
+          break;
+        case "go-home":
+          setConversation(null);
+          break;
+        case "open-help":
+          setKeyboardHelpOpen(true);
+          break;
+      }
+    };
+    window.addEventListener("keydown", handleShortcut);
+    return () => window.removeEventListener("keydown", handleShortcut);
+  }, [activeModalKind, selectedProjectId]);
+
+  useEffect(() => {
+    if (!activeModalKind) return;
+    const previousFocus = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
+    const modal = activeModalRef.current;
+    const focusableSelector =
+      'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])';
+    const frame = window.requestAnimationFrame(() => {
+      modal?.querySelector<HTMLElement>("[autofocus]")?.focus();
+      if (document.activeElement === previousFocus) {
+        modal?.querySelector<HTMLElement>(focusableSelector)?.focus();
+      }
+    });
+    const containFocus = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        if (activeModalKind === "keyboard-help") setKeyboardHelpOpen(false);
+        if (activeModalKind === "dialog" && !dialogBusyRef.current) setDialog(null);
+        if (activeModalKind === "project-knowledge") setProjectKnowledge(null);
+        if (activeModalKind === "summary") setSummaryPanel(null);
+        return;
+      }
+      if (event.key !== "Tab" || !modal) return;
+      const focusable = [...modal.querySelectorAll<HTMLElement>(focusableSelector)];
+      if (focusable.length === 0) {
+        event.preventDefault();
+        modal.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    window.addEventListener("keydown", containFocus);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("keydown", containFocus);
+      previousFocus?.focus();
+    };
+  }, [activeModalKind]);
+
   return (
-    <main className="app-shell">
+    <div className="app-shell">
+      <a className="skip-link" href="#main-content">
+        Saltar al contenido principal
+      </a>
       <aside className="sidebar">
         <div className="brand">
           <span className="brand-mark">C</span>
           <div><strong>ChatyGPT</strong><small>Espacio personal</small></div>
         </div>
 
-        <button className="new-chat" onClick={createConversation}>＋ Nueva conversación</button>
+        <button
+          className="new-chat"
+          onClick={createConversation}
+          aria-keyshortcuts="Control+N"
+          title="Nueva conversación (Ctrl+N)"
+        >
+          ＋ Nueva conversación
+        </button>
 
         <label className="search-box">
           <span>⌕</span>
           <input
+            ref={searchInputRef}
             value={searchQuery}
             onChange={(event) => setSearchQuery(event.target.value)}
             placeholder="Buscar conversaciones"
             aria-label="Buscar conversaciones"
+            aria-keyshortcuts="Control+F /"
           />
           {searchQuery && (
             <button onClick={() => setSearchQuery("")} aria-label="Limpiar búsqueda">×</button>
@@ -2984,6 +3162,8 @@ export function App() {
           <button
             className={`nav-item ${conversation === null ? "active" : ""}`}
             onClick={() => setConversation(null)}
+            aria-current={conversation === null ? "page" : undefined}
+            aria-keyshortcuts="Alt+1"
           >
             ◌ Inicio
           </button>
@@ -3049,6 +3229,11 @@ export function App() {
                   : ""
               }`}
               onClick={() => openConversation(item.id)}
+              aria-current={
+                conversation?.state === "ready" && conversation.value.id === item.id
+                  ? "page"
+                  : undefined
+              }
             >
               {item.title}
             </button>
@@ -3083,7 +3268,23 @@ export function App() {
         )}
 
         {navigationError && <p className="sidebar-error">{navigationError}</p>}
-        <div className="sidebar-footer">
+        <button
+          className="keyboard-help-button"
+          onClick={() => setKeyboardHelpOpen(true)}
+          aria-haspopup="dialog"
+          aria-keyshortcuts="Shift+/"
+        >
+          <span>Atajos de teclado</span>
+          <kbd>?</kbd>
+        </button>
+        <div
+          className="sidebar-footer"
+          title={
+            bootstrap.state === "ready" && bootstrap.value.logPath
+              ? `Registro de diagnóstico: ${bootstrap.value.logPath}`
+              : undefined
+          }
+        >
           <span className={`status-dot ${bootstrap.state === "ready" ? "ok" : ""}`} />
           {bootstrap.state === "ready"
             ? `Datos locales · esquema ${bootstrap.value.schemaVersion}`
@@ -3091,7 +3292,7 @@ export function App() {
         </div>
       </aside>
 
-      <section className="workspace">
+      <section className="workspace" aria-label="Espacio de trabajo">
         <header className="topbar">
           <div>
             <span className="eyebrow">
@@ -3185,7 +3386,7 @@ export function App() {
           )}
         </header>
 
-        <div className="content">
+        <main className="content" id="main-content" tabIndex={-1}>
           {exportNotice && <p className="export-notice">{exportNotice}</p>}
           {bootstrap.state === "ready" &&
             !recoveryNoticeDismissed &&
@@ -3512,15 +3713,46 @@ export function App() {
                       Revisa cada propuesta. No se ejecutará ninguna acción hasta que decidas.
                     </p>
                     <div className="tool-call-list">
-                      {currentTurn.value.pendingToolCalls.map((call) => (
+                      {currentTurn.value.pendingToolCalls.map((call) => {
+                        const detail = confirmationSummary(call);
+                        return (
                         <article key={call.toolCallId} className="tool-call-card">
-                          <div>
-                            <strong>
-                              {call.name === "rename_conversation"
-                                ? "Renombrar la conversación"
-                                : call.name}
-                            </strong>
-                            <small>{JSON.stringify(call.arguments)}</small>
+                          <div className="tool-call-disclosure">
+                            <strong>{detail.action}</strong>
+                            <dl>
+                              <div>
+                                <dt>Herramienta</dt>
+                                <dd>{detail.tool}</dd>
+                              </div>
+                              <div>
+                                <dt>Recursos afectados</dt>
+                                <dd>{detail.resource}</dd>
+                              </div>
+                              <div>
+                                <dt>Datos que se enviarán</dt>
+                                <dd>
+                                  {detail.data.length === 0
+                                    ? "Ninguno declarado"
+                                    : detail.data.map((datum) => (
+                                        <span key={datum.label}>
+                                          {datum.label}: {datum.value}
+                                        </span>
+                                      ))}
+                                </dd>
+                              </div>
+                              <div>
+                                <dt>Destino</dt>
+                                <dd>{detail.destination}</dd>
+                              </div>
+                              <div>
+                                <dt>Alcance</dt>
+                                <dd>{detail.scope}</dd>
+                              </div>
+                              <div>
+                                <dt>Consecuencias</dt>
+                                <dd>{detail.consequences}</dd>
+                              </div>
+                            </dl>
                           </div>
                           <div className="tool-decision-buttons">
                             <button
@@ -3539,11 +3771,12 @@ export function App() {
                                 [call.toolCallId]: true
                               }))}
                             >
-                              Autorizar
+                              Autorizar una vez
                             </button>
                           </div>
                         </article>
-                      ))}
+                        );
+                      })}
                     </div>
                     <button
                       className="primary"
@@ -3877,6 +4110,7 @@ export function App() {
                   </div>
                 )}
                 <textarea
+                  ref={composerRef}
                   value={draft}
                   onChange={(event) => {
                     setDraft(event.target.value);
@@ -3890,6 +4124,8 @@ export function App() {
                     }
                   }}
                   placeholder="Escribe un mensaje…"
+                  aria-label="Mensaje para ChatyGPT"
+                  aria-keyshortcuts="Control+Shift+M"
                   rows={3}
                   disabled={Boolean(currentTurnBlocks)}
                 />
@@ -4350,6 +4586,111 @@ export function App() {
                   Tema visible: {resolvedAppearance === "dark" ? "oscuro" : "claro"}
                   {appearancePreference === "system" ? " · cambia con Windows" : ""}.
                 </small>
+              </section>
+
+              <section className="broker-credential" aria-labelledby="credential-heading">
+                <div>
+                  <span className="kicker">Seguridad local</span>
+                  <h3 id="credential-heading">Credencial de Broker AI</h3>
+                  <p>
+                    El token se cifra con Windows para tu cuenta de usuario. No se guarda
+                    en la base de datos, ni en los registros, ni en el script de inicio, y
+                    nunca se vuelve a mostrar.
+                  </p>
+                </div>
+                {brokerCredential.state === "loading" && <small>Comprobando credencial…</small>}
+                {brokerCredential.state === "error" && (
+                  <small role="alert">{brokerCredential.message}</small>
+                )}
+                {brokerCredential.state === "ready" && (
+                  <>
+                    <div className="credential-state">
+                      <span className={`badge ${brokerCredential.value.protected ? "ok" : ""}`}>
+                        {brokerCredentialLabel(brokerCredential.value)}
+                      </span>
+                      <small>{brokerCredential.value.message}</small>
+                    </div>
+                    <div className="credential-form">
+                      <label htmlFor="broker-token">Token administrativo</label>
+                      <input
+                        id="broker-token"
+                        type="password"
+                        autoComplete="off"
+                        spellCheck={false}
+                        placeholder="Pega aquí el token de Broker AI"
+                        value={credentialDraft}
+                        onChange={(event) => setCredentialDraft(event.target.value)}
+                      />
+                      <div className="credential-actions">
+                        <button
+                          className="primary"
+                          disabled={credentialBusy || credentialDraft.trim().length === 0}
+                          onClick={() => void saveBrokerCredential()}
+                        >
+                          {credentialBusy ? "Guardando…" : "Guardar credencial"}
+                        </button>
+                        {brokerCredential.value.protected && (
+                          <button
+                            className="secondary"
+                            disabled={credentialBusy}
+                            onClick={() => void removeBrokerCredential()}
+                          >
+                            Retirar
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    {credentialNotice && <small aria-live="polite">{credentialNotice}</small>}
+                  </>
+                )}
+              </section>
+
+              <section className="authorized-folders" aria-labelledby="folders-heading">
+                <div>
+                  <span className="kicker">Permisos locales</span>
+                  <h3 id="folders-heading">Carpetas autorizadas</h3>
+                  <p>
+                    ChatyGPT solo escribe en carpetas que hayas elegido en un selector de
+                    Windows. Al revocar una, la siguiente exportación volverá a pedirte el
+                    destino. Los archivos ya guardados no se tocan.
+                  </p>
+                </div>
+                {authorizedFolders.state === "loading" && <small>Cargando permisos…</small>}
+                {authorizedFolders.state === "error" && (
+                  <small role="alert">{authorizedFolders.message}</small>
+                )}
+                {authorizedFolders.state === "ready" &&
+                  (authorizedFolders.value.length === 0 ? (
+                    <small>
+                      Todavía no has autorizado ninguna carpeta. Aparecerán aquí en cuanto
+                      exportes por primera vez.
+                    </small>
+                  ) : (
+                    <ul className="authorized-folder-list">
+                      {authorizedFolders.value.map((folder) => (
+                        <li key={folder.id} className={folder.revokedAt ? "revoked" : ""}>
+                          <div>
+                            <strong>{folder.displayName}</strong>
+                            <span>{authorizedFolderPurpose(folder)}</span>
+                            <small>
+                              {folder.revokedAt
+                                ? `Revocada el ${folder.revokedAt}`
+                                : `Autorizada el ${folder.grantedAt}`}
+                            </small>
+                          </div>
+                          {!folder.revokedAt && (
+                            <button
+                              className="secondary"
+                              disabled={folderBusy === folder.id}
+                              onClick={() => void revokeFolder(folder.id)}
+                            >
+                              {folderBusy === folder.id ? "Revocando…" : "Revocar"}
+                            </button>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  ))}
               </section>
 
               <section className="scheduler-card">
@@ -6091,12 +6432,54 @@ export function App() {
               </section>
             </>
           )}
-        </div>
+        </main>
       </section>
+
+      {keyboardHelpOpen && (
+        <div className="modal-backdrop" role="presentation">
+          <section
+            ref={activeModalRef}
+            className="modal keyboard-help-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="keyboard-help-title"
+            aria-describedby="keyboard-help-description"
+            tabIndex={-1}
+          >
+            <span className="kicker">Navegación accesible</span>
+            <h2 id="keyboard-help-title">Atajos de teclado</h2>
+            <p id="keyboard-help-description">
+              Funcionan en toda la aplicación, pero las teclas sin modificadores no interrumpen
+              la escritura ni se ejecutan encima de otra ventana.
+            </p>
+            <dl className="keyboard-shortcut-list">
+              <div><dt><kbd>Ctrl</kbd> + <kbd>N</kbd></dt><dd>Nueva conversación</dd></div>
+              <div><dt><kbd>Ctrl</kbd> + <kbd>F</kbd></dt><dd>Buscar conversaciones</dd></div>
+              <div><dt><kbd>/</kbd></dt><dd>Buscar cuando no estás escribiendo</dd></div>
+              <div><dt><kbd>Ctrl</kbd> + <kbd>Mayús</kbd> + <kbd>M</kbd></dt><dd>Ir al mensaje</dd></div>
+              <div><dt><kbd>Alt</kbd> + <kbd>1</kbd></dt><dd>Volver a Inicio</dd></div>
+              <div><dt><kbd>?</kbd></dt><dd>Abrir esta ayuda</dd></div>
+              <div><dt><kbd>Esc</kbd></dt><dd>Cerrar una ventana abierta</dd></div>
+            </dl>
+            <div className="modal-actions">
+              <button className="primary" autoFocus onClick={() => setKeyboardHelpOpen(false)}>
+                Cerrar
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
 
       {dialog && (
         <div className="modal-backdrop" role="presentation">
-          <section className="modal" role="dialog" aria-modal="true" aria-labelledby="dialog-title">
+          <section
+            ref={activeModalRef}
+            className="modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="dialog-title"
+            tabIndex={-1}
+          >
             <span className="kicker">Gestión local</span>
             <h2 id="dialog-title">{dialogCopy(dialog).title}</h2>
             <p>{dialogCopy(dialog).description}</p>
@@ -6155,10 +6538,12 @@ export function App() {
       {projectKnowledge && (
         <div className="modal-backdrop" role="presentation">
           <section
+            ref={activeModalRef}
             className="modal project-knowledge-modal"
             role="dialog"
             aria-modal="true"
             aria-labelledby="project-knowledge-title"
+            tabIndex={-1}
           >
             {projectKnowledge.state === "loading" && (
               <>
@@ -6423,10 +6808,12 @@ export function App() {
       {summaryPanel && (
         <div className="modal-backdrop" role="presentation">
           <section
+            ref={activeModalRef}
             className="modal summary-modal"
             role="dialog"
             aria-modal="true"
             aria-labelledby="summary-title"
+            tabIndex={-1}
           >
             <span className="kicker">Contexto controlado</span>
             <h2 id="summary-title">Resumen de la conversación</h2>
@@ -6547,6 +6934,6 @@ export function App() {
           </section>
         </div>
       )}
-    </main>
+    </div>
   );
 }

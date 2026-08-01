@@ -1,12 +1,12 @@
 # Graph Report - ChatyGPT  (2026-07-31)
 
 ## Corpus Check
-- 117 files · ~105,838 words
+- 120 files · ~106,741 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 1300 nodes · 3749 edges · 138 communities (89 shown, 49 thin omitted)
-- Extraction: 100% EXTRACTED · 0% INFERRED · 0% AMBIGUOUS · INFERRED: 7 edges (avg confidence: 0.59)
+- 1317 nodes · 3780 edges · 144 communities (94 shown, 50 thin omitted)
+- Extraction: 100% EXTRACTED · 0% INFERRED · 0% AMBIGUOUS · INFERRED: 8 edges (avg confidence: 0.61)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
@@ -148,15 +148,21 @@
 - Q: Which preset is valid for Deep Research when ChatyGPT uses Broker execution strategy agent?
 - Q: How can ChatyGPT persist Deep Research web sources without inventing unsupported Broker agent iteration fields?
 - scheduledCalendarOccurrences
+- contracts.rs
+- mod.rs
+- appearance.ts
+- .attachment_view
+- .list_scheduled_task_templates
+- Q: Ok, sigue con el desarrollo
 
 ## God Nodes (most connected - your core abstractions)
 1. `AppError` - 324 edges
 2. `Database` - 187 edges
 3. `AppState` - 89 edges
 4. `cleanup()` - 50 edges
-5. `test_database()` - 48 edges
-6. `BrokerClient` - 46 edges
-7. `App()` - 45 edges
+5. `App()` - 49 edges
+6. `test_database()` - 48 edges
+7. `BrokerClient` - 46 edges
 8. `chat_request()` - 23 edges
 9. `chat_request_with_project_instruction()` - 20 edges
 10. `export_conversation_to_obsidian()` - 18 edges
@@ -166,41 +172,41 @@
   tests/test_broker_probe.py → scripts/verify_broker.py
 - `ContractHandler` --uses--> `BrokerProbe`  [INFERRED]
   tests/test_broker_probe.py → scripts/verify_broker.py
+- `App()` --indirect_call--> `loadAppearancePreference()`  [INFERRED]
+  apps/desktop/src/App.tsx → apps/desktop/src/appearance.ts
 - `App()` --indirect_call--> `task()`  [INFERRED]
   apps/desktop/src/App.tsx → apps/desktop/src/domain.test.ts
 - `pnpm Monorepo Workspace Layout` --conceptually_related_to--> `Desktop HTML Entrypoint`  [EXTRACTED]
   pnpm-workspace.yaml → apps/desktop/index.html
-- `pnpm Monorepo Workspace Layout` --conceptually_related_to--> `Future Local Python Automation Service`  [EXTRACTED]
-  pnpm-workspace.yaml → services/automation/README.md
 
 ## Import Cycles
 - None detected.
 
-## Communities (138 total, 49 thin omitted)
+## Communities (144 total, 50 thin omitted)
 
 ### Community 0 - "lib.rs"
-Cohesion: 0.08
-Nodes (131): AppError, String, approve_conversation_summary(), AppState, archive_conversation(), archive_project(), bootstrap_app(), BootstrapReport (+123 more)
+Cohesion: 0.07
+Nodes (129): approve_conversation_summary(), AppState, archive_conversation(), archive_project(), bootstrap_app(), BootstrapReport, cancel_local_task(), cancel_scheduled_run() (+121 more)
 
 ### Community 1 - "Database"
-Cohesion: 0.07
-Nodes (17): AttachmentRecord, ContextSourceFile, ConversationSummary, Database, project_instructions_are_scoped_and_visible_in_the_exact_task_context(), project_knowledge_overview_composes_only_the_selected_project_sources(), projects_search_and_lifecycle_are_audited(), ProjectSummary (+9 more)
+Cohesion: 0.08
+Nodes (20): BrokerTaskRecord, ContextMessage, ContextSourceFile, ConversationExecutionPreferences, CustomGptContext, Database, ProjectInstructionContext, Connection (+12 more)
 
 ### Community 2 - "domain.ts"
 Cohesion: 0.09
-Nodes (50): App(), defaultScheduledLocalTime(), describeError(), dialogCopy(), DialogState, Loadable, loadSchedulerReadNotifications(), MemoryEditDraft (+42 more)
+Nodes (35): App(), describeError(), dialogCopy(), loadSchedulerReadNotifications(), persistSchedulerReadNotifications(), scheduledRunLabel(), schedulerReadNotificationsExist(), AttachmentContextSummary (+27 more)
 
 ### Community 3 - "task_runtime.rs"
-Cohesion: 0.09
-Nodes (56): advance_semantic_chat(), approved_memory_is_visible_in_request_and_absent_without_items(), cancel_task(), chat_request(), chat_request_with_project_instruction(), chat_routing_delegates_provider_selection_for_internal_context(), chat_routing_keeps_sensitive_memory_local_only(), ChatExecutionOptions (+48 more)
+Cohesion: 0.13
+Nodes (33): advance_semantic_chat(), cancel_task(), deep_research_request(), deterministic_jitter(), document_chunk_embedding_request_is_local_only_and_traceable(), embedding_request(), is_permanent(), jitter_is_bounded_and_stable() (+25 more)
 
 ### Community 4 - "String"
 Cohesion: 0.40
 Nodes (4): Answer, Outcome, Q: Ok, continua, Source Nodes
 
 ### Community 5 - "BrokerClient"
-Cohesion: 0.06
-Nodes (56): chunk_markdown(), converted_markdown_is_split_into_bounded_chunks_without_losing_content(), converted_markdown_prefers_document_boundaries(), copy_into_managed_storage(), import_attachment(), import_captured_image(), import_custom_gpt_attachment(), import_hashes_and_deduplicates_managed_copy() (+48 more)
+Cohesion: 0.20
+Nodes (26): chunk_markdown(), converted_markdown_is_split_into_bounded_chunks_without_losing_content(), converted_markdown_prefers_document_boundaries(), copy_into_managed_storage(), import_attachment(), import_captured_image(), import_custom_gpt_attachment(), import_hashes_and_deduplicates_managed_copy() (+18 more)
 
 ### Community 6 - "Q: Estoy subiendo un pdf de 2000 y pico paginas, en el broker he puesto un limite de 5000 paginas, sin embargo, la subida me da error: El PDF supera el límite de páginas. Tiene 2.204 páginas y el Broker admite 2.000 por conversión."
 Cohesion: 0.40
@@ -243,7 +249,7 @@ Cohesion: 0.40
 Nodes (4): Answer, Outcome, Q: Porque en el chat me pide varias veces, o sea cada vez que mando una petición, autorización para cambiar el nombre del chat?, Source Nodes
 
 ### Community 16 - ".connect"
-Cohesion: 0.18
+Cohesion: 0.16
 Nodes (5): BuildConfigurationTests, ContractFixtureTests, MigrationTests, Connection, Path
 
 ### Community 19 - "compilerOptions"
@@ -291,8 +297,8 @@ Cohesion: 0.40
 Nodes (4): Answer, Outcome, Q: Continua con el desarrollo, Source Nodes
 
 ### Community 38 - "String"
-Cohesion: 0.09
-Nodes (36): AttachmentChunkEmbeddingInput, BrokerTaskRecord, ContextMessage, ContextSnapshotView, ContextSourceView, ConversationExecutionPreferences, ConversationMessage, ConversationSource (+28 more)
+Cohesion: 0.08
+Nodes (28): audit_presentation(), AuditEventView, ContextSnapshotView, ContextSourceView, ConversationMessage, ConversationSource, ConversationView, CustomGptConfiguration (+20 more)
 
 ### Community 39 - "TaskAccepted"
 Cohesion: 0.40
@@ -328,43 +334,43 @@ Nodes (4): Answer, Outcome, Q: Ok, continua, Source Nodes
 
 ### Community 88 - "mod.rs"
 Cohesion: 0.14
-Nodes (40): approved_edited_summary_compacts_context_without_deleting_messages(), attachment_exposes_durable_document_context_progress_and_chunk_count(), attachment_is_deduplicated_and_reused_across_conversations(), audit_inspector_exposes_only_safe_presentation_fields(), audit_presentation(), AuditEventView, broker_progress_is_persisted_for_the_visible_task_snapshot(), cleanup() (+32 more)
+Nodes (41): approved_edited_summary_compacts_context_without_deleting_messages(), attachment_exposes_durable_document_context_progress_and_chunk_count(), attachment_is_deduplicated_and_reused_across_conversations(), audit_inspector_exposes_only_safe_presentation_fields(), broker_progress_is_persisted_for_the_visible_task_snapshot(), cleanup(), completed_semantic_search_prepares_chat_with_ranked_memory_and_trace(), completed_turn_materializes_attachment_sources_on_assistant_message() (+33 more)
 
 ### Community 89 - "domain.ts"
 Cohesion: 0.07
-Nodes (45): AttachmentView, BootstrapReport, BrokerDiagnostic, BrokerTaskStatus, ContextSnapshotView, ContextSourceView, ConversationExecutionPreferences, ConversationMessage (+37 more)
+Nodes (32): BrokerTaskStatus, ComposerErrorGuidance, ContextSourceView, ConversationMessage, ConversationSource, ConversationSummaryRevision, CustomGptExportReport, CustomGptImportReport (+24 more)
 
 ### Community 90 - "Vec"
-Cohesion: 0.12
-Nodes (12): AttachmentView, custom_gpt_knowledge_is_private_and_independent_from_global_memory(), custom_gpt_portable_knowledge_is_explicit_filtered_and_quarantined(), CustomGptConfiguration, CustomGptPortableExport, MemoryItemView, ProjectFileUsageView, ProjectKnowledgeOverview (+4 more)
+Cohesion: 0.18
+Nodes (8): cosine_similarity(), custom_gpt_portable_knowledge_is_explicit_filtered_and_quarantined(), CustomGptPortableExport, decode_embedding(), MemoryItemView, MemorySearchResultView, MemorySearchView, SemanticMemoryMatch
 
 ### Community 91 - "startup.rs"
 Cohesion: 0.17
 Nodes (26): Result, atomic_write(), current_token(), disable(), enable(), enabling_requires_explicit_confirmation_before_mutating_windows(), powershell_literal(), protect_token() (+18 more)
 
 ### Community 92 - ".create_custom_gpt_with_starters"
-Cohesion: 0.17
-Nodes (11): conversation_custom_gpt_selection_and_task_version_are_durable(), custom_gpt_edits_create_immutable_versions_without_tool_permissions(), custom_gpt_files_follow_the_selected_gpt_without_sticky_chat_links(), custom_gpt_starters_and_portable_json_round_trip_safely(), CustomGptImportReport, CustomGptToolPermissions, CustomGptView, semantic_chat_persists_the_turn_before_requesting_its_query_embedding() (+3 more)
+Cohesion: 0.14
+Nodes (15): AttachmentChunkEmbeddingInput, conversation_custom_gpt_selection_and_task_version_are_durable(), custom_gpt_edits_create_immutable_versions_without_tool_permissions(), custom_gpt_files_follow_the_selected_gpt_without_sticky_chat_links(), CustomGptImportReport, CustomGptToolPermissions, CustomGptView, default_execution_priority() (+7 more)
 
 ### Community 93 - "screenCapture.ts"
 Cohesion: 0.28
 Nodes (11): canvasBlob(), captureDisplayName(), CapturedScreenFrame, captureScreenFrame(), captureVideoFrame(), constrainedCaptureSize(), cropCapturedFrame(), CropSelection (+3 more)
 
 ### Community 94 - ".create_memory_item"
-Cohesion: 0.31
-Nodes (5): completed_memory_embedding_is_stored_with_model_and_dimensions(), editing_memory_preserves_or_invalidates_its_index_by_content(), memory_is_opt_in_scoped_and_user_controllable(), MemoryOverview, stale_embedding_result_cannot_replace_an_edited_memory_index()
+Cohesion: 0.13
+Nodes (14): completed_memory_embedding_is_stored_with_model_and_dimensions(), context_inspector_explains_the_sources_used_by_a_chat_turn(), ConversationSummary, editing_memory_preserves_or_invalidates_its_index_by_content(), memory_is_opt_in_scoped_and_user_controllable(), MemoryOverview, project_knowledge_overview_composes_only_the_selected_project_sources(), ProjectFileUsageView (+6 more)
 
 ### Community 95 - "MarkdownContent.tsx"
 Cohesion: 0.33
 Nodes (9): isBlockStart(), isTableDivider(), MarkdownContent(), MarkdownContentProps, renderBlocks(), renderInline(), renderParagraph(), safeWebUrl() (+1 more)
 
 ### Community 96 - ".open"
-Cohesion: 0.25
-Nodes (4): default_execution_priority(), Path, Self, AsRef
+Cohesion: 0.11
+Nodes (30): defaultScheduledLocalTime(), DialogState, Loadable, MemoryEditDraft, scheduledLocalTimeValue(), ScreenCapturePreview, AttachmentView, AuditEventView (+22 more)
 
 ### Community 97 - ".semantic_memory_matches"
-Cohesion: 0.38
-Nodes (4): cosine_similarity(), decode_embedding(), MemorySearchResultView, MemorySearchView
+Cohesion: 0.19
+Nodes (12): FileAccepted, BrokerClient, Option, Path, Result, start(), Client, HeaderValue (+4 more)
 
 ### Community 99 - "Evidencias de Fase 3"
 Cohesion: 0.40
@@ -514,39 +520,59 @@ Nodes (3): Answer, Outcome, Q: Which preset is valid for Deep Research when Chat
 Cohesion: 0.50
 Nodes (3): Answer, Outcome, Q: How can ChatyGPT persist Deep Research web sources without inventing unsupported Broker agent iteration fields?
 
+### Community 137 - "scheduledCalendarOccurrences"
+Cohesion: 0.15
+Nodes (24): AttachmentRecord, approved_memory_is_visible_in_request_and_absent_without_items(), chat_request(), chat_request_with_project_instruction(), chat_routing_delegates_provider_selection_for_internal_context(), chat_routing_keeps_sensitive_memory_local_only(), ChatExecutionOptions, collaborative_analysis_uses_the_selected_depth_without_invalid_map_reduce() (+16 more)
+
+### Community 138 - "contracts.rs"
+Cohesion: 0.18
+Nodes (10): BrokerCapabilities, FileState, HashMap, Option, String, Value, Vec, TaskAccepted (+2 more)
+
+### Community 139 - "mod.rs"
+Cohesion: 0.20
+Nodes (8): BrokerDiagnostic, polling_is_bounded_and_backed_off(), PollPolicy, Default, Self, String, Value, Vec
+
+### Community 140 - "appearance.ts"
+Cohesion: 0.27
+Nodes (9): AppearancePreference, applyAppearancePreference(), loadAppearancePreference(), normalizeAppearancePreference(), persistAppearancePreference(), resolveAppearance(), ResolvedAppearance, subscribeToSystemAppearance() (+1 more)
+
+### Community 143 - "Q: Ok, sigue con el desarrollo"
+Cohesion: 0.40
+Nodes (4): Answer, Outcome, Q: Ok, sigue con el desarrollo, Source Nodes
+
 ## Knowledge Gaps
-- **315 isolated node(s):** `$schema`, `identifier`, `description`, `windows`, `permissions` (+310 more)
+- **318 isolated node(s):** `$schema`, `identifier`, `description`, `windows`, `permissions` (+313 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **49 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **50 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Work-memory lessons
 
 **Preferred sources** — corroborated by past sessions; start here.
-- `Database` (32× useful, score=30.196684404) _(code changed — re-verify)_
-- `App()` (30× useful, score=28.823030623) _(code changed — re-verify)_
-- `domain.ts` (13× useful, score=12.560891987) _(code changed — re-verify)_
-- `attachment_runtime.rs` (10× useful, score=9.180233479)
-- `chat_request()` (7× useful, score=6.499610787)
-- `BrokerClient` (6× useful, score=5.64974776) _(code changed — re-verify)_
-- `domain.test.ts` (5× useful, score=4.733086126)
-- `platform.ts` (4× useful, score=3.910936525) _(code changed — re-verify)_
-- `export.rs` (4× useful, score=3.883427794)
-- `.capabilities()` (3× useful, score=2.874294653) _(code changed — re-verify)_
+- `Database` (33× useful, score=31.184690855)
+- `App()` (31× useful, score=29.811575217) _(code changed — re-verify)_
+- `domain.ts` (13× useful, score=12.555971134)
+- `attachment_runtime.rs` (10× useful, score=9.176637032)
+- `BrokerClient` (7× useful, score=6.647370716)
+- `chat_request()` (7× useful, score=6.497064501)
+- `domain.test.ts` (5× useful, score=4.731231893)
+- `platform.ts` (4× useful, score=3.909404377)
+- `export.rs` (4× useful, score=3.881906423)
+- `.capabilities()` (3× useful, score=2.87316862)
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `AppError` connect `lib.rs` to `.open`, `Database`, `.conversation_summary_overview`, `.semantic_memory_matches`, `task_runtime.rs`, `BrokerClient`, `String`, `export.rs`, `mod.rs`, `Vec`, `startup.rs`, `.create_custom_gpt_with_starters`, `.create_memory_item`?**
-  _High betweenness centrality (0.190) - this node is a cross-community bridge._
-- **Why does `Database` connect `Database` to `.open`, `.semantic_memory_matches`, `.conversation_summary_overview`, `lib.rs`, `task_runtime.rs`, `BrokerClient`, `String`, `export.rs`, `mod.rs`, `Vec`, `.create_custom_gpt_with_starters`, `.create_memory_item`?**
+- **Why does `AppError` connect `Database` to `lib.rs`, `.semantic_memory_matches`, `.conversation_summary_overview`, `task_runtime.rs`, `BrokerClient`, `String`, `export.rs`, `scheduledCalendarOccurrences`, `mod.rs`, `.attachment_view`, `.list_scheduled_task_templates`, `mod.rs`, `Vec`, `startup.rs`, `.create_custom_gpt_with_starters`, `.create_memory_item`?**
+  _High betweenness centrality (0.187) - this node is a cross-community bridge._
+- **Why does `Database` connect `Database` to `lib.rs`, `.semantic_memory_matches`, `.conversation_summary_overview`, `task_runtime.rs`, `BrokerClient`, `String`, `export.rs`, `.attachment_view`, `.list_scheduled_task_templates`, `mod.rs`, `Vec`, `.create_custom_gpt_with_starters`, `.create_memory_item`?**
   _High betweenness centrality (0.018) - this node is a cross-community bridge._
-- **Why does `AppState` connect `lib.rs` to `Database`, `BrokerClient`?**
+- **Why does `AppState` connect `lib.rs` to `.semantic_memory_matches`, `Database`?**
   _High betweenness centrality (0.006) - this node is a cross-community bridge._
 - **What connects `$schema`, `identifier`, `description` to the rest of the system?**
-  _331 weakly-connected nodes found - possible documentation gaps or missing edges._
+  _334 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `lib.rs` be split into smaller, more focused modules?**
-  _Cohesion score 0.07631017843115251 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.06766134628730049 - nodes in this community are weakly interconnected._
 - **Should `Database` be split into smaller, more focused modules?**
-  _Cohesion score 0.07394957983193277 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.08160192713038242 - nodes in this community are weakly interconnected._
 - **Should `domain.ts` be split into smaller, more focused modules?**
-  _Cohesion score 0.08563134978229318 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.09309309309309309 - nodes in this community are weakly interconnected._

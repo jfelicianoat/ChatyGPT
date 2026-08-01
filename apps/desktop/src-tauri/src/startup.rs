@@ -89,8 +89,8 @@ pub fn refresh_protected_token_if_enabled(data_dir: &Path) -> Result<(), AppErro
     {
         let paths = startup_paths(data_dir);
         if registry_entry_exists()? && paths.script.is_file() && paths.secret.is_file() {
-            if let Ok(token) = current_token() {
-                protect_token(&paths.secret, &token)?;
+            if let Ok(token) = current_token(data_dir) {
+                crate::secrets::protect_token(&paths.secret, &token)?;
             }
         }
         Ok(())
@@ -104,7 +104,7 @@ pub fn refresh_protected_token_if_enabled(data_dir: &Path) -> Result<(), AppErro
 
 #[cfg(target_os = "windows")]
 fn enable(data_dir: &Path, broker_base_url: &str) -> Result<(), AppError> {
-    let token = current_token()?;
+    let token = current_token(data_dir)?;
     let executable = std::env::current_exe()
         .map_err(|error| AppError::DataDirectory(format!("ejecutable no accesible: {error}")))?;
     if !executable.is_file() {
@@ -115,7 +115,7 @@ fn enable(data_dir: &Path, broker_base_url: &str) -> Result<(), AppError> {
     let paths = startup_paths(data_dir);
     std::fs::create_dir_all(&paths.directory)
         .map_err(|error| AppError::DataDirectory(format!("inicio no accesible: {error}")))?;
-    protect_token(&paths.secret, &token)?;
+    crate::secrets::protect_token(&paths.secret, &token)?;
     let script = render_startup_script(&executable, &paths.secret, broker_base_url);
     let mut script_bytes = vec![0xEF, 0xBB, 0xBF];
     script_bytes.extend_from_slice(script.as_bytes());
@@ -170,55 +170,13 @@ fn disable(data_dir: &Path) -> Result<(), AppError> {
 }
 
 #[cfg(target_os = "windows")]
-fn current_token() -> Result<String, AppError> {
-    std::env::var("AI_BROKER_ADMIN_TOKEN")
-        .ok()
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| {
-            AppError::Validation(
-                "abre ChatyGPT con el BAT y proporciona el token actual antes de activar el inicio con Windows"
-                    .to_owned(),
-            )
-        })
-}
-
-#[cfg(target_os = "windows")]
-fn protect_token(destination: &Path, token: &str) -> Result<(), AppError> {
-    let script = r#"
-        $ErrorActionPreference = 'Stop'
-        $plain = [Text.Encoding]::UTF8.GetBytes($env:CHATYGPT_AUTOSTART_TOKEN)
-        $protected = [Security.Cryptography.ProtectedData]::Protect(
-            $plain,
-            $null,
-            [Security.Cryptography.DataProtectionScope]::CurrentUser
+fn current_token(data_dir: &Path) -> Result<String, AppError> {
+    crate::secrets::resolve_broker_token(data_dir).ok_or_else(|| {
+        AppError::Validation(
+            "guarda antes la credencial del Broker en Inicio para poder activar el inicio con Windows"
+                .to_owned(),
         )
-        [IO.File]::WriteAllBytes($env:CHATYGPT_AUTOSTART_SECRET, $protected)
-        [Array]::Clear($plain, 0, $plain.Length)
-    "#;
-    let output = Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command", script])
-        .env("CHATYGPT_AUTOSTART_TOKEN", token)
-        .env("CHATYGPT_AUTOSTART_SECRET", destination)
-        .output()
-        .map_err(|error| AppError::DataDirectory(format!("DPAPI no disponible: {error}")))?;
-    if !output.status.success() {
-        return Err(AppError::DataDirectory(
-            String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-        ));
-    }
-    let protected = std::fs::read(destination)
-        .map_err(|error| AppError::DataDirectory(format!("credencial no accesible: {error}")))?;
-    if protected.is_empty()
-        || protected
-            .windows(token.len())
-            .any(|part| part == token.as_bytes())
-    {
-        let _ = std::fs::remove_file(destination);
-        return Err(AppError::Conflict(
-            "Windows no confirmó el cifrado seguro de la credencial".to_owned(),
-        ));
-    }
-    Ok(())
+    })
 }
 
 #[cfg(target_os = "windows")]
@@ -253,6 +211,7 @@ $executable = '{}'
 $secretPath = '{}'
 $brokerUrl = '{}'.TrimEnd('/')
 if (-not (Test-Path -LiteralPath $executable) -or -not (Test-Path -LiteralPath $secretPath)) {{ exit 1 }}
+Add-Type -AssemblyName System.Security
 $protected = [IO.File]::ReadAllBytes($secretPath)
 $plain = [Security.Cryptography.ProtectedData]::Unprotect($protected, $null, [Security.Cryptography.DataProtectionScope]::CurrentUser)
 $token = [Text.Encoding]::UTF8.GetString($plain)
@@ -323,6 +282,8 @@ mod tests {
         );
         assert!(script.contains("/api/v1/capabilities"));
         assert!(script.contains("ProtectedData]::Unprotect"));
+        // Sin cargar System.Security, PowerShell 5.1 no conoce ProtectedData.
+        assert!(script.contains("Add-Type -AssemblyName System.Security"));
         assert!(script.contains("Start-Sleep -Seconds 15"));
         assert!(script.contains("Get-Process -Name 'chatygpt'"));
         assert!(!script.contains("AI_BROKER_ADMIN_TOKEN = '"));

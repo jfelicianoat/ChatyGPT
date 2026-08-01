@@ -1,11 +1,21 @@
 {
-  "generated_at": "2026-07-31T14:57:08.473765+00:00",
+  "generated_at": "2026-08-01T06:40:08.671537+00:00",
   "nodes": {
     "apps_desktop_src_app_app": {
-      "code_fingerprint": "a126458d837eaf02b516346c87dd54d2f616036807cdcc8f3801a77d9d013db8",
+      "code_fingerprint": "02f73270aea55691cb1aef608923f329b7831e7e8a576f24f916d06bbb72b7fc",
       "label": "App()",
-      "last": "2026-07-31T14:46:56.277106+00:00",
+      "last": "2026-07-31T22:36:37.563369+00:00",
       "provenance": [
+        {
+          "date": "2026-07-31T22:36:37.563369+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo"
+        },
+        {
+          "date": "2026-07-31T15:07:14.906732+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo"
+        },
         {
           "date": "2026-07-31T14:46:56.277106+00:00",
           "outcome": "useful",
@@ -20,36 +30,47 @@
           "date": "2026-07-31T13:55:05.095084+00:00",
           "outcome": "useful",
           "q": "Ok, sigue con el desarrollo"
-        },
-        {
-          "date": "2026-07-31T12:41:14.001440+00:00",
-          "outcome": "useful",
-          "q": "Ok, sigue con el desarrollo"
-        },
-        {
-          "date": "2026-07-31T12:09:09.332232+00:00",
-          "outcome": "useful",
-          "q": "Ok, sigue con el desarrollo"
         }
       ],
-      "score": 29.811575217,
+      "score": 31.341319772,
       "source_file": "apps/desktop/src/App.tsx",
       "status": "preferred",
-      "uses": 31
+      "uses": 33
     },
     "apps_desktop_src_app_dialogcopy": {
-      "code_fingerprint": "a126458d837eaf02b516346c87dd54d2f616036807cdcc8f3801a77d9d013db8",
+      "code_fingerprint": "02f73270aea55691cb1aef608923f329b7831e7e8a576f24f916d06bbb72b7fc",
       "label": "dialogCopy()",
-      "last": "2026-07-30T15:10:02.080635+00:00",
+      "last": "2026-07-31T22:36:37.563369+00:00",
       "provenance": [
+        {
+          "date": "2026-07-31T22:36:37.563369+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo"
+        },
         {
           "date": "2026-07-30T15:10:02.080635+00:00",
           "outcome": "useful",
           "q": "Ok, sigue con el desarrollo"
         }
       ],
-      "score": 0.977362141,
+      "score": 1.954957347,
       "source_file": "apps/desktop/src/App.tsx",
+      "status": "preferred",
+      "uses": 2
+    },
+    "apps_desktop_src_appearance": {
+      "code_fingerprint": "a5674e0f480eaea6d442011649d03a532358656f5f8dd097eafcc170bb6577de",
+      "label": "appearance.ts",
+      "last": "2026-07-31T15:07:14.906732+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-31T15:07:14.906732+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo"
+        }
+      ],
+      "score": 0.985143083,
+      "source_file": "apps/desktop/src/appearance.ts",
       "status": "tentative",
       "uses": 1
     },
@@ -84,7 +105,7 @@
           "q": "Ok, sigue con el desarrollo"
         }
       ],
-      "score": 12.555971134,
+      "score": 12.367422314,
       "source_file": "apps/desktop/src/domain.ts",
       "status": "preferred",
       "uses": 13
@@ -100,7 +121,7 @@
           "q": "Estoy subiendo un pdf de 2000 y pico paginas, en el broker he puesto un limite de 5000 paginas, sin embargo, la subida me da error: El PDF supera el límite de páginas. Tiene 2.204 páginas y el Broker admite 2.000 por conversión."
         }
       ],
-      "score": 0.93454508,
+      "score": 0.920511329,
       "source_file": "apps/desktop/src/domain.ts",
       "status": "tentative",
       "uses": 1
@@ -116,7 +137,7 @@
           "q": "Ok, sigue con el desarrollo"
         }
       ],
-      "score": 0.9602074,
+      "score": 0.945788286,
       "source_file": "apps/desktop/src/domain.ts",
       "status": "tentative",
       "uses": 1
@@ -132,7 +153,7 @@
           "q": "Cuando lanzo una petici?n, la ventana donde aparece la respuesta no hace scroll para que se vea esa ultima respuesta, siempre se queda en la pregunta o instruccion lanzada, y tengo que mover a mano el scroll para ver la respuesta. Esto no puede ser as?. Otra cosa es que vaya apareciendo una respuesta y me interese ver algo que est? mas arriba y me muevo hasta ese punto, en ese caso el scroll no debe ser automatico y volver a la ultima respuesta , sino quedarse donde lo he puesto"
         }
       ],
-      "score": 0.938209166,
+      "score": 0.924120393,
       "source_file": "apps/desktop/src/domain.ts",
       "status": "tentative",
       "uses": 1
@@ -148,7 +169,7 @@
           "q": "Cuando lanzo una petici?n, la ventana donde aparece la respuesta no hace scroll para que se vea esa ultima respuesta, siempre se queda en la pregunta o instruccion lanzada, y tengo que mover a mano el scroll para ver la respuesta. Esto no puede ser as?. Otra cosa es que vaya apareciendo una respuesta y me interese ver algo que est? mas arriba y me muevo hasta ese punto, en ese caso el scroll no debe ser automatico y volver a la ultima respuesta , sino quedarse donde lo he puesto"
         }
       ],
-      "score": 0.938209166,
+      "score": 0.924120393,
       "source_file": "apps/desktop/src/domain.ts",
       "status": "tentative",
       "uses": 1
@@ -184,10 +205,26 @@
           "q": "Continua con el desarrollo"
         }
       ],
-      "score": 4.731231893,
+      "score": 4.660184566,
       "source_file": "apps/desktop/src/domain.test.ts",
       "status": "preferred",
       "uses": 5
+    },
+    "apps_desktop_src_keyboard": {
+      "code_fingerprint": "b46fe96ad9c3589f9f5a7cdf4b3e7d217e0519f541b5a5ae395dc7b0982c1de1",
+      "label": "keyboard.ts",
+      "last": "2026-07-31T22:36:37.563369+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-31T22:36:37.563369+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo"
+        }
+      ],
+      "score": 0.992271927,
+      "source_file": "apps/desktop/src/keyboard.ts",
+      "status": "tentative",
+      "uses": 1
     },
     "apps_desktop_src_platform": {
       "code_fingerprint": "ae491f7ff288f2fc13a8a715bce5f81a6e4b27efb63aff6e657b05a8b2a2f22b",
@@ -215,7 +252,7 @@
           "q": "Ok, continua"
         }
       ],
-      "score": 3.909404377,
+      "score": 3.850698158,
       "source_file": "apps/desktop/src/platform.ts",
       "status": "preferred",
       "uses": 4
@@ -231,7 +268,7 @@
           "q": "Ok, sigue con el desarrollo"
         }
       ],
-      "score": 0.990506987,
+      "score": 0.975632875,
       "source_file": "apps/desktop/src/platform.ts",
       "status": "tentative",
       "uses": 1
@@ -252,7 +289,7 @@
           "q": "Ok, sigue con el desarrollo"
         }
       ],
-      "score": 1.942684653,
+      "score": 1.913512007,
       "source_file": "apps/desktop/src-tauri/capabilities/main.json",
       "status": "preferred",
       "uses": 2
@@ -288,7 +325,7 @@
           "q": "Ok, continua"
         }
       ],
-      "score": 9.176637032,
+      "score": 9.038834543,
       "source_file": "apps/desktop/src-tauri/src/attachment_runtime.rs",
       "status": "preferred",
       "uses": 10
@@ -309,7 +346,7 @@
           "q": "Continua con el desarrollo"
         }
       ],
-      "score": 1.778312306,
+      "score": 1.751607985,
       "source_file": "apps/desktop/src-tauri/src/attachment_runtime.rs",
       "status": "preferred",
       "uses": 2
@@ -325,7 +362,7 @@
           "q": "He intentado adjunta un pdf grande y no deja de fallar"
         }
       ],
-      "score": 0.87464977,
+      "score": 0.861515447,
       "source_file": "apps/desktop/src-tauri/src/attachment_runtime.rs",
       "status": "tentative",
       "uses": 1
@@ -341,7 +378,7 @@
           "q": "He intentado adjunta un pdf grande y no deja de fallar"
         }
       ],
-      "score": 0.87464977,
+      "score": 0.861515447,
       "source_file": "apps/desktop/src-tauri/src/attachment_runtime.rs",
       "status": "tentative",
       "uses": 1
@@ -357,7 +394,7 @@
           "q": "Parece ser que hay una divergencia en los parametros de comunicación, mira a ver si lo puedes arreglar"
         }
       ],
-      "score": 0.957974305,
+      "score": 0.943588725,
       "source_file": "apps/desktop/src-tauri/src/broker/contracts.rs",
       "status": "tentative",
       "uses": 1
@@ -383,7 +420,7 @@
           "q": "He hecho cambios en el Broker AI que afecta a tu comunicación con el"
         }
       ],
-      "score": 2.750010059,
+      "score": 2.708714078,
       "source_file": "apps/desktop/src-tauri/src/broker/contracts.rs",
       "status": "preferred",
       "uses": 3
@@ -399,7 +436,7 @@
           "q": "He intentado adjunta un pdf grande y no deja de fallar"
         }
       ],
-      "score": 0.87464977,
+      "score": 0.861515447,
       "source_file": "apps/desktop/src-tauri/src/broker/contracts.rs",
       "status": "tentative",
       "uses": 1
@@ -415,7 +452,7 @@
           "q": "He hecho cambios en el Broker AI que afecta a tu comunicación con el"
         }
       ],
-      "score": 0.895830105,
+      "score": 0.882377724,
       "source_file": "apps/desktop/src-tauri/src/broker/contracts.rs",
       "status": "tentative",
       "uses": 1
@@ -431,7 +468,7 @@
           "q": "He hecho cambios en el Broker AI que afecta a tu comunicación con el"
         }
       ],
-      "score": 0.895830105,
+      "score": 0.882377724,
       "source_file": "apps/desktop/src-tauri/src/broker/contracts.rs",
       "status": "tentative",
       "uses": 1
@@ -467,7 +504,7 @@
           "q": "Diagnosticar por qué ChatyGPT consulta capabilities en localhost y pierde el sandbox"
         }
       ],
-      "score": 6.647370716,
+      "score": 6.547549373,
       "source_file": "apps/desktop/src-tauri/src/broker/mod.rs",
       "status": "preferred",
       "uses": 7
@@ -493,7 +530,7 @@
           "q": "Diagnosticar por qué ChatyGPT consulta capabilities en localhost y pierde el sandbox"
         }
       ],
-      "score": 2.87316862,
+      "score": 2.830023208,
       "source_file": "apps/desktop/src-tauri/src/broker/mod.rs",
       "status": "preferred",
       "uses": 3
@@ -509,7 +546,7 @@
           "q": "Diagnosticar por qué ChatyGPT consulta capabilities en localhost y pierde el sandbox"
         }
       ],
-      "score": 0.95750399,
+      "score": 0.943125472,
       "source_file": "apps/desktop/src-tauri/src/broker/mod.rs",
       "status": "tentative",
       "uses": 1
@@ -530,7 +567,7 @@
           "q": "Ok, sigue con el desarrollo"
         }
       ],
-      "score": 1.920285138,
+      "score": 1.891448859,
       "source_file": "apps/desktop/src-tauri/src/db/mod.rs",
       "status": "preferred",
       "uses": 2
@@ -546,7 +583,7 @@
           "q": "Ok, continua con el desarrollo"
         }
       ],
-      "score": 0.91193702,
+      "score": 0.898242767,
       "source_file": "apps/desktop/src-tauri/src/db/mod.rs",
       "status": "tentative",
       "uses": 1
@@ -562,7 +599,7 @@
           "q": "Ok, sigue con el desarrollo"
         }
       ],
-      "score": 0.977804404,
+      "score": 0.963121042,
       "source_file": "apps/desktop/src-tauri/src/db/mod.rs",
       "status": "tentative",
       "uses": 1
@@ -598,7 +635,7 @@
           "q": "Continue ChatyGPT development with readable scheduled-run details and auditable history export"
         }
       ],
-      "score": 31.184690855,
+      "score": 30.716400782,
       "source_file": "apps/desktop/src-tauri/src/db/mod.rs",
       "status": "preferred",
       "uses": 33
@@ -614,7 +651,7 @@
           "q": "Ok, continua con el desarrollo"
         }
       ],
-      "score": 0.91193702,
+      "score": 0.898242767,
       "source_file": "apps/desktop/src-tauri/src/db/mod.rs",
       "status": "tentative",
       "uses": 1
@@ -630,7 +667,7 @@
           "q": "Continua con el desarrollo"
         }
       ],
-      "score": 0.855737804,
+      "score": 0.842887476,
       "source_file": "apps/desktop/src-tauri/src/db/mod.rs",
       "status": "tentative",
       "uses": 1
@@ -646,7 +683,7 @@
           "q": "Continua con el desarrollo"
         }
       ],
-      "score": 0.855737804,
+      "score": 0.842887476,
       "source_file": "apps/desktop/src-tauri/src/db/mod.rs",
       "status": "tentative",
       "uses": 1
@@ -662,7 +699,7 @@
           "q": "Continua con el desarrollo, pero despues de anadir un calculo visible del tiempo que tarda cada respuesta en el chat"
         }
       ],
-      "score": 0.958287961,
+      "score": 0.943897671,
       "source_file": "apps/desktop/src-tauri/src/db/mod.rs",
       "status": "tentative",
       "uses": 1
@@ -688,7 +725,7 @@
           "q": "Continua con el desarrollo"
         }
       ],
-      "score": 2.7906561,
+      "score": 2.748749751,
       "source_file": "apps/desktop/src-tauri/src/db/mod.rs",
       "status": "preferred",
       "uses": 3
@@ -704,7 +741,7 @@
           "q": "Ok, sigue con el desarrollo"
         }
       ],
-      "score": 0.967838748,
+      "score": 0.953305037,
       "source_file": "apps/desktop/src-tauri/src/db/mod.rs",
       "status": "tentative",
       "uses": 1
@@ -725,7 +762,7 @@
           "q": "Porque en el chat me pide varias veces, o sea cada vez que mando una petición, autorización para cambiar el nombre del chat?"
         }
       ],
-      "score": 1.873117988,
+      "score": 1.844990001,
       "source_file": "apps/desktop/src-tauri/src/db/mod.rs",
       "status": "preferred",
       "uses": 2
@@ -741,7 +778,7 @@
           "q": "Continua con el desarrollo, pero despues de anadir un calculo visible del tiempo que tarda cada respuesta en el chat"
         }
       ],
-      "score": 0.958287961,
+      "score": 0.943897671,
       "source_file": "apps/desktop/src-tauri/src/db/mod.rs",
       "status": "tentative",
       "uses": 1
@@ -757,7 +794,7 @@
           "q": "Ok, continua"
         }
       ],
-      "score": 0.914515645,
+      "score": 0.900782669,
       "source_file": "apps/desktop/src-tauri/src/db/mod.rs",
       "status": "tentative",
       "uses": 1
@@ -773,7 +810,7 @@
           "q": "Ok, continua"
         }
       ],
-      "score": 0.914765011,
+      "score": 0.901028291,
       "source_file": "apps/desktop/src-tauri/src/db/mod.rs",
       "status": "tentative",
       "uses": 1
@@ -794,7 +831,7 @@
           "q": "Ok, continua con el desarrollo"
         }
       ],
-      "score": 1.870957712,
+      "score": 1.842862165,
       "source_file": "apps/desktop/src-tauri/src/db/mod.rs",
       "status": "preferred",
       "uses": 2
@@ -810,7 +847,7 @@
           "q": "He intentado adjunta un pdf grande y no deja de fallar"
         }
       ],
-      "score": 0.87464977,
+      "score": 0.861515447,
       "source_file": "apps/desktop/src-tauri/src/db/mod.rs",
       "status": "tentative",
       "uses": 1
@@ -826,7 +863,7 @@
           "q": "Continua con el desarrollo"
         }
       ],
-      "score": 0.863796661,
+      "score": 0.850825316,
       "source_file": "apps/desktop/src-tauri/src/db/mod.rs",
       "status": "tentative",
       "uses": 1
@@ -842,7 +879,7 @@
           "q": "Estoy subiendo un pdf de 2000 y pico paginas, en el broker he puesto un limite de 5000 paginas, sin embargo, la subida me da error: El PDF supera el límite de páginas. Tiene 2.204 páginas y el Broker admite 2.000 por conversión."
         }
       ],
-      "score": 0.93454508,
+      "score": 0.920511329,
       "source_file": "apps/desktop/src-tauri/src/db/mod.rs",
       "status": "tentative",
       "uses": 1
@@ -858,7 +895,7 @@
           "q": "Ok, sigue con el desarrollo"
         }
       ],
-      "score": 0.967838748,
+      "score": 0.953305037,
       "source_file": "apps/desktop/src-tauri/src/db/mod.rs",
       "status": "tentative",
       "uses": 1
@@ -889,7 +926,7 @@
           "q": "Ok, continua"
         }
       ],
-      "score": 3.881906423,
+      "score": 3.823613132,
       "source_file": "apps/desktop/src-tauri/src/export.rs",
       "status": "preferred",
       "uses": 4
@@ -905,7 +942,7 @@
           "q": "Continue ChatyGPT development with retryable failed scheduled runs and an in-app notification center"
         }
       ],
-      "score": 0.98328534,
+      "score": 0.968519673,
       "source_file": "apps/desktop/src-tauri/src/lib.rs",
       "status": "tentative",
       "uses": 1
@@ -921,7 +958,23 @@
           "q": "Diagnosticar por qué ChatyGPT consulta capabilities en localhost y pierde el sandbox"
         }
       ],
-      "score": 0.95750399,
+      "score": 0.943125472,
+      "source_file": "apps/desktop/src-tauri/src/lib.rs",
+      "status": "tentative",
+      "uses": 1
+    },
+    "apps_desktop_src_tauri_src_lib_bootstrap_app": {
+      "code_fingerprint": "235ff52cb39defda175522dd68246236bf60233b51c18dc0601b65bdb54b0e1c",
+      "label": "bootstrap_app()",
+      "last": "2026-07-31T15:07:14.906732+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-31T15:07:14.906732+00:00",
+          "outcome": "useful",
+          "q": "Ok, sigue con el desarrollo"
+        }
+      ],
+      "score": 0.985143083,
       "source_file": "apps/desktop/src-tauri/src/lib.rs",
       "status": "tentative",
       "uses": 1
@@ -937,7 +990,7 @@
           "q": "Diagnosticar por qué ChatyGPT consulta capabilities en localhost y pierde el sandbox"
         }
       ],
-      "score": 0.95750399,
+      "score": 0.943125472,
       "source_file": "apps/desktop/src-tauri/src/lib.rs",
       "status": "tentative",
       "uses": 1
@@ -953,7 +1006,7 @@
           "q": "Ok, sigue con el desarrollo"
         }
       ],
-      "score": 0.95944116,
+      "score": 0.945033553,
       "source_file": "apps/desktop/src-tauri/src/lib.rs",
       "status": "tentative",
       "uses": 1
@@ -969,7 +1022,7 @@
           "q": "Al quitar uno de los dos libros que he cargado en el chat, y al hacer la pregunta \"Cuantos temas tiene?\", el chat sigue pensando que tiene los dos libros y me pregunta por cual de ellos me refiero"
         }
       ],
-      "score": 0.938024272,
+      "score": 0.923938275,
       "source_file": "apps/desktop/src-tauri/src/lib.rs",
       "status": "tentative",
       "uses": 1
@@ -985,7 +1038,7 @@
           "q": "El error de sandbox sigue apareciendo y está escondido abajo a la izquierda"
         }
       ],
-      "score": 0.957690325,
+      "score": 0.94330901,
       "source_file": "apps/desktop/src-tauri/src/lib.rs",
       "status": "tentative",
       "uses": 1
@@ -1001,7 +1054,7 @@
           "q": "Ok, sigue con el desarrollo"
         }
       ],
-      "score": 0.960650461,
+      "score": 0.946224694,
       "source_file": "apps/desktop/src-tauri/src/lib.rs",
       "status": "tentative",
       "uses": 1
@@ -1017,7 +1070,7 @@
           "q": "Ok, sigue con el desarrollo"
         }
       ],
-      "score": 0.999836301,
+      "score": 0.984822094,
       "source_file": "apps/desktop/src-tauri/src/startup.rs",
       "status": "tentative",
       "uses": 1
@@ -1033,7 +1086,7 @@
           "q": "Ok, sigue con el desarrollo"
         }
       ],
-      "score": 0.999836301,
+      "score": 0.984822094,
       "source_file": "apps/desktop/src-tauri/src/startup.rs",
       "status": "tentative",
       "uses": 1
@@ -1049,7 +1102,7 @@
           "q": "Ok, sigue con el desarrollo"
         }
       ],
-      "score": 0.999836301,
+      "score": 0.984822094,
       "source_file": "apps/desktop/src-tauri/src/startup.rs",
       "status": "tentative",
       "uses": 1
@@ -1065,7 +1118,7 @@
           "q": "Continue ChatyGPT development with cancellation of active scheduled runs and history filters"
         }
       ],
-      "score": 0.990107318,
+      "score": 0.975239208,
       "source_file": "apps/desktop/src-tauri/src/task_runtime.rs",
       "status": "tentative",
       "uses": 1
@@ -1101,7 +1154,7 @@
           "q": "Porque en el chat me pide varias veces, o sea cada vez que mando una petición, autorización para cambiar el nombre del chat?"
         }
       ],
-      "score": 6.497064501,
+      "score": 6.399500256,
       "source_file": "apps/desktop/src-tauri/src/task_runtime.rs",
       "status": "preferred",
       "uses": 7
@@ -1117,7 +1170,7 @@
           "q": "Haz los cambios necesarios para que, siguiendo el contrato del ChatyGPT y su proposito, aproveche las nuevas posiblidades que da el Broker AI"
         }
       ],
-      "score": 0.896205649,
+      "score": 0.882747629,
       "source_file": "apps/desktop/src-tauri/src/task_runtime.rs",
       "status": "tentative",
       "uses": 1
@@ -1133,7 +1186,7 @@
           "q": "Parece ser que hay una divergencia en los parametros de comunicación, mira a ver si lo puedes arreglar"
         }
       ],
-      "score": 0.957974305,
+      "score": 0.943588725,
       "source_file": "apps/desktop/src-tauri/src/task_runtime.rs",
       "status": "tentative",
       "uses": 1
@@ -1149,7 +1202,7 @@
           "q": "Ok, continua"
         }
       ],
-      "score": 0.914765011,
+      "score": 0.901028291,
       "source_file": "apps/desktop/src-tauri/src/task_runtime.rs",
       "status": "tentative",
       "uses": 1
@@ -1175,7 +1228,7 @@
           "q": "Continua con el desarrollo"
         }
       ],
-      "score": 2.830598699,
+      "score": 2.788092545,
       "source_file": "apps/desktop/src-tauri/src/task_runtime.rs",
       "status": "preferred",
       "uses": 3
@@ -1191,13 +1244,13 @@
           "q": "Where should portable image cropping integrate with screen and camera attachments in ChatyGPT?"
         }
       ],
-      "score": 0.982156815,
+      "score": 0.967408094,
       "source_file": "apps/desktop/src-tauri/tauri.conf.json",
       "status": "tentative",
       "uses": 1
     },
     "docs_architecture_vault_projection": {
-      "code_fingerprint": "40c88abec47d719327581f813df74f3dd307361f37997b6da51e483dd732df2e",
+      "code_fingerprint": "90f150f8bf0826072f17e91678d007e3a9ad5f52f1ff3f89f0b2c05c25b047ad",
       "label": "Vault as Projection",
       "last": "2026-07-27T18:42:48.720923+00:00",
       "provenance": [
@@ -1207,7 +1260,7 @@
           "q": "Ok, continua"
         }
       ],
-      "score": 0.915029733,
+      "score": 0.901289037,
       "source_file": "docs/ARCHITECTURE.md",
       "status": "tentative",
       "uses": 1
@@ -1223,7 +1276,7 @@
           "q": "Where should portable image cropping integrate with screen and camera attachments in ChatyGPT?"
         }
       ],
-      "score": 0.982156815,
+      "score": 0.967408094,
       "source_file": "",
       "status": "tentative",
       "uses": 1
@@ -1239,13 +1292,13 @@
           "q": "Ok, sigue con el desarrollo. Pero ten en cuenta que los resultados me los estás presentando en Markdown, y me gustaría verlos en texto normal, manteniendo el formato descrito en el markdown"
         }
       ],
-      "score": 0.981370936,
+      "score": 0.966634017,
       "source_file": "package.json",
       "status": "tentative",
       "uses": 1
     },
     "tests_test_foundations_migrationtests": {
-      "code_fingerprint": "e5d5233d973356bedc183b37ed51e988bf2f4afe300ee44438323b7df5f62902",
+      "code_fingerprint": "e7b7ea409c113ed5566ea1a68aaabb272dbfd6f28ad3fa9f8ea3a02ee666f5c2",
       "label": "MigrationTests",
       "last": "2026-07-31T05:02:40.111187+00:00",
       "provenance": [
@@ -1255,7 +1308,7 @@
           "q": "Ok, sigue con el desarrollo"
         }
       ],
-      "score": 0.990506987,
+      "score": 0.975632875,
       "source_file": "tests/test_foundations.py",
       "status": "tentative",
       "uses": 1

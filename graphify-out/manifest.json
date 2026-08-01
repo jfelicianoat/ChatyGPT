@@ -90,8 +90,8 @@
     "semantic_hash": "7748ceb0e39583617ab2a6f9ddd07a31"
   },
   "apps/desktop/src/App.tsx": {
-    "mtime": 1785509972.3577385,
-    "ast_hash": "862bde272593d1d41c6f45d09e2a9a30",
+    "mtime": 1785537026.372021,
+    "ast_hash": "dc52240b5d3a1600d60b019edea857c7",
     "semantic_hash": ""
   },
   "apps/desktop/src/domain.test.ts": {
@@ -155,8 +155,8 @@
     "semantic_hash": ""
   },
   "tests/test_foundations.py": {
-    "mtime": 1785510216.134583,
-    "ast_hash": "7b97e7da5a7d922c16b51314004c25c8",
+    "mtime": 1785537103.1724434,
+    "ast_hash": "fbee6fe7e96159ed2fd6dbf4ec348396",
     "semantic_hash": ""
   },
   "tsconfig.app.json": {
@@ -180,8 +180,8 @@
     "semantic_hash": "4ac0ed2bd1a0c35c0a3de1c80992aa69"
   },
   "README.md": {
-    "mtime": 1785510217.7581134,
-    "ast_hash": "5d37e071ccdbe38b01bbf770cce1807e",
+    "mtime": 1785537105.4313216,
+    "ast_hash": "12db9db70f9debd03b066d45ea6a96f4",
     "semantic_hash": ""
   },
   "apps/desktop/index.html": {
@@ -195,8 +195,8 @@
     "semantic_hash": "45edd92bbdecac33e72f49f2fc3cc7f4"
   },
   "docs/ARCHITECTURE.md": {
-    "mtime": 1785510219.3663812,
-    "ast_hash": "bafdbe773bb1c58c35de97acce40a49a",
+    "mtime": 1785537107.6921837,
+    "ast_hash": "201682c7d198bb53a8b527aea60466f7",
     "semantic_hash": ""
   },
   "docs/PHASE_0_VERIFICATION.md": {
@@ -425,8 +425,8 @@
     "semantic_hash": ""
   },
   "docs/PHASE_4_VERIFICATION.md": {
-    "mtime": 1785510220.9513376,
-    "ast_hash": "4d81afd8d650a859cd72150bf46d06b8",
+    "mtime": 1785537109.986224,
+    "ast_hash": "0d0b40ea6e69f22d8f9c9b0aa925d359",
     "semantic_hash": ""
   },
   "graphify-out/memory/query_20260728_204156_cuando_lanzo_una_petici_n__la_ventana_donde_aparec.md": {
@@ -617,6 +617,21 @@
   "graphify-out/memory/query_20260731_144656_ok__sigue_con_el_desarrollo.md": {
     "mtime": 1785509216.2768774,
     "ast_hash": "db46c5e8daaa4a7c958bee5bd304f2a3",
+    "semantic_hash": ""
+  },
+  "apps/desktop/src/keyboard.test.ts": {
+    "mtime": 1785536823.0701053,
+    "ast_hash": "9012aa6117954baf0154afb21ace987a",
+    "semantic_hash": ""
+  },
+  "apps/desktop/src/keyboard.ts": {
+    "mtime": 1785536820.8969986,
+    "ast_hash": "0b3ce54bedb7c716b5b077168999d279",
+    "semantic_hash": ""
+  },
+  "graphify-out/memory/query_20260731_150714_ok__sigue_con_el_desarrollo.md": {
+    "mtime": 1785510434.9065773,
+    "ast_hash": "827a117b888b86d6821852651dcaef24",
     "semantic_hash": ""
   }
 }

@@ -23,6 +23,8 @@ export type BrokerTaskStatus = (typeof TASK_STATUSES)[number];
 export type BootstrapReport = {
   appVersion: string;
   databasePath: string;
+  /** Ruta del registro estructurado; ausente si todavía no pudo prepararse. */
+  logPath: string | null;
   schemaVersion: number;
   recoveredTasks: number;
   recoveredAttachments: number;
@@ -762,11 +764,120 @@ export const taskFailureSummary = (
   };
 };
 
+/** Estado de la credencial del Broker, sin exponer nunca su valor. */
+export type BrokerCredentialStatus = {
+  source: "protected" | "environment" | "missing";
+  protected: boolean;
+  environmentPresent: boolean;
+  message: string;
+};
+
+/** Etiqueta corta del origen de la credencial en uso. */
+export const brokerCredentialLabel = (status: BrokerCredentialStatus): string => {
+  switch (status.source) {
+    case "protected":
+      return "Guardada y cifrada";
+    case "environment":
+      return "Heredada del entorno";
+    default:
+      return "Sin credencial";
+  }
+};
+
+/** Carpeta que la persona autorizó explícitamente para escribir en ella. */
+export type AuthorizedFolderView = {
+  id: string;
+  path: string;
+  displayName: string;
+  permissions: { write?: boolean; purpose?: string };
+  grantedAt: string;
+  revokedAt: string | null;
+};
+
+/** Nombre legible del uso que motivó la concesión de una carpeta. */
+export const authorizedFolderPurpose = (folder: AuthorizedFolderView): string => {
+  switch (folder.permissions?.purpose) {
+    case "conversation_markdown":
+      return "Exportar conversaciones a Markdown";
+    case "obsidian_vault":
+      return "Bóveda de Obsidian";
+    case "scheduled_history":
+      return "Historial de automatizaciones";
+    case "scheduled_calendar":
+      return "Calendario de automatizaciones";
+    case "custom_gpt_export":
+      return "Exportar GPTs personales";
+    default:
+      return "Uso no declarado";
+  }
+};
+
+/** Dato concreto que se enviará si la acción se autoriza. */
+export type ConfirmationDisclosedDatum = {
+  label: string;
+  value: string;
+};
+
+/**
+ * Expediente durable de una confirmación: lo que la persona debe poder leer
+ * antes de decidir y lo que queda registrado después de decidir.
+ */
+export type ConfirmationRequestView = {
+  id: string;
+  actionType: string;
+  toolName: string | null;
+  // `resources` y `disclosure` viajan como JSON tal cual se guardó en SQLite:
+  // sus claves internas son las del expediente, no las de la proyección.
+  resources: { label?: string; kind?: string; conversation_id?: string | null };
+  disclosure: {
+    action_label?: string;
+    data_sent?: ConfirmationDisclosedDatum[];
+    destination?: string;
+    destination_label?: string;
+    scope?: string;
+    scope_label?: string;
+  };
+  consequences: string;
+  status: string;
+  requestedAt: string;
+  resolvedAt: string | null;
+};
+
 export type ToolCallView = {
   toolCallId: string;
   name: string;
   arguments: Record<string, unknown>;
   status: string;
+  confirmation: ConfirmationRequestView | null;
+};
+
+/** Resumen legible de un expediente, sin exponer JSON técnico. */
+export const confirmationSummary = (
+  call: ToolCallView
+): {
+  action: string;
+  tool: string;
+  resource: string;
+  data: ConfirmationDisclosedDatum[];
+  destination: string;
+  scope: string;
+  consequences: string;
+} => {
+  const confirmation = call.confirmation;
+  const disclosure = confirmation?.disclosure ?? {};
+  return {
+    action:
+      disclosure.action_label ??
+      (call.name === "rename_conversation" ? "Renombrar la conversación" : call.name),
+    tool: confirmation?.toolName ?? call.name,
+    resource: confirmation?.resources?.label ?? "Recursos no declarados",
+    data: disclosure.data_sent ?? [],
+    destination: disclosure.destination_label ?? "Destino no declarado",
+    scope: disclosure.scope_label ?? "Permitir una vez",
+    consequences:
+      confirmation?.consequences ??
+      "ChatyGPT no puede anticipar las consecuencias de esta acción."
+  };
 };
 
 export const isTerminalTask = (task: LocalTaskSnapshot): boolean =>

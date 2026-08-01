@@ -530,7 +530,7 @@
       "source_location": "L220",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_broker_contracts_fileaccepted",
-      "community": 97,
+      "community": 138,
       "norm_label": "fileaccepted"
     },
     {
@@ -550,7 +550,7 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_broker_mod",
-      "community": 139,
+      "community": 97,
       "norm_label": "mod.rs"
     },
     {
@@ -610,7 +610,7 @@
       "source_location": "L25",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_broker_mod_brokerdiagnostic",
-      "community": 139,
+      "community": 97,
       "norm_label": "brokerdiagnostic"
     },
     {
@@ -620,7 +620,7 @@
       "source_location": "",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_broker_mod_rs_string",
-      "community": 139,
+      "community": 97,
       "norm_label": "string"
     },
     {
@@ -630,7 +630,7 @@
       "source_location": "",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_broker_mod_rs_vec",
-      "community": 139,
+      "community": 97,
       "norm_label": "vec"
     },
     {
@@ -640,7 +640,7 @@
       "source_location": "",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_broker_mod_rs_value",
-      "community": 139,
+      "community": 97,
       "norm_label": "value"
     },
     {
@@ -680,7 +680,7 @@
       "source_location": "L79",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_broker_mod_brokerclient_base_url",
-      "community": 139,
+      "community": 97,
       "norm_label": ".base_url()"
     },
     {
@@ -930,7 +930,7 @@
       "source_location": "L48",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_brokertaskrecord",
-      "community": 1,
+      "community": 38,
       "norm_label": "brokertaskrecord"
     },
     {
@@ -950,7 +950,7 @@
       "source_location": "",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_rs_option",
-      "community": 92,
+      "community": 38,
       "norm_label": "option"
     },
     {
@@ -960,7 +960,7 @@
       "source_location": "",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_rs_value",
-      "community": 1,
+      "community": 38,
       "norm_label": "value"
     },
     {
@@ -1030,7 +1030,7 @@
       "source_location": "L114",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_scheduledtasktemplateview",
-      "community": 142,
+      "community": 1,
       "norm_label": "scheduledtasktemplateview"
     },
     {
@@ -1080,7 +1080,7 @@
       "source_location": "L163",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_conversationexecutionpreferences",
-      "community": 1,
+      "community": 90,
       "norm_label": "conversationexecutionpreferences"
     },
     {
@@ -1090,7 +1090,7 @@
       "source_location": "L173",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_default_execution_priority",
-      "community": 92,
+      "community": 90,
       "norm_label": "default_execution_priority()"
     },
     {
@@ -1100,7 +1100,7 @@
       "source_location": "",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_rs_default",
-      "community": 92,
+      "community": 90,
       "norm_label": "default"
     },
     {
@@ -1110,7 +1110,7 @@
       "source_location": "L178",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_conversationexecutionpreferences_default",
-      "community": 92,
+      "community": 90,
       "norm_label": ".default()"
     },
     {
@@ -1120,7 +1120,7 @@
       "source_location": "",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_rs_self",
-      "community": 92,
+      "community": 90,
       "norm_label": "self"
     },
     {
@@ -1140,7 +1140,7 @@
       "source_location": "L200",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_tooloutcomerecord",
-      "community": 38,
+      "community": 1,
       "norm_label": "tooloutcomerecord"
     },
     {
@@ -1150,7 +1150,7 @@
       "source_location": "L208",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_conversationsummary",
-      "community": 94,
+      "community": 1,
       "norm_label": "conversationsummary"
     },
     {
@@ -1160,7 +1160,7 @@
       "source_location": "L217",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_conversationsummaryrevision",
-      "community": 98,
+      "community": 88,
       "norm_label": "conversationsummaryrevision"
     },
     {
@@ -1170,7 +1170,7 @@
       "source_location": "L229",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_conversationsummaryoverview",
-      "community": 98,
+      "community": 88,
       "norm_label": "conversationsummaryoverview"
     },
     {
@@ -1190,7 +1190,7 @@
       "source_location": "L249",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_selectedattachmentchunk",
-      "community": 1,
+      "community": 38,
       "norm_label": "selectedattachmentchunk"
     },
     {
@@ -1200,7 +1200,7 @@
       "source_location": "L261",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_projectsummary",
-      "community": 94,
+      "community": 1,
       "norm_label": "projectsummary"
     },
     {
@@ -1280,7 +1280,7 @@
       "source_location": "L341",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_customgptportableexport",
-      "community": 90,
+      "community": 94,
       "norm_label": "customgptportableexport"
     },
     {
@@ -1300,7 +1300,7 @@
       "source_location": "L359",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_customgptcontext",
-      "community": 1,
+      "community": 38,
       "norm_label": "customgptcontext"
     },
     {
@@ -1310,7 +1310,7 @@
       "source_location": "L370",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_projectknowledgeoverview",
-      "community": 94,
+      "community": 142,
       "norm_label": "projectknowledgeoverview"
     },
     {
@@ -1320,7 +1320,7 @@
       "source_location": "",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_rs_attachmentview",
-      "community": 94,
+      "community": 142,
       "norm_label": "attachmentview"
     },
     {
@@ -1330,7 +1330,7 @@
       "source_location": "",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_rs_memoryitemview",
-      "community": 94,
+      "community": 142,
       "norm_label": "memoryitemview"
     },
     {
@@ -1340,7 +1340,7 @@
       "source_location": "L380",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_projectfileusageview",
-      "community": 94,
+      "community": 142,
       "norm_label": "projectfileusageview"
     },
     {
@@ -1350,7 +1350,7 @@
       "source_location": "L387",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_projectinstructioncontext",
-      "community": 1,
+      "community": 38,
       "norm_label": "projectinstructioncontext"
     },
     {
@@ -1380,7 +1380,7 @@
       "source_location": "L418",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_memoryitemview",
-      "community": 90,
+      "community": 94,
       "norm_label": "memoryitemview"
     },
     {
@@ -1400,7 +1400,7 @@
       "source_location": "L444",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_memorysearchresultview",
-      "community": 90,
+      "community": 38,
       "norm_label": "memorysearchresultview"
     },
     {
@@ -1410,7 +1410,7 @@
       "source_location": "L456",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_memorysearchview",
-      "community": 90,
+      "community": 38,
       "norm_label": "memorysearchview"
     },
     {
@@ -1420,7 +1420,7 @@
       "source_location": "L468",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_semanticchatworkflow",
-      "community": 1,
+      "community": 38,
       "norm_label": "semanticchatworkflow"
     },
     {
@@ -1430,7 +1430,7 @@
       "source_location": "L487",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_semanticmemorymatch",
-      "community": 90,
+      "community": 38,
       "norm_label": "semanticmemorymatch"
     },
     {
@@ -1440,7 +1440,7 @@
       "source_location": "L495",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_contextsourceview",
-      "community": 38,
+      "community": 88,
       "norm_label": "contextsourceview"
     },
     {
@@ -1450,7 +1450,7 @@
       "source_location": "L508",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_contextsnapshotview",
-      "community": 38,
+      "community": 88,
       "norm_label": "contextsnapshotview"
     },
     {
@@ -1590,7 +1590,7 @@
       "source_location": "L807",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_conversationview",
-      "community": 38,
+      "community": 92,
       "norm_label": "conversationview"
     },
     {
@@ -1600,7 +1600,7 @@
       "source_location": "L818",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_contextmessage",
-      "community": 1,
+      "community": 38,
       "norm_label": "contextmessage"
     },
     {
@@ -1610,7 +1610,7 @@
       "source_location": "L826",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_attachmentview",
-      "community": 141,
+      "community": 1,
       "norm_label": "attachmentview"
     },
     {
@@ -1620,7 +1620,7 @@
       "source_location": "L846",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_attachmentrecord",
-      "community": 137,
+      "community": 1,
       "norm_label": "attachmentrecord"
     },
     {
@@ -1650,7 +1650,7 @@
       "source_location": "L871",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_attachmentchunkembeddinginput",
-      "community": 92,
+      "community": 38,
       "norm_label": "attachmentchunkembeddinginput"
     },
     {
@@ -1670,7 +1670,7 @@
       "source_location": "L884",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_open",
-      "community": 1,
+      "community": 90,
       "norm_label": ".open()"
     },
     {
@@ -1680,7 +1680,7 @@
       "source_location": "",
       "_origin": "ast",
       "id": "asref",
-      "community": 1,
+      "community": 90,
       "norm_label": "asref"
     },
     {
@@ -1690,7 +1690,7 @@
       "source_location": "",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_rs_path",
-      "community": 88,
+      "community": 90,
       "norm_label": "path"
     },
     {
@@ -1700,7 +1700,7 @@
       "source_location": "L900",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_migrate",
-      "community": 1,
+      "community": 90,
       "norm_label": ".migrate()"
     },
     {
@@ -1720,7 +1720,7 @@
       "source_location": "L1009",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_connect",
-      "community": 94,
+      "community": 1,
       "norm_label": ".connect()"
     },
     {
@@ -1760,7 +1760,7 @@
       "source_location": "L1078",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_prepare_broker_task",
-      "community": 1,
+      "community": 38,
       "norm_label": ".prepare_broker_task()"
     },
     {
@@ -1770,7 +1770,7 @@
       "source_location": "L1102",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_prepare_conversation_summary",
-      "community": 1,
+      "community": 38,
       "norm_label": ".prepare_conversation_summary()"
     },
     {
@@ -1780,7 +1780,7 @@
       "source_location": "L1175",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_conversation_summary_overview",
-      "community": 98,
+      "community": 88,
       "norm_label": ".conversation_summary_overview()"
     },
     {
@@ -1790,7 +1790,7 @@
       "source_location": "L1250",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_update_conversation_summary_draft",
-      "community": 98,
+      "community": 88,
       "norm_label": ".update_conversation_summary_draft()"
     },
     {
@@ -1800,7 +1800,7 @@
       "source_location": "L1295",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_approve_conversation_summary",
-      "community": 98,
+      "community": 88,
       "norm_label": ".approve_conversation_summary()"
     },
     {
@@ -1810,7 +1810,7 @@
       "source_location": "L1341",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_create_project",
-      "community": 94,
+      "community": 1,
       "norm_label": ".create_project()"
     },
     {
@@ -1820,7 +1820,7 @@
       "source_location": "L1362",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_list_projects",
-      "community": 94,
+      "community": 1,
       "norm_label": ".list_projects()"
     },
     {
@@ -1890,7 +1890,7 @@
       "source_location": "L1665",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_export_custom_gpt_json",
-      "community": 90,
+      "community": 94,
       "norm_label": ".export_custom_gpt_json()"
     },
     {
@@ -1900,7 +1900,7 @@
       "source_location": "L1669",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_export_custom_gpt_portable",
-      "community": 90,
+      "community": 94,
       "norm_label": ".export_custom_gpt_portable()"
     },
     {
@@ -1910,7 +1910,7 @@
       "source_location": "L1716",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_record_custom_gpt_exported",
-      "community": 1,
+      "community": 92,
       "norm_label": ".record_custom_gpt_exported()"
     },
     {
@@ -1970,7 +1970,7 @@
       "source_location": "L2003",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_custom_gpt_knowledge",
-      "community": 90,
+      "community": 94,
       "norm_label": ".custom_gpt_knowledge()"
     },
     {
@@ -1980,7 +1980,7 @@
       "source_location": "L2083",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_create_custom_gpt_memory_item",
-      "community": 90,
+      "community": 94,
       "norm_label": ".create_custom_gpt_memory_item()"
     },
     {
@@ -1990,7 +1990,7 @@
       "source_location": "L2125",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_set_custom_gpt_memory_item_enabled",
-      "community": 90,
+      "community": 94,
       "norm_label": ".set_custom_gpt_memory_item_enabled()"
     },
     {
@@ -2000,7 +2000,7 @@
       "source_location": "L2164",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_delete_custom_gpt_memory_item",
-      "community": 90,
+      "community": 94,
       "norm_label": ".delete_custom_gpt_memory_item()"
     },
     {
@@ -2010,7 +2010,7 @@
       "source_location": "L2204",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_custom_gpt_memory_item",
-      "community": 90,
+      "community": 94,
       "norm_label": ".custom_gpt_memory_item()"
     },
     {
@@ -2100,7 +2100,7 @@
       "source_location": "L2460",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_prepare_memory_search",
-      "community": 1,
+      "community": 38,
       "norm_label": ".prepare_memory_search()"
     },
     {
@@ -2110,7 +2110,7 @@
       "source_location": "L2504",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_memory_search",
-      "community": 90,
+      "community": 38,
       "norm_label": ".memory_search()"
     },
     {
@@ -2120,7 +2120,7 @@
       "source_location": "L2637",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_latest_memory_search",
-      "community": 90,
+      "community": 38,
       "norm_label": ".latest_memory_search()"
     },
     {
@@ -2140,7 +2140,7 @@
       "source_location": "L2691",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_task_context",
-      "community": 92,
+      "community": 88,
       "norm_label": ".task_context()"
     },
     {
@@ -2160,7 +2160,7 @@
       "source_location": "L2892",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_project_summary",
-      "community": 94,
+      "community": 1,
       "norm_label": ".project_summary()"
     },
     {
@@ -2170,7 +2170,7 @@
       "source_location": "L2920",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_rename_project",
-      "community": 94,
+      "community": 1,
       "norm_label": ".rename_project()"
     },
     {
@@ -2180,7 +2180,7 @@
       "source_location": "L2941",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_update_project_instructions",
-      "community": 94,
+      "community": 1,
       "norm_label": ".update_project_instructions()"
     },
     {
@@ -2200,7 +2200,7 @@
       "source_location": "L2997",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_project_knowledge_overview",
-      "community": 94,
+      "community": 1,
       "norm_label": ".project_knowledge_overview()"
     },
     {
@@ -2210,7 +2210,7 @@
       "source_location": "L3078",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_remove_project_file",
-      "community": 94,
+      "community": 1,
       "norm_label": ".remove_project_file()"
     },
     {
@@ -2220,7 +2220,7 @@
       "source_location": "L3113",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_set_project_memory_item_enabled",
-      "community": 94,
+      "community": 1,
       "norm_label": ".set_project_memory_item_enabled()"
     },
     {
@@ -2230,7 +2230,7 @@
       "source_location": "L3154",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_archive_project",
-      "community": 94,
+      "community": 1,
       "norm_label": ".archive_project()"
     },
     {
@@ -2250,7 +2250,7 @@
       "source_location": "L3219",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_list_conversations",
-      "community": 94,
+      "community": 1,
       "norm_label": ".list_conversations()"
     },
     {
@@ -2260,7 +2260,7 @@
       "source_location": "L3240",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_search_conversations",
-      "community": 94,
+      "community": 1,
       "norm_label": ".search_conversations()"
     },
     {
@@ -2270,7 +2270,7 @@
       "source_location": "L3282",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_conversation_summary",
-      "community": 94,
+      "community": 1,
       "norm_label": ".conversation_summary()"
     },
     {
@@ -2280,7 +2280,7 @@
       "source_location": "L3303",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_rename_conversation",
-      "community": 94,
+      "community": 1,
       "norm_label": ".rename_conversation()"
     },
     {
@@ -2290,7 +2290,7 @@
       "source_location": "L3332",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_move_conversation",
-      "community": 94,
+      "community": 1,
       "norm_label": ".move_conversation()"
     },
     {
@@ -2350,7 +2350,7 @@
       "source_location": "L3487",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_recent_context",
-      "community": 1,
+      "community": 88,
       "norm_label": ".recent_context()"
     },
     {
@@ -2380,7 +2380,7 @@
       "source_location": "L3757",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_register_custom_gpt_attachment",
-      "community": 141,
+      "community": 1,
       "norm_label": ".register_custom_gpt_attachment()"
     },
     {
@@ -2390,7 +2390,7 @@
       "source_location": "L3847",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_list_custom_gpt_files",
-      "community": 141,
+      "community": 1,
       "norm_label": ".list_custom_gpt_files()"
     },
     {
@@ -2400,7 +2400,7 @@
       "source_location": "L3876",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_remove_custom_gpt_file",
-      "community": 141,
+      "community": 1,
       "norm_label": ".remove_custom_gpt_file()"
     },
     {
@@ -2410,7 +2410,7 @@
       "source_location": "L3906",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_ready_custom_gpt_file_ids_for_conversation",
-      "community": 92,
+      "community": 38,
       "norm_label": ".ready_custom_gpt_file_ids_for_conversation()"
     },
     {
@@ -2430,7 +2430,7 @@
       "source_location": "L3956",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_list_attachments",
-      "community": 141,
+      "community": 1,
       "norm_label": ".list_attachments()"
     },
     {
@@ -2440,7 +2440,7 @@
       "source_location": "L4012",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_list_project_files",
-      "community": 141,
+      "community": 1,
       "norm_label": ".list_project_files()"
     },
     {
@@ -2450,7 +2450,7 @@
       "source_location": "L4035",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_set_project_file",
-      "community": 94,
+      "community": 1,
       "norm_label": ".set_project_file()"
     },
     {
@@ -2460,7 +2460,7 @@
       "source_location": "L4110",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_use_project_file",
-      "community": 94,
+      "community": 1,
       "norm_label": ".use_project_file()"
     },
     {
@@ -2470,7 +2470,7 @@
       "source_location": "L4161",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_conversation_attachment_records",
-      "community": 38,
+      "community": 1,
       "norm_label": ".conversation_attachment_records()"
     },
     {
@@ -2490,7 +2490,7 @@
       "source_location": "L4216",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_map_attachment_view",
-      "community": 141,
+      "community": 1,
       "norm_label": ".map_attachment_view()"
     },
     {
@@ -2500,7 +2500,7 @@
       "source_location": "",
       "_origin": "ast",
       "id": "row",
-      "community": 141,
+      "community": 1,
       "norm_label": "row"
     },
     {
@@ -2510,7 +2510,7 @@
       "source_location": "L4256",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_attachment_view",
-      "community": 141,
+      "community": 1,
       "norm_label": ".attachment_view()"
     },
     {
@@ -2640,7 +2640,7 @@
       "source_location": "L4618",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_next_attachment_chunk_for_embedding",
-      "community": 92,
+      "community": 38,
       "norm_label": ".next_attachment_chunk_for_embedding()"
     },
     {
@@ -2670,7 +2670,7 @@
       "source_location": "L4716",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_attachments_have_semantic_index",
-      "community": 38,
+      "community": 1,
       "norm_label": ".attachments_have_semantic_index()"
     },
     {
@@ -2680,7 +2680,7 @@
       "source_location": "L4744",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_select_attachment_chunks",
-      "community": 1,
+      "community": 38,
       "norm_label": ".select_attachment_chunks()"
     },
     {
@@ -2690,7 +2690,7 @@
       "source_location": "L4762",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_select_attachment_chunks_hybrid",
-      "community": 1,
+      "community": 38,
       "norm_label": ".select_attachment_chunks_hybrid()"
     },
     {
@@ -2700,7 +2700,7 @@
       "source_location": "L4781",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_select_attachment_chunks_with_query",
-      "community": 1,
+      "community": 38,
       "norm_label": ".select_attachment_chunks_with_query()"
     },
     {
@@ -2710,7 +2710,7 @@
       "source_location": "L4979",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_prepare_semantic_chat_turn",
-      "community": 1,
+      "community": 38,
       "norm_label": ".prepare_semantic_chat_turn()"
     },
     {
@@ -2720,7 +2720,7 @@
       "source_location": "L5015",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_prepare_semantic_chat_turn_with_project_instruction",
-      "community": 1,
+      "community": 38,
       "norm_label": ".prepare_semantic_chat_turn_with_project_instruction()"
     },
     {
@@ -2730,7 +2730,7 @@
       "source_location": "L5182",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_semantic_chat_workflow_for_task",
-      "community": 1,
+      "community": 38,
       "norm_label": ".semantic_chat_workflow_for_task()"
     },
     {
@@ -2740,7 +2740,7 @@
       "source_location": "L5271",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_semantic_memory_matches",
-      "community": 90,
+      "community": 38,
       "norm_label": ".semantic_memory_matches()"
     },
     {
@@ -2760,7 +2760,7 @@
       "source_location": "L5407",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_prepare_semantic_chat_submission",
-      "community": 1,
+      "community": 38,
       "norm_label": ".prepare_semantic_chat_submission()"
     },
     {
@@ -2770,7 +2770,7 @@
       "source_location": "L5671",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_semantic_chat_workflow_for_id",
-      "community": 1,
+      "community": 38,
       "norm_label": ".semantic_chat_workflow_for_id()"
     },
     {
@@ -2800,7 +2800,7 @@
       "source_location": "L5762",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_prepare_chat_turn",
-      "community": 1,
+      "community": 38,
       "norm_label": ".prepare_chat_turn()"
     },
     {
@@ -2810,7 +2810,7 @@
       "source_location": "L5794",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_prepare_chat_turn_with_project_instruction",
-      "community": 1,
+      "community": 38,
       "norm_label": ".prepare_chat_turn_with_project_instruction()"
     },
     {
@@ -2820,7 +2820,7 @@
       "source_location": "L6154",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_conversation_view",
-      "community": 88,
+      "community": 92,
       "norm_label": ".conversation_view()"
     },
     {
@@ -2840,7 +2840,7 @@
       "source_location": "L6354",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_conversation_execution_preferences",
-      "community": 1,
+      "community": 90,
       "norm_label": ".conversation_execution_preferences()"
     },
     {
@@ -2850,7 +2850,7 @@
       "source_location": "L6372",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_update_conversation_execution_preferences",
-      "community": 1,
+      "community": 90,
       "norm_label": ".update_conversation_execution_preferences()"
     },
     {
@@ -2860,7 +2860,7 @@
       "source_location": "L6422",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_task_record",
-      "community": 1,
+      "community": 38,
       "norm_label": ".task_record()"
     },
     {
@@ -2870,7 +2870,7 @@
       "source_location": "L6450",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_recoverable_tasks",
-      "community": 1,
+      "community": 38,
       "norm_label": ".recoverable_tasks()"
     },
     {
@@ -2930,7 +2930,7 @@
       "source_location": "L7133",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_pending_tool_calls",
-      "community": 38,
+      "community": 1,
       "norm_label": ".pending_tool_calls()"
     },
     {
@@ -2940,7 +2940,7 @@
       "source_location": "L7162",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_task_conversation_id",
-      "community": 38,
+      "community": 1,
       "norm_label": ".task_conversation_id()"
     },
     {
@@ -2950,7 +2950,7 @@
       "source_location": "L7172",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_prepare_tool_outcomes",
-      "community": 38,
+      "community": 1,
       "norm_label": ".prepare_tool_outcomes()"
     },
     {
@@ -2990,7 +2990,7 @@
       "source_location": "L7303",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_record_export",
-      "community": 1,
+      "community": 38,
       "norm_label": ".record_export()"
     },
     {
@@ -3000,7 +3000,7 @@
       "source_location": "L7362",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_task_snapshot",
-      "community": 38,
+      "community": 1,
       "norm_label": ".task_snapshot()"
     },
     {
@@ -3010,7 +3010,7 @@
       "source_location": "L7431",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_list_scheduled_task_templates",
-      "community": 142,
+      "community": 1,
       "norm_label": ".list_scheduled_task_templates()"
     },
     {
@@ -3020,7 +3020,7 @@
       "source_location": "L7456",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_create_scheduled_task_template",
-      "community": 142,
+      "community": 1,
       "norm_label": ".create_scheduled_task_template()"
     },
     {
@@ -3030,7 +3030,7 @@
       "source_location": "L7496",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_delete_scheduled_task_template",
-      "community": 142,
+      "community": 1,
       "norm_label": ".delete_scheduled_task_template()"
     },
     {
@@ -3060,7 +3060,7 @@
       "source_location": "L7664",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_scheduled_run_page",
-      "community": 38,
+      "community": 1,
       "norm_label": ".scheduled_run_page()"
     },
     {
@@ -3220,7 +3220,7 @@
       "source_location": "L8448",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_database_path",
-      "community": 88,
+      "community": 90,
       "norm_label": ".path()"
     },
     {
@@ -3230,7 +3230,7 @@
       "source_location": "L8453",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_validate_execution_preferences",
-      "community": 1,
+      "community": 90,
       "norm_label": "validate_execution_preferences()"
     },
     {
@@ -3240,7 +3240,7 @@
       "source_location": "L8495",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_decode_embedding",
-      "community": 90,
+      "community": 38,
       "norm_label": "decode_embedding()"
     },
     {
@@ -3250,7 +3250,7 @@
       "source_location": "L8511",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_cosine_similarity",
-      "community": 90,
+      "community": 38,
       "norm_label": "cosine_similarity()"
     },
     {
@@ -3300,7 +3300,7 @@
       "source_location": "L8566",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_projects_search_and_lifecycle_are_audited",
-      "community": 94,
+      "community": 1,
       "norm_label": "projects_search_and_lifecycle_are_audited()"
     },
     {
@@ -3320,7 +3320,7 @@
       "source_location": "L8740",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_custom_gpt_starters_and_portable_json_round_trip_safely",
-      "community": 88,
+      "community": 92,
       "norm_label": "custom_gpt_starters_and_portable_json_round_trip_safely()"
     },
     {
@@ -3330,7 +3330,7 @@
       "source_location": "L8813",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_custom_gpt_portable_knowledge_is_explicit_filtered_and_quarantined",
-      "community": 90,
+      "community": 94,
       "norm_label": "custom_gpt_portable_knowledge_is_explicit_filtered_and_quarantined()"
     },
     {
@@ -3350,7 +3350,7 @@
       "source_location": "L9019",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_project_instructions_are_scoped_and_visible_in_the_exact_task_context",
-      "community": 88,
+      "community": 1,
       "norm_label": "project_instructions_are_scoped_and_visible_in_the_exact_task_context()"
     },
     {
@@ -3430,7 +3430,7 @@
       "source_location": "L9536",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_project_knowledge_overview_composes_only_the_selected_project_sources",
-      "community": 94,
+      "community": 1,
       "norm_label": "project_knowledge_overview_composes_only_the_selected_project_sources()"
     },
     {
@@ -3520,7 +3520,7 @@
       "source_location": "L10143",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_custom_gpt_knowledge_is_private_and_independent_from_global_memory",
-      "community": 88,
+      "community": 94,
       "norm_label": "custom_gpt_knowledge_is_private_and_independent_from_global_memory()"
     },
     {
@@ -3530,7 +3530,7 @@
       "source_location": "L10209",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_custom_gpt_files_follow_the_selected_gpt_without_sticky_chat_links",
-      "community": 92,
+      "community": 88,
       "norm_label": "custom_gpt_files_follow_the_selected_gpt_without_sticky_chat_links()"
     },
     {
@@ -3560,7 +3560,7 @@
       "source_location": "L10479",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_context_inspector_explains_the_sources_used_by_a_chat_turn",
-      "community": 94,
+      "community": 88,
       "norm_label": "context_inspector_explains_the_sources_used_by_a_chat_turn()"
     },
     {
@@ -3580,7 +3580,7 @@
       "source_location": "L10659",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_completed_semantic_search_prepares_chat_with_ranked_memory_and_trace",
-      "community": 88,
+      "community": 38,
       "norm_label": "completed_semantic_search_prepares_chat_with_ranked_memory_and_trace()"
     },
     {
@@ -3710,7 +3710,7 @@
       "source_location": "L11881",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_db_mod_scheduled_task_templates_are_durable_reusable_and_audited",
-      "community": 142,
+      "community": 1,
       "norm_label": "scheduled_task_templates_are_durable_reusable_and_audited()"
     },
     {
@@ -3780,7 +3780,7 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_error",
-      "community": 91,
+      "community": 0,
       "norm_label": "error.rs"
     },
     {
@@ -3790,7 +3790,7 @@
       "source_location": "L5",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_error_apperror",
-      "community": 1,
+      "community": 0,
       "norm_label": "apperror"
     },
     {
@@ -3800,7 +3800,7 @@
       "source_location": "",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_error_rs_string",
-      "community": 1,
+      "community": 0,
       "norm_label": "string"
     },
     {
@@ -3810,7 +3810,7 @@
       "source_location": "",
       "_origin": "ast",
       "id": "error",
-      "community": 91,
+      "community": 0,
       "norm_label": "error"
     },
     {
@@ -3820,7 +3820,7 @@
       "source_location": "",
       "_origin": "ast",
       "id": "serialize",
-      "community": 91,
+      "community": 0,
       "norm_label": "serialize"
     },
     {
@@ -3830,7 +3830,7 @@
       "source_location": "L27",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_error_apperror_serialize",
-      "community": 91,
+      "community": 0,
       "norm_label": ".serialize()"
     },
     {
@@ -3840,7 +3840,7 @@
       "source_location": "",
       "_origin": "ast",
       "id": "s",
-      "community": 91,
+      "community": 0,
       "norm_label": "s"
     },
     {
@@ -3850,7 +3850,7 @@
       "source_location": "",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_error_rs_result",
-      "community": 91,
+      "community": 0,
       "norm_label": "result"
     },
     {
@@ -3860,7 +3860,7 @@
       "source_location": "",
       "_origin": "ast",
       "id": "ok",
-      "community": 91,
+      "community": 0,
       "norm_label": "ok"
     },
     {
@@ -6170,7 +6170,7 @@
       "source_location": "L295",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_task_runtime_deep_research_request",
-      "community": 3,
+      "community": 137,
       "norm_label": "deep_research_request()"
     },
     {
@@ -6180,7 +6180,7 @@
       "source_location": "",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_task_runtime_rs_value",
-      "community": 3,
+      "community": 137,
       "norm_label": "value"
     },
     {
@@ -6340,7 +6340,7 @@
       "source_location": "L950",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_task_runtime_smoke_request",
-      "community": 3,
+      "community": 137,
       "norm_label": "smoke_request()"
     },
     {
@@ -6350,7 +6350,7 @@
       "source_location": "L978",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_task_runtime_memory_embedding_request",
-      "community": 3,
+      "community": 137,
       "norm_label": "memory_embedding_request()"
     },
     {
@@ -6600,7 +6600,7 @@
       "source_location": "L2203",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_task_runtime_memory_embedding_request_is_local_only_and_traceable",
-      "community": 3,
+      "community": 137,
       "norm_label": "memory_embedding_request_is_local_only_and_traceable()"
     },
     {
@@ -6610,7 +6610,7 @@
       "source_location": "L2227",
       "_origin": "ast",
       "id": "apps_desktop_src_tauri_src_task_runtime_document_chunk_embedding_request_is_local_only_and_traceable",
-      "community": 3,
+      "community": 137,
       "norm_label": "document_chunk_embedding_request_is_local_only_and_traceable()"
     },
     {
@@ -6867,7 +6867,7 @@
       "label": "Loadable",
       "file_type": "code",
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L83",
+      "source_location": "L84",
       "_origin": "ast",
       "id": "apps_desktop_src_app_loadable",
       "community": 96,
@@ -6877,7 +6877,7 @@
       "label": "DialogState",
       "file_type": "code",
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L88",
+      "source_location": "L89",
       "_origin": "ast",
       "id": "apps_desktop_src_app_dialogstate",
       "community": 96,
@@ -6887,7 +6887,7 @@
       "label": "MemoryEditDraft",
       "file_type": "code",
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L97",
+      "source_location": "L98",
       "_origin": "ast",
       "id": "apps_desktop_src_app_memoryeditdraft",
       "community": 96,
@@ -6897,7 +6897,7 @@
       "label": "ScreenCapturePreview",
       "file_type": "code",
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L104",
+      "source_location": "L105",
       "_origin": "ast",
       "id": "apps_desktop_src_app_screencapturepreview",
       "community": 96,
@@ -6907,7 +6907,7 @@
       "label": "describeError()",
       "file_type": "code",
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L110",
+      "source_location": "L111",
       "_origin": "ast",
       "id": "apps_desktop_src_app_describeerror",
       "community": 2,
@@ -6917,7 +6917,7 @@
       "label": "scheduledLocalTimeValue()",
       "file_type": "code",
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L114",
+      "source_location": "L115",
       "_origin": "ast",
       "id": "apps_desktop_src_app_scheduledlocaltimevalue",
       "community": 96,
@@ -6927,7 +6927,7 @@
       "label": "defaultScheduledLocalTime()",
       "file_type": "code",
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L119",
+      "source_location": "L120",
       "_origin": "ast",
       "id": "apps_desktop_src_app_defaultscheduledlocaltime",
       "community": 96,
@@ -6937,7 +6937,7 @@
       "label": "loadSchedulerReadNotifications()",
       "file_type": "code",
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L125",
+      "source_location": "L126",
       "_origin": "ast",
       "id": "apps_desktop_src_app_loadschedulerreadnotifications",
       "community": 2,
@@ -6947,7 +6947,7 @@
       "label": "schedulerReadNotificationsExist()",
       "file_type": "code",
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L135",
+      "source_location": "L136",
       "_origin": "ast",
       "id": "apps_desktop_src_app_schedulerreadnotificationsexist",
       "community": 2,
@@ -6957,7 +6957,7 @@
       "label": "persistSchedulerReadNotifications()",
       "file_type": "code",
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L143",
+      "source_location": "L144",
       "_origin": "ast",
       "id": "apps_desktop_src_app_persistschedulerreadnotifications",
       "community": 2,
@@ -6967,7 +6967,7 @@
       "label": "scheduledRunLabel()",
       "file_type": "code",
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L154",
+      "source_location": "L155",
       "_origin": "ast",
       "id": "apps_desktop_src_app_scheduledrunlabel",
       "community": 2,
@@ -6977,7 +6977,7 @@
       "label": "dialogCopy()",
       "file_type": "code",
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L165",
+      "source_location": "L166",
       "_origin": "ast",
       "id": "apps_desktop_src_app_dialogcopy",
       "community": 2,
@@ -6987,7 +6987,7 @@
       "label": "App()",
       "file_type": "code",
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L239",
+      "source_location": "L240",
       "_origin": "ast",
       "id": "apps_desktop_src_app_app",
       "community": 2,
@@ -8124,6 +8124,56 @@
       "norm_label": "env.d.ts"
     },
     {
+      "label": "keyboard.test.ts",
+      "file_type": "code",
+      "source_file": "apps/desktop/src/keyboard.test.ts",
+      "source_location": "L1",
+      "_origin": "ast",
+      "id": "apps_desktop_src_keyboard_test",
+      "community": 98,
+      "norm_label": "keyboard.test.ts"
+    },
+    {
+      "label": "keyboard.ts",
+      "file_type": "code",
+      "source_file": "apps/desktop/src/keyboard.ts",
+      "source_location": "L1",
+      "_origin": "ast",
+      "id": "apps_desktop_src_keyboard",
+      "community": 98,
+      "norm_label": "keyboard.ts"
+    },
+    {
+      "label": "keyboardShortcutAction",
+      "file_type": "code",
+      "source_file": "apps/desktop/src/keyboard.ts",
+      "source_location": "L19",
+      "_origin": "ast",
+      "id": "apps_desktop_src_keyboard_keyboardshortcutaction",
+      "community": 98,
+      "norm_label": "keyboardshortcutaction"
+    },
+    {
+      "label": "KeyboardShortcutInput",
+      "file_type": "code",
+      "source_file": "apps/desktop/src/keyboard.ts",
+      "source_location": "L8",
+      "_origin": "ast",
+      "id": "apps_desktop_src_keyboard_keyboardshortcutinput",
+      "community": 98,
+      "norm_label": "keyboardshortcutinput"
+    },
+    {
+      "label": "isEditableKeyboardTarget()",
+      "file_type": "code",
+      "source_file": "apps/desktop/src/keyboard.ts",
+      "source_location": "L42",
+      "_origin": "ast",
+      "id": "apps_desktop_src_keyboard_iseditablekeyboardtarget",
+      "community": 98,
+      "norm_label": "iseditablekeyboardtarget()"
+    },
+    {
       "label": "main.tsx",
       "file_type": "code",
       "source_file": "apps/desktop/src/main.tsx",
@@ -9074,10 +9124,20 @@
       "norm_label": ".test_appearance_is_resolved_before_the_react_bundle_starts()"
     },
     {
-      "label": ".test_desktop_never_falls_back_to_broker_loopback()",
+      "label": ".test_keyboard_navigation_exposes_landmarks_help_and_modal_focus_management()",
       "file_type": "code",
       "source_file": "tests/test_foundations.py",
       "source_location": "L473",
+      "_origin": "ast",
+      "id": "tests_test_foundations_buildconfigurationtests_test_keyboard_navigation_exposes_landmarks_help_and_modal_focus_management",
+      "community": 16,
+      "norm_label": ".test_keyboard_navigation_exposes_landmarks_help_and_modal_focus_management()"
+    },
+    {
+      "label": ".test_desktop_never_falls_back_to_broker_loopback()",
+      "file_type": "code",
+      "source_file": "tests/test_foundations.py",
+      "source_location": "L485",
       "_origin": "ast",
       "id": "tests_test_foundations_buildconfigurationtests_test_desktop_never_falls_back_to_broker_loopback",
       "community": 16,
@@ -9087,7 +9147,7 @@
       "label": ".test_windows_launcher_starts_the_release_app_with_broker_environment()",
       "file_type": "code",
       "source_file": "tests/test_foundations.py",
-      "source_location": "L486",
+      "source_location": "L498",
       "_origin": "ast",
       "id": "tests_test_foundations_buildconfigurationtests_test_windows_launcher_starts_the_release_app_with_broker_environment",
       "community": 16,
@@ -9097,7 +9157,7 @@
       "label": ".test_windows_icon_required_by_tauri_is_a_real_ico()",
       "file_type": "code",
       "source_file": "tests/test_foundations.py",
-      "source_location": "L504",
+      "source_location": "L516",
       "_origin": "ast",
       "id": "tests_test_foundations_buildconfigurationtests_test_windows_icon_required_by_tauri_is_a_real_ico",
       "community": 16,
@@ -9107,7 +9167,7 @@
       "label": ".test_node_typescript_config_does_not_emit_import_extensions()",
       "file_type": "code",
       "source_file": "tests/test_foundations.py",
-      "source_location": "L509",
+      "source_location": "L521",
       "_origin": "ast",
       "id": "tests_test_foundations_buildconfigurationtests_test_node_typescript_config_does_not_emit_import_extensions",
       "community": 16,
@@ -9467,7 +9527,7 @@
       "label": "Desarrollo",
       "file_type": "document",
       "source_file": "README.md",
-      "source_location": "L195",
+      "source_location": "L202",
       "_origin": "ast",
       "id": "readme_desarrollo",
       "community": 8,
@@ -9477,7 +9537,7 @@
       "label": "Documentaci\u00f3n",
       "file_type": "document",
       "source_file": "README.md",
-      "source_location": "L277",
+      "source_location": "L284",
       "_origin": "ast",
       "id": "readme_documentaci\u00f3n",
       "community": 8,
@@ -9687,7 +9747,7 @@
       "label": "8. Riesgos t\u00e9cnicos principales",
       "file_type": "document",
       "source_file": "docs/ARCHITECTURE.md",
-      "source_location": "L590",
+      "source_location": "L601",
       "_origin": "ast",
       "id": "docs_architecture_8_riesgos_t\u00e9cnicos_principales",
       "community": 8,
@@ -9697,7 +9757,7 @@
       "label": "9. Decisiones y suposiciones pendientes",
       "file_type": "document",
       "source_file": "docs/ARCHITECTURE.md",
-      "source_location": "L605",
+      "source_location": "L616",
       "_origin": "ast",
       "id": "docs_architecture_9_decisiones_y_suposiciones_pendientes",
       "community": 8,
@@ -9707,7 +9767,7 @@
       "label": "10. Criterios de aceptaci\u00f3n de Fase 0",
       "file_type": "document",
       "source_file": "docs/ARCHITECTURE.md",
-      "source_location": "L618",
+      "source_location": "L629",
       "_origin": "ast",
       "id": "docs_architecture_10_criterios_de_aceptaci\u00f3n_de_fase_0",
       "community": 8,
@@ -9717,7 +9777,7 @@
       "label": "11. Primer slice vertical",
       "file_type": "document",
       "source_file": "docs/ARCHITECTURE.md",
-      "source_location": "L634",
+      "source_location": "L645",
       "_origin": "ast",
       "id": "docs_architecture_11_primer_slice_vertical",
       "community": 8,
@@ -9957,7 +10017,7 @@
       "label": "Verificaci\u00f3n autom\u00e1tica",
       "file_type": "document",
       "source_file": "docs/PHASE_4_VERIFICATION.md",
-      "source_location": "L50",
+      "source_location": "L51",
       "_origin": "ast",
       "id": "docs_phase_4_verification_verificaci\u00f3n_autom\u00e1tica",
       "community": 100,
@@ -9967,7 +10027,7 @@
       "label": "Siguiente corte",
       "file_type": "document",
       "source_file": "docs/PHASE_4_VERIFICATION.md",
-      "source_location": "L62",
+      "source_location": "L63",
       "_origin": "ast",
       "id": "docs_phase_4_verification_siguiente_corte",
       "community": 100,
@@ -12581,6 +12641,56 @@
       "_origin": "ast",
       "id": "graphify_out_memory_query_20260731_144656_ok_sigue_con_el_desarrollo_source_nodes",
       "community": 143,
+      "norm_label": "source nodes"
+    },
+    {
+      "label": "query_20260731_150714_ok__sigue_con_el_desarrollo.md",
+      "file_type": "document",
+      "source_file": "graphify-out/memory/query_20260731_150714_ok__sigue_con_el_desarrollo.md",
+      "source_location": "L1",
+      "_origin": "ast",
+      "id": "graphify_out_memory_query_20260731_150714_ok_sigue_con_el_desarrollo",
+      "community": 141,
+      "norm_label": "query_20260731_150714_ok__sigue_con_el_desarrollo.md"
+    },
+    {
+      "label": "Q: Ok, sigue con el desarrollo",
+      "file_type": "document",
+      "source_file": "graphify-out/memory/query_20260731_150714_ok__sigue_con_el_desarrollo.md",
+      "source_location": "L10",
+      "_origin": "ast",
+      "id": "graphify_out_memory_query_20260731_150714_ok_sigue_con_el_desarrollo_q_ok_sigue_con_el_desarrollo",
+      "community": 141,
+      "norm_label": "q: ok, sigue con el desarrollo"
+    },
+    {
+      "label": "Answer",
+      "file_type": "document",
+      "source_file": "graphify-out/memory/query_20260731_150714_ok__sigue_con_el_desarrollo.md",
+      "source_location": "L12",
+      "_origin": "ast",
+      "id": "graphify_out_memory_query_20260731_150714_ok_sigue_con_el_desarrollo_answer",
+      "community": 141,
+      "norm_label": "answer"
+    },
+    {
+      "label": "Outcome",
+      "file_type": "document",
+      "source_file": "graphify-out/memory/query_20260731_150714_ok__sigue_con_el_desarrollo.md",
+      "source_location": "L16",
+      "_origin": "ast",
+      "id": "graphify_out_memory_query_20260731_150714_ok_sigue_con_el_desarrollo_outcome",
+      "community": 141,
+      "norm_label": "outcome"
+    },
+    {
+      "label": "Source Nodes",
+      "file_type": "document",
+      "source_file": "graphify-out/memory/query_20260731_150714_ok__sigue_con_el_desarrollo.md",
+      "source_location": "L20",
+      "_origin": "ast",
+      "id": "graphify_out_memory_query_20260731_150714_ok_sigue_con_el_desarrollo_source_nodes",
+      "community": 141,
       "norm_label": "source nodes"
     },
     {
@@ -45827,7 +45937,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L239",
+      "source_location": "L240",
       "weight": 1.0,
       "source": "apps_desktop_src_app",
       "target": "apps_desktop_src_app_app",
@@ -45837,7 +45947,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L119",
+      "source_location": "L120",
       "weight": 1.0,
       "source": "apps_desktop_src_app",
       "target": "apps_desktop_src_app_defaultscheduledlocaltime",
@@ -45847,7 +45957,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L110",
+      "source_location": "L111",
       "weight": 1.0,
       "source": "apps_desktop_src_app",
       "target": "apps_desktop_src_app_describeerror",
@@ -45857,7 +45967,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L165",
+      "source_location": "L166",
       "weight": 1.0,
       "source": "apps_desktop_src_app",
       "target": "apps_desktop_src_app_dialogcopy",
@@ -45867,7 +45977,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L88",
+      "source_location": "L89",
       "weight": 1.0,
       "source": "apps_desktop_src_app",
       "target": "apps_desktop_src_app_dialogstate",
@@ -45877,7 +45987,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L83",
+      "source_location": "L84",
       "weight": 1.0,
       "source": "apps_desktop_src_app",
       "target": "apps_desktop_src_app_loadable",
@@ -45887,7 +45997,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L125",
+      "source_location": "L126",
       "weight": 1.0,
       "source": "apps_desktop_src_app",
       "target": "apps_desktop_src_app_loadschedulerreadnotifications",
@@ -45897,7 +46007,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L97",
+      "source_location": "L98",
       "weight": 1.0,
       "source": "apps_desktop_src_app",
       "target": "apps_desktop_src_app_memoryeditdraft",
@@ -45907,7 +46017,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L143",
+      "source_location": "L144",
       "weight": 1.0,
       "source": "apps_desktop_src_app",
       "target": "apps_desktop_src_app_persistschedulerreadnotifications",
@@ -45917,7 +46027,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L114",
+      "source_location": "L115",
       "weight": 1.0,
       "source": "apps_desktop_src_app",
       "target": "apps_desktop_src_app_scheduledlocaltimevalue",
@@ -45927,7 +46037,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L154",
+      "source_location": "L155",
       "weight": 1.0,
       "source": "apps_desktop_src_app",
       "target": "apps_desktop_src_app_scheduledrunlabel",
@@ -45937,7 +46047,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L135",
+      "source_location": "L136",
       "weight": 1.0,
       "source": "apps_desktop_src_app",
       "target": "apps_desktop_src_app_schedulerreadnotificationsexist",
@@ -45947,7 +46057,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L104",
+      "source_location": "L105",
       "weight": 1.0,
       "source": "apps_desktop_src_app",
       "target": "apps_desktop_src_app_screencapturepreview",
@@ -46706,6 +46816,39 @@
       "context": "import",
       "confidence": "EXTRACTED",
       "source_file": "apps/desktop/src/App.tsx",
+      "source_location": "L82",
+      "weight": 1.0,
+      "source": "apps_desktop_src_app",
+      "target": "apps_desktop_src_keyboard",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "imports",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "apps/desktop/src/App.tsx",
+      "source_location": "L82",
+      "weight": 1.0,
+      "source": "apps_desktop_src_app",
+      "target": "apps_desktop_src_keyboard_iseditablekeyboardtarget",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "imports",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "apps/desktop/src/App.tsx",
+      "source_location": "L82",
+      "weight": 1.0,
+      "source": "apps_desktop_src_app",
+      "target": "apps_desktop_src_keyboard_keyboardshortcutaction",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "imports_from",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "apps/desktop/src/App.tsx",
       "source_location": "L63",
       "weight": 1.0,
       "source": "apps_desktop_src_app",
@@ -46849,7 +46992,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L521",
+      "source_location": "L531",
       "weight": 1.0,
       "source": "apps_desktop_src_app_app",
       "target": "apps_desktop_src_app_describeerror",
@@ -46860,7 +47003,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L2563",
+      "source_location": "L2562",
       "weight": 1.0,
       "source": "apps_desktop_src_app_app",
       "target": "apps_desktop_src_app_scheduledlocaltimevalue",
@@ -46871,7 +47014,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L120",
+      "source_location": "L121",
       "weight": 1.0,
       "source": "apps_desktop_src_app_defaultscheduledlocaltime",
       "target": "apps_desktop_src_app_scheduledlocaltimevalue",
@@ -46882,7 +47025,7 @@
       "context": "argument",
       "confidence": "INFERRED",
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L259",
+      "source_location": "L265",
       "weight": 1.0,
       "source": "apps_desktop_src_app_app",
       "target": "apps_desktop_src_app_defaultscheduledlocaltime",
@@ -46893,7 +47036,7 @@
       "context": "argument",
       "confidence": "INFERRED",
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L301",
+      "source_location": "L307",
       "weight": 1.0,
       "source": "apps_desktop_src_app_app",
       "target": "apps_desktop_src_app_loadschedulerreadnotifications",
@@ -46904,7 +47047,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L310",
+      "source_location": "L316",
       "weight": 1.0,
       "source": "apps_desktop_src_app_app",
       "target": "apps_desktop_src_app_schedulerreadnotificationsexist",
@@ -46915,7 +47058,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L684",
+      "source_location": "L694",
       "weight": 1.0,
       "source": "apps_desktop_src_app_app",
       "target": "apps_desktop_src_app_persistschedulerreadnotifications",
@@ -46926,7 +47069,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L744",
+      "source_location": "L754",
       "weight": 1.0,
       "source": "apps_desktop_src_app_app",
       "target": "apps_desktop_src_app_scheduledrunlabel",
@@ -46937,7 +47080,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L2309",
+      "source_location": "L2308",
       "weight": 1.0,
       "source": "apps_desktop_src_app_app",
       "target": "apps_desktop_src_app_dialogcopy",
@@ -46949,7 +47092,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L294",
+      "source_location": "L300",
       "weight": 1.0,
       "source": "apps_desktop_src_app_app",
       "target": "apps_desktop_src_appearance_applyappearancepreference"
@@ -46960,7 +47103,7 @@
       "confidence": "INFERRED",
       "confidence_score": 0.8,
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L244",
+      "source_location": "L249",
       "weight": 1.0,
       "source": "apps_desktop_src_app_app",
       "target": "apps_desktop_src_appearance_loadappearancepreference"
@@ -46971,7 +47114,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L292",
+      "source_location": "L298",
       "weight": 1.0,
       "source": "apps_desktop_src_app_app",
       "target": "apps_desktop_src_appearance_persistappearancepreference"
@@ -46982,7 +47125,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L297",
+      "source_location": "L303",
       "weight": 1.0,
       "source": "apps_desktop_src_app_app",
       "target": "apps_desktop_src_appearance_subscribetosystemappearance"
@@ -46993,7 +47136,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L483",
+      "source_location": "L493",
       "weight": 1.0,
       "source": "apps_desktop_src_app_app",
       "target": "apps_desktop_src_cameracapture_camerafailuremessage"
@@ -47004,7 +47147,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L1211",
+      "source_location": "L1210",
       "weight": 1.0,
       "source": "apps_desktop_src_app_app",
       "target": "apps_desktop_src_cameracapture_opencamerastream"
@@ -47015,7 +47158,7 @@
       "confidence": "INFERRED",
       "confidence_score": 0.8,
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L994",
+      "source_location": "L993",
       "weight": 1.0,
       "source": "apps_desktop_src_app_app",
       "target": "apps_desktop_src_domain_attachmentneedssandbox"
@@ -47026,7 +47169,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L629",
+      "source_location": "L639",
       "weight": 1.0,
       "source": "apps_desktop_src_app_app",
       "target": "apps_desktop_src_domain_attachmentselectiononconversationopen"
@@ -47037,7 +47180,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L3761",
+      "source_location": "L3884",
       "weight": 1.0,
       "source": "apps_desktop_src_app_app",
       "target": "apps_desktop_src_domain_attachmentstatuslabel"
@@ -47048,7 +47191,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L4087",
+      "source_location": "L4213",
       "weight": 1.0,
       "source": "apps_desktop_src_app_app",
       "target": "apps_desktop_src_domain_brokersupportspreset"
@@ -47059,7 +47202,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L3432",
+      "source_location": "L3555",
       "weight": 1.0,
       "source": "apps_desktop_src_app_app",
       "target": "apps_desktop_src_domain_canrevealcontextsource"
@@ -47070,7 +47213,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L998",
+      "source_location": "L997",
       "weight": 1.0,
       "source": "apps_desktop_src_app_app",
       "target": "apps_desktop_src_domain_cansendmessage"
@@ -47081,7 +47224,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L5961",
+      "source_location": "L6087",
       "weight": 1.0,
       "source": "apps_desktop_src_app_app",
       "target": "apps_desktop_src_domain_canstartmemoryedit"
@@ -47092,7 +47235,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L1032",
+      "source_location": "L1031",
       "weight": 1.0,
       "source": "apps_desktop_src_app_app",
       "target": "apps_desktop_src_domain_canusesemanticmemory"
@@ -47103,7 +47246,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L2384",
+      "source_location": "L2383",
       "weight": 1.0,
       "source": "apps_desktop_src_app_app",
       "target": "apps_desktop_src_domain_filterprojectknowledge"
@@ -47114,7 +47257,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L4949",
+      "source_location": "L5075",
       "weight": 1.0,
       "source": "apps_desktop_src_app_app",
       "target": "apps_desktop_src_domain_filterscheduledruns"
@@ -47125,7 +47268,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L2956",
+      "source_location": "L2955",
       "weight": 1.0,
       "source": "apps_desktop_src_app_app",
       "target": "apps_desktop_src_domain_filterscheduledtasks"
@@ -47136,7 +47279,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L3370",
+      "source_location": "L3493",
       "weight": 1.0,
       "source": "apps_desktop_src_app_app",
       "target": "apps_desktop_src_domain_formatresponseduration"
@@ -47147,7 +47290,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L431",
+      "source_location": "L437",
       "weight": 1.0,
       "source": "apps_desktop_src_app_app",
       "target": "apps_desktop_src_domain_istaskblockingconversation"
@@ -47158,7 +47301,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L899",
+      "source_location": "L898",
       "weight": 1.0,
       "source": "apps_desktop_src_app_app",
       "target": "apps_desktop_src_domain_istaskpollingcomplete"
@@ -47169,7 +47312,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L2295",
+      "source_location": "L2294",
       "weight": 1.0,
       "source": "apps_desktop_src_app_app",
       "target": "apps_desktop_src_domain_isterminaltask"
@@ -47180,7 +47323,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L1496",
+      "source_location": "L1495",
       "weight": 1.0,
       "source": "apps_desktop_src_app_app",
       "target": "apps_desktop_src_domain_memoryupdatenotice"
@@ -47191,7 +47334,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L1057",
+      "source_location": "L1056",
       "weight": 1.0,
       "source": "apps_desktop_src_app_app",
       "target": "apps_desktop_src_domain_projectfilesavailabletoconversation"
@@ -47202,7 +47345,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L2037",
+      "source_location": "L2036",
       "weight": 1.0,
       "source": "apps_desktop_src_app_app",
       "target": "apps_desktop_src_domain_sandboxunavailableguidance"
@@ -47213,7 +47356,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L2403",
+      "source_location": "L2402",
       "weight": 1.0,
       "source": "apps_desktop_src_app_app",
       "target": "apps_desktop_src_domain_scheduledcalendaroccurrences"
@@ -47224,7 +47367,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L681",
+      "source_location": "L691",
       "weight": 1.0,
       "source": "apps_desktop_src_app_app",
       "target": "apps_desktop_src_domain_schedulednotifications"
@@ -47235,7 +47378,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L4963",
+      "source_location": "L5089",
       "weight": 1.0,
       "source": "apps_desktop_src_app_app",
       "target": "apps_desktop_src_domain_scheduledrundetail"
@@ -47246,7 +47389,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L1952",
+      "source_location": "L1951",
       "weight": 1.0,
       "source": "apps_desktop_src_app_app",
       "target": "apps_desktop_src_domain_shouldapplycontextload"
@@ -47257,7 +47400,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L3227",
+      "source_location": "L3350",
       "weight": 1.0,
       "source": "apps_desktop_src_app_app",
       "target": "apps_desktop_src_domain_shouldfollowconversationscroll"
@@ -47268,7 +47411,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L1995",
+      "source_location": "L1994",
       "weight": 1.0,
       "source": "apps_desktop_src_app_app",
       "target": "apps_desktop_src_domain_shouldoffersandboxforprompt"
@@ -47279,7 +47422,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L2006",
+      "source_location": "L2005",
       "weight": 1.0,
       "source": "apps_desktop_src_app_app",
       "target": "apps_desktop_src_domain_shouldrefreshsandboxdiagnostic"
@@ -47290,7 +47433,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L3296",
+      "source_location": "L3419",
       "weight": 1.0,
       "source": "apps_desktop_src_app_app",
       "target": "apps_desktop_src_domain_taskfailuresummary"
@@ -47301,7 +47444,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L433",
+      "source_location": "L439",
       "weight": 1.0,
       "source": "apps_desktop_src_app_app",
       "target": "apps_desktop_src_domain_taskprogresssummary"
@@ -47312,7 +47455,7 @@
       "confidence": "INFERRED",
       "confidence_score": 0.8,
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L637",
+      "source_location": "L647",
       "weight": 1.0,
       "source": "apps_desktop_src_app_app",
       "target": "apps_desktop_src_domain_test_task"
@@ -47323,7 +47466,29 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L1237",
+      "source_location": "L2978",
+      "weight": 1.0,
+      "source": "apps_desktop_src_app_app",
+      "target": "apps_desktop_src_keyboard_iseditablekeyboardtarget"
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "apps/desktop/src/App.tsx",
+      "source_location": "L2971",
+      "weight": 1.0,
+      "source": "apps_desktop_src_app_app",
+      "target": "apps_desktop_src_keyboard_keyboardshortcutaction"
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "apps/desktop/src/App.tsx",
+      "source_location": "L1236",
       "weight": 1.0,
       "source": "apps_desktop_src_app_app",
       "target": "apps_desktop_src_screencapture_capturedisplayname"
@@ -47334,7 +47499,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L1174",
+      "source_location": "L1173",
       "weight": 1.0,
       "source": "apps_desktop_src_app_app",
       "target": "apps_desktop_src_screencapture_capturescreenframe"
@@ -47345,7 +47510,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L1235",
+      "source_location": "L1234",
       "weight": 1.0,
       "source": "apps_desktop_src_app_app",
       "target": "apps_desktop_src_screencapture_capturevideoframe"
@@ -47356,7 +47521,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L1150",
+      "source_location": "L1149",
       "weight": 1.0,
       "source": "apps_desktop_src_app_app",
       "target": "apps_desktop_src_screencapture_cropcapturedframe"
@@ -47367,7 +47532,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "apps/desktop/src/App.tsx",
-      "source_location": "L1118",
+      "source_location": "L1117",
       "weight": 1.0,
       "source": "apps_desktop_src_app_app",
       "target": "apps_desktop_src_screencapture_normalizecropselection"
@@ -49414,6 +49579,58 @@
       "confidence_score": 1.0
     },
     {
+      "relation": "imports_from",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "apps/desktop/src/keyboard.test.ts",
+      "source_location": "L2",
+      "weight": 1.0,
+      "source": "apps_desktop_src_keyboard_test",
+      "target": "apps_desktop_src_keyboard",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "imports",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "apps/desktop/src/keyboard.test.ts",
+      "source_location": "L2",
+      "weight": 1.0,
+      "source": "apps_desktop_src_keyboard_test",
+      "target": "apps_desktop_src_keyboard_keyboardshortcutaction",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "apps/desktop/src/keyboard.ts",
+      "source_location": "L42",
+      "weight": 1.0,
+      "source": "apps_desktop_src_keyboard",
+      "target": "apps_desktop_src_keyboard_iseditablekeyboardtarget",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "apps/desktop/src/keyboard.ts",
+      "source_location": "L19",
+      "weight": 1.0,
+      "source": "apps_desktop_src_keyboard",
+      "target": "apps_desktop_src_keyboard_keyboardshortcutaction",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "apps/desktop/src/keyboard.ts",
+      "source_location": "L8",
+      "weight": 1.0,
+      "source": "apps_desktop_src_keyboard",
+      "target": "apps_desktop_src_keyboard_keyboardshortcutinput",
+      "confidence_score": 1.0
+    },
+    {
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "apps/desktop/src/platform.ts",
@@ -50899,7 +51116,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "tests/test_foundations.py",
-      "source_location": "L473",
+      "source_location": "L485",
       "weight": 1.0,
       "source": "tests_test_foundations_buildconfigurationtests",
       "target": "tests_test_foundations_buildconfigurationtests_test_desktop_never_falls_back_to_broker_loopback",
@@ -50909,7 +51126,17 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "tests/test_foundations.py",
-      "source_location": "L509",
+      "source_location": "L473",
+      "weight": 1.0,
+      "source": "tests_test_foundations_buildconfigurationtests",
+      "target": "tests_test_foundations_buildconfigurationtests_test_keyboard_navigation_exposes_landmarks_help_and_modal_focus_management",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "tests/test_foundations.py",
+      "source_location": "L521",
       "weight": 1.0,
       "source": "tests_test_foundations_buildconfigurationtests",
       "target": "tests_test_foundations_buildconfigurationtests_test_node_typescript_config_does_not_emit_import_extensions",
@@ -50919,7 +51146,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "tests/test_foundations.py",
-      "source_location": "L504",
+      "source_location": "L516",
       "weight": 1.0,
       "source": "tests_test_foundations_buildconfigurationtests",
       "target": "tests_test_foundations_buildconfigurationtests_test_windows_icon_required_by_tauri_is_a_real_ico",
@@ -50929,7 +51156,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "tests/test_foundations.py",
-      "source_location": "L486",
+      "source_location": "L498",
       "weight": 1.0,
       "source": "tests_test_foundations_buildconfigurationtests",
       "target": "tests_test_foundations_buildconfigurationtests_test_windows_launcher_starts_the_release_app_with_broker_environment",
@@ -51219,7 +51446,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "README.md",
-      "source_location": "L279",
+      "source_location": "L286",
       "weight": 1.0,
       "source": "readme",
       "target": "docs_architecture",
@@ -51229,7 +51456,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "README.md",
-      "source_location": "L280",
+      "source_location": "L287",
       "weight": 1.0,
       "source": "readme",
       "target": "docs_phase_0_verification",
@@ -51239,7 +51466,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "README.md",
-      "source_location": "L281",
+      "source_location": "L288",
       "weight": 1.0,
       "source": "readme",
       "target": "docs_phase_1_verification",
@@ -51249,7 +51476,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "README.md",
-      "source_location": "L282",
+      "source_location": "L289",
       "weight": 1.0,
       "source": "readme",
       "target": "docs_phase_2_verification",
@@ -51269,7 +51496,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "README.md",
-      "source_location": "L195",
+      "source_location": "L202",
       "weight": 1.0,
       "source": "readme_chatygpt",
       "target": "readme_desarrollo",
@@ -51279,7 +51506,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "README.md",
-      "source_location": "L277",
+      "source_location": "L284",
       "weight": 1.0,
       "source": "readme_chatygpt",
       "target": "readme_documentaci\u00f3n",
@@ -51309,7 +51536,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "docs/ARCHITECTURE.md",
-      "source_location": "L618",
+      "source_location": "L629",
       "weight": 1.0,
       "source": "docs_architecture_arquitectura_y_plan_de_producto",
       "target": "docs_architecture_10_criterios_de_aceptaci\u00f3n_de_fase_0",
@@ -51319,7 +51546,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "docs/ARCHITECTURE.md",
-      "source_location": "L634",
+      "source_location": "L645",
       "weight": 1.0,
       "source": "docs_architecture_arquitectura_y_plan_de_producto",
       "target": "docs_architecture_11_primer_slice_vertical",
@@ -51399,7 +51626,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "docs/ARCHITECTURE.md",
-      "source_location": "L590",
+      "source_location": "L601",
       "weight": 1.0,
       "source": "docs_architecture_arquitectura_y_plan_de_producto",
       "target": "docs_architecture_8_riesgos_t\u00e9cnicos_principales",
@@ -51409,7 +51636,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "docs/ARCHITECTURE.md",
-      "source_location": "L605",
+      "source_location": "L616",
       "weight": 1.0,
       "source": "docs_architecture_arquitectura_y_plan_de_producto",
       "target": "docs_architecture_9_decisiones_y_suposiciones_pendientes",
@@ -51709,7 +51936,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "docs/PHASE_4_VERIFICATION.md",
-      "source_location": "L62",
+      "source_location": "L63",
       "weight": 1.0,
       "source": "docs_phase_4_verification_evidencias_de_fase_4",
       "target": "docs_phase_4_verification_siguiente_corte",
@@ -51719,7 +51946,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "docs/PHASE_4_VERIFICATION.md",
-      "source_location": "L50",
+      "source_location": "L51",
       "weight": 1.0,
       "source": "docs_phase_4_verification_evidencias_de_fase_4",
       "target": "docs_phase_4_verification_verificaci\u00f3n_autom\u00e1tica",
@@ -53808,6 +54035,46 @@
     {
       "relation": "contains",
       "confidence": "EXTRACTED",
+      "source_file": "graphify-out/memory/query_20260731_150714_ok__sigue_con_el_desarrollo.md",
+      "source_location": "L10",
+      "weight": 1.0,
+      "source": "graphify_out_memory_query_20260731_150714_ok_sigue_con_el_desarrollo",
+      "target": "graphify_out_memory_query_20260731_150714_ok_sigue_con_el_desarrollo_q_ok_sigue_con_el_desarrollo",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "graphify-out/memory/query_20260731_150714_ok__sigue_con_el_desarrollo.md",
+      "source_location": "L12",
+      "weight": 1.0,
+      "source": "graphify_out_memory_query_20260731_150714_ok_sigue_con_el_desarrollo_q_ok_sigue_con_el_desarrollo",
+      "target": "graphify_out_memory_query_20260731_150714_ok_sigue_con_el_desarrollo_answer",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "graphify-out/memory/query_20260731_150714_ok__sigue_con_el_desarrollo.md",
+      "source_location": "L16",
+      "weight": 1.0,
+      "source": "graphify_out_memory_query_20260731_150714_ok_sigue_con_el_desarrollo_q_ok_sigue_con_el_desarrollo",
+      "target": "graphify_out_memory_query_20260731_150714_ok_sigue_con_el_desarrollo_outcome",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "graphify-out/memory/query_20260731_150714_ok__sigue_con_el_desarrollo.md",
+      "source_location": "L20",
+      "weight": 1.0,
+      "source": "graphify_out_memory_query_20260731_150714_ok_sigue_con_el_desarrollo_q_ok_sigue_con_el_desarrollo",
+      "target": "graphify_out_memory_query_20260731_150714_ok_sigue_con_el_desarrollo_source_nodes",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
       "source_file": "services/automation/README.md",
       "source_location": "L1",
       "weight": 1.0,
@@ -53917,5 +54184,5 @@
     }
   ],
   "hyperedges": [],
-  "built_at_commit": "5e463b6189e85255312960bec26c5cde8e9a54f2"
+  "built_at_commit": "b8c037479aa5cfd3f73915e78909e94db99b6635"
 }

@@ -1,5 +1,6 @@
 mod contracts;
 
+use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
 use reqwest::{header::HeaderValue, Client, StatusCode};
@@ -10,14 +11,36 @@ use url::Url;
 pub use contracts::{BrokerCapabilities, FileAccepted, FileState, TaskAccepted, TaskState};
 
 use crate::error::AppError;
+use crate::logging;
+use crate::secrets;
 
 const DEFAULT_BROKER_BASE_URL: &str = "http://192.168.1.52:8765";
+
+/// Convierte el token en cabecera HTTP sin filtrar su contenido al error.
+fn header_token(value: &str) -> Result<HeaderValue, AppError> {
+    HeaderValue::from_str(value)
+        .map_err(|_| AppError::BrokerContract("token administrativo inválido".to_owned()))
+}
+
+/// Traduce un fallo de transporte y lo registra por su clase, nunca por su texto.
+///
+/// El mensaje de `reqwest` puede incluir la URL completa; en el registro solo
+/// queda la operación afectada.
+fn transport_failure(operation: &str, error: impl std::fmt::Display) -> AppError {
+    logging::warn(
+        "broker.transport_failed",
+        None,
+        &[("operation", logging::code(operation))],
+    );
+    AppError::BrokerTransport(error.to_string())
+}
 
 #[derive(Clone)]
 pub struct BrokerClient {
     base_url: Url,
     http: Client,
-    admin_token: Option<HeaderValue>,
+    /// Token compartido y recargable: rotarlo no obliga a reiniciar la aplicación.
+    admin_token: Arc<RwLock<Option<HeaderValue>>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -41,7 +64,9 @@ pub struct BrokerDiagnostic {
 }
 
 impl BrokerClient {
-    pub fn from_environment() -> Result<Self, AppError> {
+    /// Construye el cliente resolviendo la credencial desde el almacén protegido
+    /// y, solo si allí no hay nada, desde el entorno.
+    pub fn bootstrap(data_dir: &std::path::Path) -> Result<Self, AppError> {
         let raw_url = std::env::var("CHATYGPT_BROKER_BASE_URL")
             .unwrap_or_else(|_| DEFAULT_BROKER_BASE_URL.to_owned());
         let mut base_url =
@@ -54,14 +79,8 @@ impl BrokerClient {
         if !base_url.path().ends_with('/') {
             base_url.set_path(&format!("{}/", base_url.path()));
         }
-        let admin_token = std::env::var("AI_BROKER_ADMIN_TOKEN")
-            .ok()
-            .filter(|value| !value.is_empty())
-            .map(|value| {
-                HeaderValue::from_str(&value).map_err(|_| {
-                    AppError::BrokerContract("token administrativo inválido".to_owned())
-                })
-            })
+        let admin_token = secrets::resolve_broker_token(data_dir)
+            .map(|value| header_token(&value))
             .transpose()?;
         let http = Client::builder()
             .connect_timeout(std::time::Duration::from_secs(3))
@@ -72,12 +91,27 @@ impl BrokerClient {
         Ok(Self {
             base_url,
             http,
-            admin_token,
+            admin_token: Arc::new(RwLock::new(admin_token)),
         })
     }
 
     pub fn base_url(&self) -> String {
         self.base_url.as_str().trim_end_matches('/').to_owned()
+    }
+
+    /// Sustituye la credencial en caliente tras guardarla o retirarla.
+    pub fn replace_admin_token(&self, token: Option<&str>) -> Result<(), AppError> {
+        let header = token.map(header_token).transpose()?;
+        let mut guard = self
+            .admin_token
+            .write()
+            .map_err(|_| AppError::Conflict("la credencial está en uso".to_owned()))?;
+        *guard = header;
+        Ok(())
+    }
+
+    fn current_token(&self) -> Option<HeaderValue> {
+        self.admin_token.read().ok().and_then(|token| token.clone())
     }
 
     fn endpoint(&self, path: &str) -> Result<Url, AppError> {
@@ -87,32 +121,49 @@ impl BrokerClient {
     }
 
     fn authorize(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        match &self.admin_token {
+        match self.current_token() {
             Some(token) => request.header("x-admin-token", token),
             None => request,
         }
     }
 
     async fn decode<T: serde::de::DeserializeOwned>(
+        operation: &str,
         response: reqwest::Response,
     ) -> Result<T, AppError> {
         let status = response.status();
         let bytes = response
             .bytes()
             .await
-            .map_err(|error| AppError::BrokerTransport(error.to_string()))?;
+            .map_err(|error| transport_failure(operation, error))?;
         if !status.is_success() {
             let message = serde_json::from_slice::<Value>(&bytes)
                 .ok()
                 .and_then(|body| body.get("detail").cloned())
                 .map(|detail| detail.to_string())
                 .unwrap_or_else(|| String::from_utf8_lossy(&bytes).into_owned());
+            // Se registra el código HTTP, no el detalle: puede citar el contenido enviado.
+            logging::warn(
+                "broker.response_rejected",
+                None,
+                &[
+                    ("operation", logging::code(operation)),
+                    ("status", logging::count(i64::from(status.as_u16()))),
+                ],
+            );
             return Err(AppError::BrokerResponse {
                 status: status.as_u16(),
                 message,
             });
         }
-        serde_json::from_slice(&bytes).map_err(|error| AppError::BrokerContract(error.to_string()))
+        serde_json::from_slice(&bytes).map_err(|error| {
+            logging::error(
+                "broker.contract_mismatch",
+                None,
+                &[("operation", logging::code(operation))],
+            );
+            AppError::BrokerContract(error.to_string())
+        })
     }
 
     pub async fn capabilities(&self) -> Result<BrokerCapabilities, AppError> {
@@ -120,8 +171,8 @@ impl BrokerClient {
             .authorize(self.http.get(self.endpoint("/api/v1/capabilities")?))
             .send()
             .await
-            .map_err(|error| AppError::BrokerTransport(error.to_string()))?;
-        Self::decode(response).await
+            .map_err(|error| transport_failure("capabilities", error))?;
+        Self::decode("capabilities", response).await
     }
 
     pub async fn create_task(&self, request: &Value) -> Result<TaskAccepted, AppError> {
@@ -133,8 +184,8 @@ impl BrokerClient {
             )
             .send()
             .await
-            .map_err(|error| AppError::BrokerTransport(error.to_string()))?;
-        Self::decode(response).await
+            .map_err(|error| transport_failure("create_task", error))?;
+        Self::decode("create_task", response).await
     }
 
     pub async fn upload_file(
@@ -148,7 +199,7 @@ impl BrokerClient {
         let filename = filename.to_owned();
         let media_type = media_type.map(str::to_owned);
         let endpoint = self.endpoint("/api/v1/files")?;
-        let admin_token = self.admin_token.clone();
+        let admin_token = self.current_token();
         tauri::async_runtime::spawn_blocking(move || {
             let file = std::fs::File::open(path)
                 .map_err(|error| AppError::BrokerTransport(error.to_string()))?;
@@ -172,17 +223,25 @@ impl BrokerClient {
             }
             let response = request
                 .send()
-                .map_err(|error| AppError::BrokerTransport(error.to_string()))?;
+                .map_err(|error| transport_failure("upload_file", error))?;
             let status = response.status();
             let bytes = response
                 .bytes()
-                .map_err(|error| AppError::BrokerTransport(error.to_string()))?;
+                .map_err(|error| transport_failure("upload_file", error))?;
             if !status.is_success() {
                 let message = serde_json::from_slice::<Value>(&bytes)
                     .ok()
                     .and_then(|body| body.get("detail").cloned())
                     .map(|detail| detail.to_string())
                     .unwrap_or_else(|| String::from_utf8_lossy(&bytes).into_owned());
+                logging::warn(
+                    "broker.response_rejected",
+                    None,
+                    &[
+                        ("operation", logging::code("upload_file")),
+                        ("status", logging::count(i64::from(status.as_u16()))),
+                    ],
+                );
                 return Err(AppError::BrokerResponse {
                     status: status.as_u16(),
                     message,
@@ -201,8 +260,8 @@ impl BrokerClient {
             .authorize(self.http.get(self.endpoint(&path)?))
             .send()
             .await
-            .map_err(|error| AppError::BrokerTransport(error.to_string()))?;
-        Self::decode(response).await
+            .map_err(|error| transport_failure("get_file", error))?;
+        Self::decode("get_file", response).await
     }
 
     pub async fn download_text(&self, location: &str) -> Result<String, AppError> {
@@ -220,13 +279,21 @@ impl BrokerClient {
             .authorize(self.http.get(url))
             .send()
             .await
-            .map_err(|error| AppError::BrokerTransport(error.to_string()))?;
+            .map_err(|error| transport_failure("download_text", error))?;
         let status = response.status();
         let bytes = response
             .bytes()
             .await
-            .map_err(|error| AppError::BrokerTransport(error.to_string()))?;
+            .map_err(|error| transport_failure("download_text", error))?;
         if !status.is_success() {
+            logging::warn(
+                "broker.response_rejected",
+                None,
+                &[
+                    ("operation", logging::code("download_text")),
+                    ("status", logging::count(i64::from(status.as_u16()))),
+                ],
+            );
             return Err(AppError::BrokerResponse {
                 status: status.as_u16(),
                 message: String::from_utf8_lossy(&bytes).into_owned(),
@@ -247,8 +314,8 @@ impl BrokerClient {
             .authorize(self.http.get(self.endpoint(&path)?))
             .send()
             .await
-            .map_err(|error| AppError::BrokerTransport(error.to_string()))?;
-        Self::decode(response).await
+            .map_err(|error| transport_failure("get_task", error))?;
+        Self::decode("get_task", response).await
     }
 
     pub async fn cancel_task(&self, task_id: &str) -> Result<TaskState, AppError> {
@@ -257,8 +324,8 @@ impl BrokerClient {
             .authorize(self.http.delete(self.endpoint(&path)?))
             .send()
             .await
-            .map_err(|error| AppError::BrokerTransport(error.to_string()))?;
-        Self::decode(response).await
+            .map_err(|error| transport_failure("cancel_task", error))?;
+        Self::decode("cancel_task", response).await
     }
 
     pub async fn submit_tool_results(
@@ -271,11 +338,26 @@ impl BrokerClient {
             .authorize(self.http.post(self.endpoint(&path)?).json(tool_results))
             .send()
             .await
-            .map_err(|error| AppError::BrokerTransport(error.to_string()))?;
-        Self::decode(response).await
+            .map_err(|error| transport_failure("submit_tool_results", error))?;
+        Self::decode("submit_tool_results", response).await
     }
 
+    /// Diagnostica el Broker y deja constancia del resultado, no de su mensaje.
     pub async fn diagnose(&self) -> BrokerDiagnostic {
+        let diagnostic = self.probe().await;
+        logging::info(
+            "broker.diagnosed",
+            None,
+            &[
+                ("reachable", logging::flag(diagnostic.reachable)),
+                ("ready", logging::flag(diagnostic.ready)),
+                ("latency_ms", logging::millis(diagnostic.latency_ms)),
+            ],
+        );
+        diagnostic
+    }
+
+    async fn probe(&self) -> BrokerDiagnostic {
         let started = Instant::now();
         let readiness_url = match self.endpoint("/health/ready") {
             Ok(url) => url,

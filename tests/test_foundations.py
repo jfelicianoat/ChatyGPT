@@ -470,6 +470,18 @@ class BuildConfigurationTests(unittest.TestCase):
         self.assertIn('matchMedia("(prefers-color-scheme: dark)")', index)
         self.assertLess(index.index(storage_key), index.index('src="/src/main.tsx"'))
 
+    def test_keyboard_navigation_exposes_landmarks_help_and_modal_focus_management(self) -> None:
+        app = (ROOT / "apps" / "desktop" / "src" / "App.tsx").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('className="skip-link" href="#main-content"', app)
+        self.assertIn('id="main-content" tabIndex={-1}', app)
+        self.assertIn('aria-keyshortcuts="Control+N"', app)
+        self.assertIn('aria-keyshortcuts="Control+Shift+M"', app)
+        self.assertIn('className="modal keyboard-help-modal"', app)
+        self.assertIn('window.addEventListener("keydown", containFocus)', app)
+        self.assertIn('previousFocus?.focus()', app)
+
     def test_desktop_never_falls_back_to_broker_loopback(self) -> None:
         broker_source = (
             ROOT / "apps" / "desktop" / "src-tauri" / "src" / "broker" / "mod.rs"

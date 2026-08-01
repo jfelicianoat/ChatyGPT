@@ -205,14 +205,26 @@ Decisiones de ciclo de vida:
 
 ### 0D. Seguridad y observabilidad
 
-- Backend definitivo de secretos y rotación.
-- Logs estructurados con redacción y correlation IDs.
-- Confirmaciones y carpetas autorizadas.
+- **Implementado:** custodia del token con DPAPI `CurrentUser` (`secrets.rs`),
+  alta y rotación desde la interfaz, sustitución en caliente del cliente HTTP y
+  variable de entorno degradada a vía de transición.
+- **Implementado:** logs estructurados con redacción por construcción y
+  correlation IDs (`logging.rs`). El registro solo admite recuentos, banderas,
+  identificadores, códigos controlados y duraciones; no existe un campo de texto
+  libre, de modo que un prompt, una ruta o un token no pueden escribirse ni por
+  error. Detalle y evidencias en [Endurecimiento de Fase 0](PHASE_0_HARDENING.md).
+- **Implementado:** confirmaciones durables (`confirmation_requests`) resueltas
+  como `allowed_once`/`cancelled` antes de ejecutar, y carpetas autorizadas
+  (`authorized_folders`) que gobiernan toda escritura de exportación.
 - Feature flags locales.
 
 ### 0E. Calidad y distribución
 
-- Unitarias Rust/TypeScript, integración SQLite/Broker y E2E.
+- Unitarias Rust/TypeScript e integración SQLite. **Pendiente:** integración
+  contra Broker AI simulado y E2E.
+- **Implementado:** cobertura medida con `cargo-llvm-cov` (71,21 % de líneas) y
+  CI en `windows-latest` con umbral que falla si baja. Desglose y objetivos aún
+  no alcanzados en [Endurecimiento de Fase 0](PHASE_0_HARDENING.md).
 - Presupuestos de rendimiento instrumentados.
 - MSI/NSIS, firma, actualización y rollback.
 - Matriz de Windows soportada.
@@ -586,6 +598,17 @@ pintura ya usa el tema correcto. Cuando la opción es `system`, la aplicación
 escucha `prefers-color-scheme` y actualiza también `color-scheme` y el color de
 la ventana sin reinicio. Un valor ausente o ilegible degrada de forma segura a
 la configuración de Windows.
+
+La navegación de teclado se resuelve en una función pura de `keyboard.ts` que
+traduce eventos válidos a acciones de aplicación. Rechaza composición IME,
+ventanas superpuestas y teclas simples cuando el destino es editable, evitando
+interferir con el compositor. `App.tsx` mantiene referencias únicamente a los
+destinos visibles —búsqueda y mensaje— y publica los atajos con
+`aria-keyshortcuts` y una ayuda accesible. El documento usa landmarks separados
+para navegación y contenido, incorpora un enlace de salto y gestiona las
+ventanas con foco inicial, ciclo de Tab, cierre mediante Escape y restauración
+del foco previo. Ninguna de estas acciones modifica la persistencia o el
+contrato del Broker.
 
 ## 8. Riesgos técnicos principales
 

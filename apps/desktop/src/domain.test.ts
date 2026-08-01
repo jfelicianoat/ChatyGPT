@@ -5,11 +5,14 @@ import {
   attachmentNeedsSandbox,
   attachmentSelectionOnConversationOpen,
   attachmentStatusLabel,
+  authorizedFolderPurpose,
+  brokerCredentialLabel,
   brokerSupportsPreset,
   canSendMessage,
   canStartMemoryEdit,
   canUseSemanticMemory,
   canRevealContextSource,
+  confirmationSummary,
   formatResponseDuration,
   filterProjectKnowledge,
   filterScheduledRuns,
@@ -30,6 +33,7 @@ import {
   scheduledTaskDuplicateDraft,
   taskFailureSummary,
   taskProgressSummary,
+  type ToolCallView,
   type LocalTaskSnapshot,
   type ProjectKnowledgeOverview,
   type ScheduledTaskView
@@ -767,5 +771,108 @@ describe("sandbox intent", () => {
   it("does not interrupt ordinary programming questions", () => {
     expect(shouldOfferSandboxForPrompt("Explícame qué hace este código")).toBe(false);
     expect(shouldOfferSandboxForPrompt("¿Qué es una prueba de concepto?")).toBe(false);
+  });
+});
+
+describe("credencial del Broker", () => {
+  it("nombra el origen real de la credencial en uso", () => {
+    expect(
+      brokerCredentialLabel({
+        source: "protected",
+        protected: true,
+        environmentPresent: false,
+        message: ""
+      })
+    ).toBe("Guardada y cifrada");
+    expect(
+      brokerCredentialLabel({
+        source: "environment",
+        protected: false,
+        environmentPresent: true,
+        message: ""
+      })
+    ).toBe("Heredada del entorno");
+    expect(
+      brokerCredentialLabel({
+        source: "missing",
+        protected: false,
+        environmentPresent: false,
+        message: ""
+      })
+    ).toBe("Sin credencial");
+  });
+});
+
+describe("carpetas autorizadas", () => {
+  const folder = (purpose?: string) => ({
+    id: "folder-1",
+    path: "c:\\users\\ana\\documentos",
+    displayName: "C:\\Users\\Ana\\Documentos",
+    permissions: purpose ? { write: true, purpose } : {},
+    grantedAt: "2026-08-01T09:00:00Z",
+    revokedAt: null
+  });
+
+  it("traduce el uso concedido a lenguaje comprensible", () => {
+    expect(authorizedFolderPurpose(folder("obsidian_vault"))).toBe("Bóveda de Obsidian");
+    expect(authorizedFolderPurpose(folder("conversation_markdown"))).toBe(
+      "Exportar conversaciones a Markdown"
+    );
+  });
+
+  it("no inventa un uso cuando la concesión no lo declara", () => {
+    expect(authorizedFolderPurpose(folder())).toBe("Uso no declarado");
+  });
+});
+
+describe("confirmación de herramientas", () => {
+  const call = (confirmation: ToolCallView["confirmation"]): ToolCallView => ({
+    toolCallId: "call-1",
+    name: "rename_conversation",
+    arguments: { title: "Presupuesto de obra" },
+    status: "confirmation_required",
+    confirmation
+  });
+
+  it("muestra los siete elementos del expediente sin JSON técnico", () => {
+    const detail = confirmationSummary(
+      call({
+        id: "confirm-1",
+        actionType: "conversation.rename",
+        toolName: "rename_conversation",
+        resources: { kind: "conversation", label: "La conversación abierta" },
+        disclosure: {
+          action_label: "Renombrar la conversación",
+          data_sent: [{ label: "Título propuesto", value: "Presupuesto de obra" }],
+          destination: "local",
+          destination_label: "Solo esta aplicación; nada sale del equipo",
+          scope: "one_time",
+          scope_label: "Permitir una vez, solo para esta propuesta"
+        },
+        consequences: "El título se sustituirá. Es reversible.",
+        status: "pending",
+        requestedAt: "2026-08-01T09:00:00Z",
+        resolvedAt: null
+      })
+    );
+
+    expect(detail.action).toBe("Renombrar la conversación");
+    expect(detail.tool).toBe("rename_conversation");
+    expect(detail.resource).toBe("La conversación abierta");
+    expect(detail.data).toEqual([
+      { label: "Título propuesto", value: "Presupuesto de obra" }
+    ]);
+    expect(detail.destination).toBe("Solo esta aplicación; nada sale del equipo");
+    expect(detail.scope).toBe("Permitir una vez, solo para esta propuesta");
+    expect(detail.consequences).toBe("El título se sustituirá. Es reversible.");
+  });
+
+  it("no tranquiliza cuando falta el expediente", () => {
+    const detail = confirmationSummary(call(null));
+
+    expect(detail.resource).toBe("Recursos no declarados");
+    expect(detail.destination).toBe("Destino no declarado");
+    expect(detail.consequences).toContain("no puede anticipar");
+    expect(detail.data).toEqual([]);
   });
 });

@@ -90,8 +90,8 @@
     "semantic_hash": "7748ceb0e39583617ab2a6f9ddd07a31"
   },
   "apps/desktop/src/App.tsx": {
-    "mtime": 1785508639.4842124,
-    "ast_hash": "fb17bac2fa0e83d21cb8be68ca6ca04e",
+    "mtime": 1785509972.3577385,
+    "ast_hash": "862bde272593d1d41c6f45d09e2a9a30",
     "semantic_hash": ""
   },
   "apps/desktop/src/domain.test.ts": {
@@ -155,8 +155,8 @@
     "semantic_hash": ""
   },
   "tests/test_foundations.py": {
-    "mtime": 1785348155.1830645,
-    "ast_hash": "6d0f6c3c1a76ca23e99d3128f7a1bfc3",
+    "mtime": 1785510216.134583,
+    "ast_hash": "7b97e7da5a7d922c16b51314004c25c8",
     "semantic_hash": ""
   },
   "tsconfig.app.json": {
@@ -180,14 +180,14 @@
     "semantic_hash": "4ac0ed2bd1a0c35c0a3de1c80992aa69"
   },
   "README.md": {
-    "mtime": 1785508906.6000986,
-    "ast_hash": "d0d2910594879af128b118e1b6040321",
+    "mtime": 1785510217.7581134,
+    "ast_hash": "5d37e071ccdbe38b01bbf770cce1807e",
     "semantic_hash": ""
   },
   "apps/desktop/index.html": {
-    "mtime": 1784485742.9053197,
-    "ast_hash": "db29d43777db2ea9889c7a287a8868a3",
-    "semantic_hash": "db29d43777db2ea9889c7a287a8868a3"
+    "mtime": 1785509954.614182,
+    "ast_hash": "7236285376c6996e213d769c48ad8f09",
+    "semantic_hash": ""
   },
   "diagnostico-adjuntos.txt": {
     "mtime": 1784580940.4084623,
@@ -195,8 +195,8 @@
     "semantic_hash": "45edd92bbdecac33e72f49f2fc3cc7f4"
   },
   "docs/ARCHITECTURE.md": {
-    "mtime": 1785508911.1447928,
-    "ast_hash": "20d4566bfe695ee389b50cb3e30d1e09",
+    "mtime": 1785510219.3663812,
+    "ast_hash": "bafdbe773bb1c58c35de97acce40a49a",
     "semantic_hash": ""
   },
   "docs/PHASE_0_VERIFICATION.md": {
@@ -425,8 +425,8 @@
     "semantic_hash": ""
   },
   "docs/PHASE_4_VERIFICATION.md": {
-    "mtime": 1785508912.8944638,
-    "ast_hash": "24f27abc9ffc84695371d07041f459e3",
+    "mtime": 1785510220.9513376,
+    "ast_hash": "4d81afd8d650a859cd72150bf46d06b8",
     "semantic_hash": ""
   },
   "graphify-out/memory/query_20260728_204156_cuando_lanzo_una_petici_n__la_ventana_donde_aparec.md": {
@@ -602,6 +602,21 @@
   "graphify-out/memory/query_20260731_141002_ok__sigue_con_el_desarrollo.md": {
     "mtime": 1785507002.7393258,
     "ast_hash": "3f51cbf05afce51f3485f79f50f95922",
+    "semantic_hash": ""
+  },
+  "apps/desktop/src/appearance.test.ts": {
+    "mtime": 1785509953.0660007,
+    "ast_hash": "fe68e3b907705a7979804674883e3598",
+    "semantic_hash": ""
+  },
+  "apps/desktop/src/appearance.ts": {
+    "mtime": 1785509951.4696257,
+    "ast_hash": "565e84a9086f7b87b2168f585ff0c139",
+    "semantic_hash": ""
+  },
+  "graphify-out/memory/query_20260731_144656_ok__sigue_con_el_desarrollo.md": {
+    "mtime": 1785509216.2768774,
+    "ast_hash": "db46c5e8daaa4a7c958bee5bd304f2a3",
     "semantic_hash": ""
   }
 }

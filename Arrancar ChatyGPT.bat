@@ -71,6 +71,19 @@ echo.
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command ^
   "$ErrorActionPreference = 'Stop';" ^
   "$env:CHATYGPT_BROKER_BASE_URL = 'http://192.168.1.52:8765';" ^
+  "$secretPath = Join-Path $env:LOCALAPPDATA 'es.jfeliciano.chatygpt\credentials\broker-token.dpapi';" ^
+  "if (-not $env:AI_BROKER_ADMIN_TOKEN -and (Test-Path -LiteralPath $secretPath)) {" ^
+  "  try {" ^
+  "    Add-Type -AssemblyName System.Security;" ^
+  "    $protected = [IO.File]::ReadAllBytes($secretPath);" ^
+  "    $plain = [Security.Cryptography.ProtectedData]::Unprotect($protected, $null, [Security.Cryptography.DataProtectionScope]::CurrentUser);" ^
+  "    $env:AI_BROKER_ADMIN_TOKEN = [Text.Encoding]::UTF8.GetString($plain);" ^
+  "    [Array]::Clear($plain, 0, $plain.Length);" ^
+  "    Write-Host 'Usando la credencial guardada en ChatyGPT.';" ^
+  "  } catch {" ^
+  "    Write-Host 'La credencial guardada no se pudo descifrar; se pedira el token.';" ^
+  "  }" ^
+  "}" ^
   "if (-not $env:AI_BROKER_ADMIN_TOKEN) {" ^
   "  $secureToken = Read-Host 'Token actual de Broker AI' -AsSecureString;" ^
   "  $credential = New-Object System.Management.Automation.PSCredential('broker', $secureToken);" ^

@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::{Path, PathBuf, MAIN_SEPARATOR};
 
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
@@ -35,9 +35,11 @@ const CUSTOM_GPT_FILES_MIGRATION: &str = include_str!("../../migrations/0013_cus
 const RESEARCH_RUNS_MIGRATION: &str = include_str!("../../migrations/0014_research_runs.sql");
 const SCHEDULED_TASK_TEMPLATES_MIGRATION: &str =
     include_str!("../../migrations/0015_scheduled_task_templates.sql");
+const CONFIRMATION_REQUESTS_MIGRATION: &str =
+    include_str!("../../migrations/0016_confirmation_requests.sql");
 const RECOVER_NON_TERMINAL_TASKS: &str =
     include_str!("../../queries/recover_non_terminal_tasks.sql");
-pub const SCHEMA_VERSION: i64 = 15;
+pub const SCHEMA_VERSION: i64 = 16;
 
 #[derive(Clone)]
 pub struct Database {
@@ -194,6 +196,26 @@ pub struct ToolCallView {
     pub name: String,
     pub arguments: Value,
     pub status: String,
+    /// Expediente durable de la confirmación exigida antes de ejecutar.
+    pub confirmation: Option<ConfirmationRequestView>,
+}
+
+/// Proyección del expediente de confirmación que ve la persona antes de decidir.
+///
+/// Reúne los siete elementos que la aplicación debe mostrar: acción, herramienta,
+/// recursos afectados, datos que se enviarán, destino, consecuencias y alcance.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfirmationRequestView {
+    pub id: String,
+    pub action_type: String,
+    pub tool_name: Option<String>,
+    pub resources: Value,
+    pub disclosure: Value,
+    pub consequences: String,
+    pub status: String,
+    pub requested_at: String,
+    pub resolved_at: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -201,6 +223,108 @@ pub struct ToolOutcomeRecord {
     pub tool_call_id: String,
     pub status: String,
     pub content: String,
+}
+
+/// Carpeta que la persona autorizó explícitamente para escribir en ella.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthorizedFolderView {
+    pub id: String,
+    pub path: String,
+    pub display_name: String,
+    pub permissions: Value,
+    pub granted_at: String,
+    pub revoked_at: Option<String>,
+}
+
+/// Clave estable de una carpeta para comparar autorizaciones.
+///
+/// Canonicaliza cuando la ruta existe, retira el prefijo extendido de Windows y
+/// normaliza mayúsculas, porque su sistema de archivos no las distingue. Una
+/// ruta que todavía no existe se compara tal cual, nunca se inventa.
+fn folder_key(path: &Path) -> String {
+    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let rendered = canonical.to_string_lossy().into_owned();
+    let rendered = rendered
+        .strip_prefix(r"\\?\")
+        .map(str::to_owned)
+        .unwrap_or(rendered);
+    let trimmed = rendered
+        .trim_end_matches(MAIN_SEPARATOR)
+        .trim_end_matches('/')
+        .to_owned();
+    let trimmed = if trimmed.is_empty() {
+        rendered
+    } else {
+        trimmed
+    };
+    if cfg!(windows) {
+        trimmed.to_lowercase()
+    } else {
+        trimmed
+    }
+}
+
+/// Describe una acción propuesta en los términos que exige una confirmación.
+///
+/// Devuelve el tipo de acción, los recursos afectados, la revelación —datos que
+/// se enviarán, destino y alcance temporal— y las consecuencias. Una herramienta
+/// desconocida recibe la descripción más restrictiva posible en lugar de una
+/// genérica tranquilizadora.
+pub(crate) fn confirmation_blueprint(
+    tool_name: &str,
+    arguments: &Value,
+    conversation_id: Option<&str>,
+) -> (String, Value, Value, String) {
+    match tool_name {
+        "rename_conversation" => {
+            let proposed = arguments
+                .get("title")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            (
+                "conversation.rename".to_owned(),
+                serde_json::json!({
+                    "kind": "conversation",
+                    "conversation_id": conversation_id,
+                    "label": "La conversación abierta"
+                }),
+                serde_json::json!({
+                    "action_label": "Renombrar la conversación",
+                    "data_sent": [{"label": "Título propuesto", "value": proposed}],
+                    "destination": "local",
+                    "destination_label": "Solo esta aplicación; nada sale del equipo",
+                    "scope": "one_time",
+                    "scope_label": "Permitir una vez, solo para esta propuesta"
+                }),
+                "El título de la conversación se sustituirá por el propuesto. \
+                 Es reversible: puedes volver a cambiarlo a mano cuando quieras."
+                    .to_owned(),
+            )
+        }
+        other => (
+            "tool.unknown".to_owned(),
+            serde_json::json!({
+                "kind": "unknown",
+                "conversation_id": conversation_id,
+                "label": "Recursos no declarados"
+            }),
+            serde_json::json!({
+                "action_label": format!("Ejecutar la herramienta {other}"),
+                "data_sent": [{
+                    "label": "Argumentos recibidos",
+                    "value": arguments.to_string()
+                }],
+                "destination": "unknown",
+                "destination_label": "Destino no declarado por la aplicación",
+                "scope": "one_time",
+                "scope_label": "Permitir una vez"
+            }),
+            "ChatyGPT no reconoce esta herramienta y no puede anticipar sus \
+             consecuencias. Recházala salvo que sepas exactamente qué hace."
+                .to_owned(),
+        ),
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -997,9 +1121,16 @@ impl Database {
             transaction.commit()?;
         }
         let current: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if current < SCHEMA_VERSION {
+        if current < 15 {
             let transaction = connection.transaction()?;
             transaction.execute_batch(SCHEDULED_TASK_TEMPLATES_MIGRATION)?;
+            transaction.pragma_update(None, "user_version", 15)?;
+            transaction.commit()?;
+        }
+        let current: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        if current < SCHEMA_VERSION {
+            let transaction = connection.transaction()?;
+            transaction.execute_batch(CONFIRMATION_REQUESTS_MIGRATION)?;
             transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             transaction.commit()?;
         }
@@ -6881,6 +7012,47 @@ impl Database {
                         arguments.to_string()
                     ],
                 )?;
+                // El expediente de confirmación nace junto a la llamada, antes de
+                // que nadie pueda decidir: así queda constancia de qué se propuso
+                // aunque la persona cierre la aplicación sin responder.
+                let local_call_id: String = transaction.query_row(
+                    "SELECT id FROM tool_calls
+                     WHERE broker_task_id = ?1 AND remote_tool_call_id = ?2",
+                    params![id, remote_tool_call_id],
+                    |row| row.get(0),
+                )?;
+                let already_recorded: Option<String> = transaction
+                    .query_row(
+                        "SELECT id FROM confirmation_requests WHERE tool_call_id = ?1",
+                        params![local_call_id],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                if already_recorded.is_none() {
+                    let conversation_id: Option<String> = transaction.query_row(
+                        "SELECT conversation_id FROM broker_tasks WHERE id = ?1",
+                        params![id],
+                        |row| row.get(0),
+                    )?;
+                    let (action_type, resources, disclosure, consequences) =
+                        confirmation_blueprint(tool_name, &arguments, conversation_id.as_deref());
+                    transaction.execute(
+                        "INSERT INTO confirmation_requests(
+                            id, action_type, tool_name, resources_json, disclosure_json,
+                            consequences, status, tool_call_id, conversation_id
+                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7, ?8)",
+                        params![
+                            format!("confirm_{}", Uuid::new_v4().simple()),
+                            action_type,
+                            tool_name,
+                            resources.to_string(),
+                            disclosure.to_string(),
+                            consequences,
+                            local_call_id,
+                            conversation_id
+                        ],
+                    )?;
+                }
             }
         }
         if previous != state.status.as_str() && state.status.is_terminal() {
@@ -7133,10 +7305,14 @@ impl Database {
     pub fn pending_tool_calls(&self, local_task_id: &str) -> Result<Vec<ToolCallView>, AppError> {
         let connection = self.connect()?;
         let mut statement = connection.prepare(
-            "SELECT remote_tool_call_id, tool_name, arguments_json, status
-             FROM tool_calls
-             WHERE broker_task_id = ?1 AND status = 'confirmation_required'
-             ORDER BY requested_at, id",
+            "SELECT call.remote_tool_call_id, call.tool_name, call.arguments_json, call.status,
+                    request.id, request.action_type, request.tool_name, request.resources_json,
+                    request.disclosure_json, request.consequences, request.status,
+                    request.requested_at, request.resolved_at
+             FROM tool_calls call
+             LEFT JOIN confirmation_requests request ON request.tool_call_id = call.id
+             WHERE call.broker_task_id = ?1 AND call.status = 'confirmation_required'
+             ORDER BY call.requested_at, call.id",
         )?;
         let calls = statement
             .query_map(params![local_task_id], |row| {
@@ -7148,11 +7324,32 @@ impl Database {
                         Box::new(error),
                     )
                 })?;
+                let confirmation_id: Option<String> = row.get(4)?;
+                let confirmation = match confirmation_id {
+                    Some(id) => {
+                        let resources_json: String = row.get(7)?;
+                        let disclosure_json: String = row.get(8)?;
+                        Some(ConfirmationRequestView {
+                            id,
+                            action_type: row.get(5)?,
+                            tool_name: row.get(6)?,
+                            resources: serde_json::from_str(&resources_json).unwrap_or(Value::Null),
+                            disclosure: serde_json::from_str(&disclosure_json)
+                                .unwrap_or(Value::Null),
+                            consequences: row.get(9)?,
+                            status: row.get(10)?,
+                            requested_at: row.get(11)?,
+                            resolved_at: row.get(12)?,
+                        })
+                    }
+                    None => None,
+                };
                 Ok(ToolCallView {
                     tool_call_id: row.get(0)?,
                     name: row.get(1)?,
                     arguments,
                     status: row.get(3)?,
+                    confirmation,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -7202,6 +7399,97 @@ impl Database {
                    AND status = 'confirmation_required'",
                 params![local_task_id, outcome.tool_call_id],
                 |row| row.get(0),
+            )?;
+            // La confirmación se resuelve en la misma transacción que ejecuta la
+            // decisión: sin expediente pendiente no hay ejecución posible, y un
+            // segundo intento sobre el mismo expediente se rechaza.
+            let confirmation_status = if outcome.status == "approved" {
+                "allowed_once"
+            } else {
+                "cancelled"
+            };
+            let resolved = transaction.execute(
+                "UPDATE confirmation_requests
+                 SET status = ?2, resolved_at = datetime('now')
+                 WHERE tool_call_id = ?1 AND status = 'pending'",
+                params![local_call_id, confirmation_status],
+            )?;
+            if resolved == 0 {
+                let existing: Option<String> = transaction
+                    .query_row(
+                        "SELECT status FROM confirmation_requests WHERE tool_call_id = ?1",
+                        params![local_call_id],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                match existing {
+                    Some(status) => {
+                        return Err(AppError::Conflict(format!(
+                            "esta confirmación ya se resolvió como {status}; \
+                             vuelve a abrir la conversación para ver su estado"
+                        )));
+                    }
+                    // Tarea heredada de un esquema anterior al expediente: se deja
+                    // constancia de la decisión en lugar de bloquear la respuesta.
+                    None => {
+                        let conversation_id: Option<String> = transaction.query_row(
+                            "SELECT conversation_id FROM broker_tasks WHERE id = ?1",
+                            params![local_task_id],
+                            |row| row.get(0),
+                        )?;
+                        let tool_name: String = transaction.query_row(
+                            "SELECT tool_name FROM tool_calls WHERE id = ?1",
+                            params![local_call_id],
+                            |row| row.get(0),
+                        )?;
+                        let arguments_json: String = transaction.query_row(
+                            "SELECT arguments_json FROM tool_calls WHERE id = ?1",
+                            params![local_call_id],
+                            |row| row.get(0),
+                        )?;
+                        let arguments: Value =
+                            serde_json::from_str(&arguments_json).unwrap_or(Value::Null);
+                        let (action_type, resources, disclosure, consequences) =
+                            confirmation_blueprint(
+                                &tool_name,
+                                &arguments,
+                                conversation_id.as_deref(),
+                            );
+                        transaction.execute(
+                            "INSERT INTO confirmation_requests(
+                                id, action_type, tool_name, resources_json, disclosure_json,
+                                consequences, status, requested_at, resolved_at,
+                                tool_call_id, conversation_id
+                             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, datetime('now'),
+                                       datetime('now'), ?8, ?9)",
+                            params![
+                                format!("confirm_{}", Uuid::new_v4().simple()),
+                                action_type,
+                                tool_name,
+                                resources.to_string(),
+                                disclosure.to_string(),
+                                consequences,
+                                confirmation_status,
+                                local_call_id,
+                                conversation_id
+                            ],
+                        )?;
+                    }
+                }
+            }
+            transaction.execute(
+                "INSERT INTO audit_events(
+                    event_type, actor, conversation_id, broker_task_id, payload_json
+                 ) VALUES ('confirmation.resolved', 'user',
+                           (SELECT conversation_id FROM broker_tasks WHERE id = ?1), ?1, ?2)",
+                params![
+                    local_task_id,
+                    serde_json::json!({
+                        "decision": confirmation_status,
+                        "tool_call_id": local_call_id
+                    })
+                    .to_string()
+                ],
             )?;
             transaction.execute(
                 "UPDATE tool_calls SET status = ?2 WHERE id = ?1",
@@ -7768,6 +8056,104 @@ impl Database {
         })
     }
 
+    /// Autoriza una carpeta para escritura tras una elección humana explícita.
+    ///
+    /// Reautorizar una carpeta previamente revocada la reactiva y actualiza su
+    /// motivo, sin duplicar la fila.
+    pub fn authorize_folder(
+        &self,
+        folder: &Path,
+        display_name: &str,
+        purpose: &str,
+    ) -> Result<(), AppError> {
+        let key = folder_key(folder);
+        let connection = self.connect()?;
+        connection.execute(
+            "INSERT INTO authorized_folders(
+                id, canonical_path, display_name, permissions_json
+             ) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(canonical_path) DO UPDATE SET
+                display_name = excluded.display_name,
+                permissions_json = excluded.permissions_json,
+                granted_at = datetime('now'),
+                revoked_at = NULL",
+            params![
+                format!("folder_{}", Uuid::new_v4().simple()),
+                key,
+                display_name,
+                serde_json::json!({"write": true, "purpose": purpose}).to_string()
+            ],
+        )?;
+        connection.execute(
+            "INSERT INTO audit_events(event_type, actor, payload_json)
+             VALUES ('authorized_folder.granted', 'user', ?1)",
+            params![serde_json::json!({"purpose": purpose}).to_string()],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_authorized_folders(&self) -> Result<Vec<AuthorizedFolderView>, AppError> {
+        let connection = self.connect()?;
+        let mut statement = connection.prepare(
+            "SELECT id, canonical_path, display_name, permissions_json, granted_at, revoked_at
+             FROM authorized_folders
+             ORDER BY revoked_at IS NOT NULL, granted_at DESC",
+        )?;
+        let folders = statement
+            .query_map([], |row| {
+                let permissions_json: String = row.get(3)?;
+                Ok(AuthorizedFolderView {
+                    id: row.get(0)?,
+                    path: row.get(1)?,
+                    display_name: row.get(2)?,
+                    permissions: serde_json::from_str(&permissions_json).unwrap_or(Value::Null),
+                    granted_at: row.get(4)?,
+                    revoked_at: row.get(5)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(folders)
+    }
+
+    /// Revoca una carpeta: las exportaciones posteriores exigirán volver a
+    /// elegirla en el selector nativo.
+    pub fn revoke_authorized_folder(&self, id: &str) -> Result<(), AppError> {
+        let connection = self.connect()?;
+        let affected = connection.execute(
+            "UPDATE authorized_folders SET revoked_at = datetime('now')
+             WHERE id = ?1 AND revoked_at IS NULL",
+            params![id],
+        )?;
+        if affected == 0 {
+            return Err(AppError::NotFound(
+                "la carpeta autorizada no existe o ya estaba revocada".to_owned(),
+            ));
+        }
+        connection.execute(
+            "INSERT INTO audit_events(event_type, actor, payload_json)
+             VALUES ('authorized_folder.revoked', 'user', '{}')",
+            [],
+        )?;
+        Ok(())
+    }
+
+    /// Indica si un destino cae dentro de una carpeta autorizada y vigente.
+    ///
+    /// Acepta descendientes —la exportación a Obsidian escribe en subcarpetas de
+    /// la bóveda— pero nunca una carpeta hermana con nombre parecido.
+    pub fn write_is_authorized(&self, destination: &Path) -> Result<bool, AppError> {
+        let target = folder_key(destination);
+        let connection = self.connect()?;
+        let mut statement = connection
+            .prepare("SELECT canonical_path FROM authorized_folders WHERE revoked_at IS NULL")?;
+        let authorized = statement
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(authorized.iter().any(|folder| {
+            target == *folder || target.starts_with(&format!("{folder}{MAIN_SEPARATOR}"))
+        }))
+    }
+
     pub fn record_scheduled_history_export(
         &self,
         destination_path: &str,
@@ -7824,6 +8210,20 @@ impl Database {
                 "enabled": enabled,
                 "credential_protected": credential_protected,
                 "scope": "current_user"
+            })
+            .to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// Deja constancia de que la credencial cambió, nunca de su valor.
+    pub fn record_broker_credential_changed(&self, stored: bool) -> Result<(), AppError> {
+        self.connect()?.execute(
+            "INSERT INTO audit_events(event_type, actor, payload_json)
+             VALUES ('broker_credential.changed', 'user', ?1)",
+            params![serde_json::json!({
+                "stored": stored,
+                "protection": "dpapi_current_user"
             })
             .to_string()],
         )?;
@@ -9973,6 +10373,152 @@ mod tests {
             .expect("snapshot should load")
             .pending_tool_calls
             .is_empty());
+        cleanup(&database);
+    }
+
+    #[test]
+    fn tool_confirmation_is_disclosed_persisted_and_cannot_be_replayed() {
+        let database = test_database();
+        let conversation = database
+            .create_conversation("Confirmación durable", None)
+            .expect("conversation should be created");
+        let context = vec![ContextMessage {
+            message_id: "confirm-user-message".to_owned(),
+            role: "user".to_owned(),
+            text: "Renombra este chat".to_owned(),
+        }];
+        database
+            .prepare_chat_turn(
+                &conversation.id,
+                "confirm-user-message",
+                "confirm-assistant-message",
+                "local-confirm-task",
+                "confirm-idempotency-key",
+                "Renombra este chat",
+                &serde_json::json!({}),
+                &context,
+                &[],
+                &[],
+                &[],
+            )
+            .expect("turn should be prepared");
+        let waiting: TaskState = serde_json::from_value(serde_json::json!({
+            "task_id": "remote-confirm-task",
+            "status": "waiting_for_tools",
+            "request_id": "request-confirm",
+            "created_at": "2026-08-01T00:00:00Z",
+            "updated_at": "2026-08-01T00:00:01Z",
+            "execution_strategy": "agent",
+            "execution_preset": "fast",
+            "selection_mode": "automatic",
+            "progress": {},
+            "result": {
+                "status": "waiting_for_tools",
+                "pending_tool_calls": [{
+                    "id": "call-confirm-1",
+                    "name": "rename_conversation",
+                    "arguments": {"title": "Presupuesto de obra"}
+                }]
+            },
+            "error": null
+        }))
+        .expect("waiting state should deserialize");
+        database
+            .record_remote_state("local-confirm-task", &waiting)
+            .expect("waiting state should persist");
+
+        // El expediente nace pendiente y revela los siete elementos exigidos.
+        let pending = database
+            .pending_tool_calls("local-confirm-task")
+            .expect("pending calls should load");
+        let confirmation = pending[0]
+            .confirmation
+            .as_ref()
+            .expect("la llamada debe traer su expediente de confirmación");
+        assert_eq!(confirmation.status, "pending");
+        assert_eq!(confirmation.action_type, "conversation.rename");
+        assert_eq!(
+            confirmation.tool_name.as_deref(),
+            Some("rename_conversation")
+        );
+        assert_eq!(confirmation.resources["conversation_id"], conversation.id);
+        assert_eq!(
+            confirmation.disclosure["data_sent"][0]["value"],
+            "Presupuesto de obra"
+        );
+        assert_eq!(confirmation.disclosure["destination"], "local");
+        assert_eq!(confirmation.disclosure["scope"], "one_time");
+        assert!(confirmation.consequences.contains("reversible"));
+        assert!(confirmation.resolved_at.is_none());
+
+        // Sobrevive a un reinicio: el expediente se lee desde SQLite, no de memoria.
+        let reopened = Database::open(database.path())
+            .expect("database should reopen without losing the record");
+        assert_eq!(
+            reopened
+                .pending_tool_calls("local-confirm-task")
+                .expect("pending calls should reload")[0]
+                .confirmation
+                .as_ref()
+                .expect("el expediente debe seguir ahí")
+                .status,
+            "pending"
+        );
+
+        database
+            .prepare_tool_outcomes(
+                "local-confirm-task",
+                &[ToolOutcomeRecord {
+                    tool_call_id: "call-confirm-1".to_owned(),
+                    status: "approved".to_owned(),
+                    content: serde_json::json!({"ok": true}).to_string(),
+                }],
+            )
+            .expect("decision should persist");
+
+        let connection = database.connect().expect("connection should open");
+        let (status, resolved_at): (String, Option<String>) = connection
+            .query_row(
+                "SELECT status, resolved_at FROM confirmation_requests
+                 WHERE conversation_id = ?1",
+                params![conversation.id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("resolved confirmation should exist");
+        assert_eq!(status, "allowed_once");
+        assert!(resolved_at.is_some(), "la resolución debe quedar fechada");
+
+        let audited: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events
+                 WHERE event_type = 'confirmation.resolved'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("audit count should load");
+        assert_eq!(audited, 1);
+
+        // Si la interfaz reenviara la misma decisión, el expediente ya resuelto
+        // impide una segunda ejecución aunque la llamada vuelva a estar pendiente.
+        connection
+            .execute(
+                "UPDATE tool_calls SET status = 'confirmation_required'
+                 WHERE remote_tool_call_id = 'call-confirm-1'",
+                [],
+            )
+            .expect("replay scenario should be forced");
+        let replay = database.prepare_tool_outcomes(
+            "local-confirm-task",
+            &[ToolOutcomeRecord {
+                tool_call_id: "call-confirm-1".to_owned(),
+                status: "approved".to_owned(),
+                content: serde_json::json!({"ok": true}).to_string(),
+            }],
+        );
+        assert!(
+            matches!(replay, Err(AppError::Conflict(_))),
+            "una confirmación ya resuelta no puede volver a ejecutarse: {replay:?}"
+        );
         cleanup(&database);
     }
 

@@ -14,6 +14,7 @@ use crate::db::{
     MemorySearchView, ProjectInstructionContext, SelectedAttachmentChunk, ToolOutcomeRecord,
 };
 use crate::error::AppError;
+use crate::logging;
 
 #[derive(Debug, Clone, Default)]
 struct ChatExecutionOptions {
@@ -537,6 +538,16 @@ pub fn resolve_tool_calls(
         .map(|decision| (decision.tool_call_id.as_str(), decision.approved))
         .collect();
     for call in &pending {
+        // El expediente durable manda: una confirmación ya resuelta no vuelve a
+        // ejecutarse, aunque la interfaz reenvíe la decisión.
+        if let Some(confirmation) = &call.confirmation {
+            if confirmation.status != "pending" {
+                return Err(AppError::Conflict(format!(
+                    "la confirmación de {} ya se resolvió como {}",
+                    call.name, confirmation.status
+                )));
+            }
+        }
         if decisions_by_id[call.tool_call_id.as_str()] {
             if !persisted_custom_gpt_allows_tool(&persisted_request, &call.name) {
                 return Err(AppError::Conflict(format!(
@@ -696,6 +707,11 @@ pub async fn cancel_task(
         AppError::BrokerContract("la tarea todavía no tiene identificador remoto".to_owned())
     })?;
     let state = broker.cancel_task(&remote_id).await?;
+    logging::info(
+        "task.cancel_requested",
+        Some(local_id),
+        &[("status", logging::code(state.status.as_str()))],
+    );
     database.record_remote_state(local_id, &state)?;
     advance_semantic_chat(database.clone(), broker, local_id);
     database.task_snapshot(local_id)
@@ -711,11 +727,36 @@ async fn submit_or_resume(
     }
     database.mark_submitting(&record.id)?;
     match broker.create_task(&record.request).await {
-        Ok(accepted) => database.attach_remote_task(&record.id, &accepted),
+        Ok(accepted) => {
+            // Enlaza la identidad local con la remota: es la traza que permite
+            // reconstruir después qué tarea del Broker atendió este turno.
+            logging::info(
+                "task.submitted",
+                Some(&record.id),
+                &[
+                    ("remote_task_id", logging::id(&accepted.task_id)),
+                    ("status", logging::code(accepted.status.as_str())),
+                ],
+            );
+            database.attach_remote_task(&record.id, &accepted)
+        }
         Err(error) => {
             if is_permanent(&error) {
+                logging::error(
+                    "task.orphaned",
+                    Some(&record.id),
+                    &[
+                        ("phase", logging::code("submit")),
+                        ("error_kind", logging::error_kind(&error)),
+                    ],
+                );
                 database.mark_orphaned(&record.id, &error.to_string())?;
             } else {
+                logging::warn(
+                    "task.submit_retry",
+                    Some(&record.id),
+                    &[("error_kind", logging::error_kind(&error))],
+                );
                 database.record_transport_error(&record.id, &error.to_string())?;
             }
             Err(error)
@@ -785,6 +826,14 @@ fn spawn_polling(database: Database, broker: BrokerClient, local_id: String) {
                         return;
                     }
                     if state.status.is_terminal() || status == "waiting_for_tools" {
+                        logging::info(
+                            "task.state_settled",
+                            Some(&local_id),
+                            &[
+                                ("status", logging::code(&status)),
+                                ("polls", logging::count(poll_no as i64)),
+                            ],
+                        );
                         if state.status.is_terminal() {
                             advance_semantic_chat(database.clone(), broker.clone(), &local_id);
                             if let Ok(Some(attachment_id)) =
@@ -809,9 +858,22 @@ fn spawn_polling(database: Database, broker: BrokerClient, local_id: String) {
                 }
                 Err(error) => {
                     if is_permanent(&error) {
+                        logging::error(
+                            "task.orphaned",
+                            Some(&local_id),
+                            &[
+                                ("phase", logging::code("poll")),
+                                ("error_kind", logging::error_kind(&error)),
+                            ],
+                        );
                         let _ = database.mark_orphaned(&local_id, &error.to_string());
                         return;
                     }
+                    logging::warn(
+                        "task.poll_error",
+                        Some(&local_id),
+                        &[("error_kind", logging::error_kind(&error))],
+                    );
                     let _ = database.record_transport_error(&local_id, &error.to_string());
                     unchanged_polls = unchanged_polls.saturating_add(1);
                 }
