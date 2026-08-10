@@ -19,6 +19,7 @@ import {
   canRevealContextSource,
   confirmationSummary,
   formatResponseDuration,
+  formatResponseUsage,
   filterProjectKnowledge,
   filterScheduledRuns,
   filterScheduledTasks,
@@ -3708,7 +3709,11 @@ export function App() {
                           </section>
                         ))}
                     {message.role === "assistant" &&
-                      (message.modelUsed || message.responseDurationMs !== undefined) && (
+                      (message.modelUsed ||
+                        message.responseDurationMs !== undefined ||
+                        message.usage ||
+                        message.fallbackUsed ||
+                        message.longContext) && (
                         <div className="message-meta">
                           {message.modelUsed && (
                             <small>
@@ -3721,6 +3726,11 @@ export function App() {
                               {formatResponseDuration(message.responseDurationMs)}
                             </small>
                           )}
+                          {formatResponseUsage(message.usage) && (
+                            <small>Uso: {formatResponseUsage(message.usage)}</small>
+                          )}
+                          {message.fallbackUsed && <small>El Broker utilizó un modelo alternativo</small>}
+                          {message.longContext && <small>Contexto largo procesado por el Broker</small>}
                         </div>
                       )}
                     {message.role === "assistant" &&

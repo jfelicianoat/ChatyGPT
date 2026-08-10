@@ -856,6 +856,15 @@ fn validated_custom_gpt_tool_permissions(
     Ok(permissions.clone())
 }
 
+/// Texto principal de una respuesta del contrato actual. `result_markdown` se
+/// conserva como alias de lectura para tareas creadas con Brokers anteriores.
+fn assistant_result_text(result: &Value) -> Option<&str> {
+    result
+        .get("assistant_content")
+        .and_then(Value::as_str)
+        .or_else(|| result.get("result_markdown").and_then(Value::as_str))
+}
+
 fn markdown_web_sources(markdown: &str) -> Vec<(String, String)> {
     fn push_source(
         sources: &mut Vec<(String, String)>,
@@ -939,6 +948,9 @@ pub struct ConversationMessage {
     pub error: Option<Value>,
     pub model_used: Option<ModelUsedView>,
     pub response_duration_ms: Option<i64>,
+    pub usage: Option<Value>,
+    pub fallback_used: Option<bool>,
+    pub long_context: Option<Value>,
     pub sources: Vec<ConversationSource>,
     pub created_at: String,
 }
@@ -6647,7 +6659,10 @@ impl Database {
                                     * 86400000.0
                             )
                         ) AS INTEGER)
-                    END
+                    END,
+                    json_extract(bt.result_json, '$.usage'),
+                    json_extract(bt.result_json, '$.fallback_used'),
+                    json_extract(bt.result_json, '$.long_context')
              FROM messages m
              LEFT JOIN message_parts mp ON mp.message_id = m.id AND mp.ordinal = 0
              LEFT JOIN broker_tasks bt ON bt.id = m.broker_task_id
@@ -6660,6 +6675,9 @@ impl Database {
                 let model_provider: Option<String> = row.get(10)?;
                 let model_deployment: Option<String> = row.get(11)?;
                 let model_name: Option<String> = row.get(12)?;
+                let usage_json: Option<String> = row.get(14)?;
+                let fallback_used: Option<i64> = row.get(15)?;
+                let long_context_json: Option<String> = row.get(16)?;
                 Ok(ConversationMessage {
                     id: row.get(0)?,
                     role: row.get(1)?,
@@ -6679,6 +6697,10 @@ impl Database {
                         _ => None,
                     },
                     response_duration_ms: row.get(13)?,
+                    usage: usage_json.and_then(|value| serde_json::from_str(&value).ok()),
+                    fallback_used: fallback_used.map(|value| value != 0),
+                    long_context: long_context_json
+                        .and_then(|value| serde_json::from_str(&value).ok()),
                     sources: Vec::new(),
                     created_at: row.get(9)?,
                 })
@@ -7133,8 +7155,7 @@ impl Database {
                     let markdown = state
                         .result
                         .as_ref()
-                        .and_then(|result| result.get("result_markdown"))
-                        .and_then(Value::as_str)
+                        .and_then(assistant_result_text)
                         .map(str::trim)
                         .filter(|value| !value.is_empty())
                         .ok_or_else(|| {
@@ -7386,8 +7407,7 @@ impl Database {
                         let markdown = state
                             .result
                             .as_ref()
-                            .and_then(|result| result.get("result_markdown"))
-                            .and_then(Value::as_str)
+                            .and_then(assistant_result_text)
                             .unwrap_or("La tarea terminó sin contenido Markdown.")
                             .to_owned();
                         ("complete", "markdown", Some(markdown), None)
@@ -7501,8 +7521,7 @@ impl Database {
                         let markdown = state
                             .result
                             .as_ref()
-                            .and_then(|result| result.get("result_markdown"))
-                            .and_then(Value::as_str)
+                            .and_then(assistant_result_text)
                             .unwrap_or_default();
                         let first_ordinal: i64 = transaction.query_row(
                             "SELECT COALESCE(MAX(ordinal), -1) + 1

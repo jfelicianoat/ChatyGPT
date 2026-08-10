@@ -191,8 +191,14 @@ pub async fn start_chat_turn(
                 "la versión seleccionada del GPT mantiene Código aislado denegado".to_owned(),
             ));
         }
-        let capabilities = broker.capabilities().await?;
-        validate_sandbox_capability(&capabilities)?;
+        match broker.capabilities().await {
+            Ok(capabilities) => validate_sandbox_capability(&capabilities)?,
+            Err(_) => logging::warn(
+                "broker.capabilities_unverified_for_sandbox",
+                None,
+                &[("fallback", logging::code("broker_validation"))],
+            ),
+        }
     }
     let document_chunks = database.select_attachment_chunks(
         conversation_id,
@@ -214,8 +220,17 @@ pub async fn start_chat_turn(
     // El plan se decide antes de persistir nada: si el Broker no anuncia las
     // herramientas necesarias, el turno se rechaza sin dejar un mensaje a medias.
     let research_plan = if research_mode {
-        let capabilities = broker.capabilities().await?;
-        Some(deep_research_plan(&capabilities)?)
+        Some(match broker.capabilities().await {
+            Ok(capabilities) => deep_research_plan(&capabilities)?,
+            Err(_) => {
+                logging::warn(
+                    "broker.capabilities_unverified_for_research",
+                    None,
+                    &[("fallback", logging::code("broker_validation"))],
+                );
+                unverified_deep_research_plan()
+            }
+        })
     } else {
         None
     };
@@ -394,7 +409,7 @@ fn deep_research_plan(capabilities: &BrokerCapabilities) -> Result<ResearchPlan,
                 .to_owned(),
         ));
     }
-    if !capabilities.client_tool_passthrough {
+    if capabilities.client_tool_passthrough == Some(false) {
         return Err(AppError::Conflict(
             "Broker AI no admite herramientas de cliente, necesarias para ver cada fuente abierta"
                 .to_owned(),
@@ -427,6 +442,19 @@ fn deep_research_plan(capabilities: &BrokerCapabilities) -> Result<ResearchPlan,
         client_tools: RESEARCH_CLIENT_TOOLS.map(str::to_owned).to_vec(),
         max_iterations: RESEARCH_ITERATIONS.min(MAX_RESEARCH_ITERATIONS),
     })
+}
+
+/// Plan conservador cuando el endpoint de capacidades no puede leerse.
+///
+/// El contrato 2.7 exige no convertir ese fallo en «capacidad ausente». La
+/// petición se envía con las herramientas estándar y será el 409/422 del
+/// Broker quien decida si su configuración concreta no puede ejecutarla.
+fn unverified_deep_research_plan() -> ResearchPlan {
+    ResearchPlan {
+        skills: RESEARCH_BROKER_SKILLS.map(str::to_owned).to_vec(),
+        client_tools: RESEARCH_CLIENT_TOOLS.map(str::to_owned).to_vec(),
+        max_iterations: RESEARCH_ITERATIONS.min(MAX_RESEARCH_ITERATIONS),
+    }
 }
 
 /// Convierte una petición de chat en una de investigación aplicando el plan.
@@ -1364,7 +1392,7 @@ fn is_permanent(error: &AppError) -> bool {
     matches!(
         error,
         AppError::BrokerResponse { status, .. }
-            if (400..500).contains(status) && !matches!(*status, 408 | 429)
+            if (400..500).contains(status) && !matches!(*status, 401 | 403 | 408 | 429)
     )
 }
 
@@ -1715,12 +1743,17 @@ fn chat_request_with_project_instruction(
         && !rename_tool_enabled
         && execution_preferences.strategy == "mixture_of_agents"
     {
+        let scheduling = if execution_preferences.preset == "slow" {
+            "adaptive"
+        } else {
+            "sequential"
+        };
         json!({
             "strategy": "mixture_of_agents",
             "preset": execution_preferences.preset,
             "timeout_seconds": 900,
             "long_context": "fail",
-            "scheduling": "adaptive",
+            "scheduling": scheduling,
             "max_proposers": 3,
             "selection": {
                 "mode": "auto",
@@ -1768,12 +1801,17 @@ fn chat_request_with_project_instruction(
             "long_context": requested_long_context
         })
     } else if execution_preferences.strategy == "mixture_of_agents" {
+        let scheduling = if execution_preferences.preset == "slow" {
+            "adaptive"
+        } else {
+            "sequential"
+        };
         json!({
             "strategy": "mixture_of_agents",
             "preset": execution_preferences.preset,
             "timeout_seconds": 900,
             "long_context": "fail",
-            "scheduling": "adaptive",
+            "scheduling": scheduling,
             "max_proposers": 3,
             "selection": {
                 "mode": "auto",
@@ -2061,7 +2099,7 @@ mod tests {
             contract_version: "2.7".to_owned(),
             strategies: vec!["single".to_owned(), "agent".to_owned()],
             agent_skills: vec!["web_search".to_owned()],
-            client_tool_passthrough: true,
+            client_tool_passthrough: Some(true),
             ..BrokerCapabilities::default()
         }
     }
@@ -3075,7 +3113,7 @@ mod tests {
             ingestion_formats: std::collections::HashMap::new(),
             long_context_map_reduce: true,
             max_active_workflows: Some(1),
-            client_tool_passthrough: true,
+            client_tool_passthrough: Some(true),
         };
         assert!(validate_sandbox_capability(&unavailable).is_err());
         let available = BrokerCapabilities {
@@ -3112,7 +3150,7 @@ mod tests {
                 "calculator".to_owned(),
                 "current_datetime".to_owned(),
             ],
-            client_tool_passthrough: true,
+            client_tool_passthrough: Some(true),
             ..BrokerCapabilities::default()
         };
         let plan = deep_research_plan(&capabilities).expect("research plan should be decided");
@@ -3166,7 +3204,7 @@ mod tests {
         // Sin passthrough no hay subtareas visibles: el Broker no podría
         // pausar la tarea para pedir `fetch_url`.
         let no_passthrough = BrokerCapabilities {
-            client_tool_passthrough: false,
+            client_tool_passthrough: Some(false),
             ..missing_search.clone()
         };
         assert!(deep_research_plan(&no_passthrough).is_err());
@@ -3182,7 +3220,7 @@ mod tests {
         let capabilities = BrokerCapabilities {
             strategies: vec!["agent".to_owned()],
             agent_skills: vec!["web_search".to_owned()],
-            client_tool_passthrough: true,
+            client_tool_passthrough: Some(true),
             ..BrokerCapabilities::default()
         };
         let plan = deep_research_plan(&capabilities).expect("plan should be decided");
@@ -3222,7 +3260,7 @@ mod tests {
                 "fetch_url".to_owned(),
                 "calculator".to_owned(),
             ],
-            client_tool_passthrough: true,
+            client_tool_passthrough: Some(true),
             ..BrokerCapabilities::default()
         };
         let plan = deep_research_plan(&capabilities).expect("research plan should be decided");

@@ -72,6 +72,7 @@ pub struct TaskState {
     #[serde(default)]
     pub kind: Option<String>,
     pub status: TaskStatus,
+    #[serde(default)]
     pub request_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -89,6 +90,7 @@ pub struct TaskState {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct BrokerCapabilities {
+    #[serde(default)]
     pub contract_version: String,
     #[serde(default)]
     pub derived_data_boundary: bool,
@@ -112,13 +114,16 @@ pub struct BrokerCapabilities {
     pub long_context_map_reduce: bool,
     #[serde(default)]
     pub max_active_workflows: Option<u64>,
+    /// Campo histórico que algunos Brokers publican. El contrato 2.7 ya
+    /// garantiza `client_tools` dentro de la estrategia `agent`, por lo que su
+    /// ausencia no equivale a `false`.
     #[serde(default)]
-    pub client_tool_passthrough: bool,
+    pub client_tool_passthrough: Option<bool>,
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{BrokerCapabilities, TaskState, TaskStatus};
+    use super::{BrokerCapabilities, FileAccepted, TaskState, TaskStatus};
 
     #[test]
     fn contract_2_6_accepts_ingestion_states_with_nullable_execution_fields() {
@@ -182,6 +187,23 @@ mod tests {
             capabilities.ingestion_formats["tabular"],
             ["csv", "tsv", "xlsx"]
         );
+        assert_eq!(capabilities.client_tool_passthrough, None);
+    }
+
+    #[test]
+    fn contract_2_7_accepts_the_documented_minimal_file_response() {
+        let accepted: FileAccepted = serde_json::from_value(serde_json::json!({
+            "file_id": "file-abc",
+            "status": "received",
+            "created": true,
+            "status_url": "/api/v1/files/file-abc"
+        }))
+        .expect("the abbreviated response published for clients must deserialize");
+
+        assert_eq!(accepted.file_id, "file-abc");
+        assert!(accepted.filename.is_empty());
+        assert_eq!(accepted.size_bytes, 0);
+        assert!(accepted.sha256.is_empty());
     }
 
     #[test]
@@ -220,8 +242,11 @@ mod tests {
 pub struct FileAccepted {
     pub file_id: String,
     pub status: String,
+    #[serde(default)]
     pub filename: String,
+    #[serde(default)]
     pub size_bytes: i64,
+    #[serde(default)]
     pub sha256: String,
     pub created: bool,
     pub status_url: String,
@@ -231,15 +256,20 @@ pub struct FileAccepted {
 pub struct FileState {
     pub file_id: String,
     pub status: String,
+    #[serde(default)]
     pub filename: String,
     pub kind: Option<String>,
     pub engine: Option<String>,
+    #[serde(default)]
     pub size_bytes: i64,
+    #[serde(default)]
     pub sha256: String,
     #[serde(default)]
     pub meta: Value,
     pub error: Option<Value>,
+    #[serde(default)]
     pub created_at: String,
+    #[serde(default)]
     pub updated_at: String,
     pub markdown_url: Option<String>,
 }

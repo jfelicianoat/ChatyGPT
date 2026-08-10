@@ -8,6 +8,7 @@ use std::time::Instant;
 use reqwest::{header::HeaderValue, Client, StatusCode};
 use serde::Serialize;
 use serde_json::Value;
+use std::collections::HashMap;
 use url::Url;
 
 pub use contracts::{BrokerCapabilities, FileAccepted, FileState, TaskAccepted, TaskState};
@@ -50,6 +51,7 @@ pub struct BrokerClient {
 pub struct BrokerDiagnostic {
     pub reachable: bool,
     pub ready: bool,
+    pub capabilities_verified: bool,
     pub base_url: String,
     pub contract_version: Option<String>,
     pub strategies: Vec<String>,
@@ -59,10 +61,84 @@ pub struct BrokerDiagnostic {
     pub agent_skills: Vec<String>,
     pub sandbox_run_code: Option<bool>,
     pub file_ingestion: Option<bool>,
+    pub ingestion_formats: HashMap<String, Vec<String>>,
     pub long_context_map_reduce: Option<bool>,
     pub max_active_workflows: Option<u64>,
     pub latency_ms: u128,
     pub message: String,
+}
+
+/// Extrae únicamente la parte accionable y no sensible de un rechazo HTTP.
+///
+/// Los errores 2.7 publican `code`, `message` y, para 422, una lista `fields`.
+/// No incluimos `input`: puede contener el prompt o datos del usuario.
+fn rejection_message(status: StatusCode, bytes: &[u8]) -> String {
+    let Ok(body) = serde_json::from_slice::<Value>(bytes) else {
+        return String::from_utf8_lossy(bytes).into_owned();
+    };
+    let detail = body.get("detail").unwrap_or(&body);
+    let code = detail
+        .get("code")
+        .and_then(Value::as_str)
+        .or_else(|| body.get("code").and_then(Value::as_str));
+    let message = detail
+        .get("message")
+        .and_then(Value::as_str)
+        .or_else(|| body.get("message").and_then(Value::as_str))
+        .or_else(|| detail.as_str());
+    let fields = detail
+        .get("fields")
+        .or_else(|| body.get("fields"))
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    let location = item.get("loc").and_then(Value::as_array).map(|parts| {
+                        parts
+                            .iter()
+                            .filter_map(|part| {
+                                part.as_str()
+                                    .map(str::to_owned)
+                                    .or_else(|| part.as_i64().map(|value| value.to_string()))
+                            })
+                            .collect::<Vec<_>>()
+                            .join(".")
+                    });
+                    let reason = item.get("msg").and_then(Value::as_str);
+                    match (location.filter(|value| !value.is_empty()), reason) {
+                        (Some(location), Some(reason)) => Some(format!("{location}: {reason}")),
+                        (Some(location), None) => Some(location),
+                        (None, Some(reason)) => Some(reason.to_owned()),
+                        (None, None) => None,
+                    }
+                })
+                .take(4)
+                .collect::<Vec<_>>()
+        })
+        .filter(|items| !items.is_empty());
+
+    let friendly = match code {
+        Some("ADMIN_AUTH_REQUIRED") if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) => {
+            Some("La credencial de Broker AI ya no es válida. Actualízala en Inicio → Credencial del Broker; las tareas remotas siguen guardadas.")
+        }
+        Some("ADMIN_AUTH_BACKEND_UNAVAILABLE") => Some(
+            "Broker AI no puede acceder a su almacén de credenciales. Revisa el servicio o el llavero del sistema; introducir otro token no resolverá este fallo.",
+        ),
+        _ => None,
+    };
+    let mut text = friendly
+        .or(message)
+        .unwrap_or("Broker AI rechazó la operación")
+        .to_owned();
+    if let Some(code) = code {
+        text = format!("{code}: {text}");
+    }
+    if let Some(fields) = fields {
+        text.push_str(" · ");
+        text.push_str(&fields.join("; "));
+    }
+    text
 }
 
 impl BrokerClient {
@@ -164,11 +240,7 @@ impl BrokerClient {
             .await
             .map_err(|error| transport_failure(operation, error))?;
         if !status.is_success() {
-            let message = serde_json::from_slice::<Value>(&bytes)
-                .ok()
-                .and_then(|body| body.get("detail").cloned())
-                .map(|detail| detail.to_string())
-                .unwrap_or_else(|| String::from_utf8_lossy(&bytes).into_owned());
+            let message = rejection_message(status, &bytes);
             // Se registra el código HTTP, no el detalle: puede citar el contenido enviado.
             logging::warn(
                 "broker.response_rejected",
@@ -256,11 +328,7 @@ impl BrokerClient {
                 .bytes()
                 .map_err(|error| transport_failure("upload_file", error))?;
             if !status.is_success() {
-                let message = serde_json::from_slice::<Value>(&bytes)
-                    .ok()
-                    .and_then(|body| body.get("detail").cloned())
-                    .map(|detail| detail.to_string())
-                    .unwrap_or_else(|| String::from_utf8_lossy(&bytes).into_owned());
+                let message = rejection_message(status, &bytes);
                 logging::warn(
                     "broker.response_rejected",
                     None,
@@ -378,6 +446,10 @@ impl BrokerClient {
             &[
                 ("reachable", logging::flag(diagnostic.reachable)),
                 ("ready", logging::flag(diagnostic.ready)),
+                (
+                    "capabilities_verified",
+                    logging::flag(diagnostic.capabilities_verified),
+                ),
                 ("latency_ms", logging::millis(diagnostic.latency_ms)),
             ],
         );
@@ -392,6 +464,7 @@ impl BrokerClient {
                 return BrokerDiagnostic {
                     reachable: false,
                     ready: false,
+                    capabilities_verified: false,
                     base_url: self.base_url.to_string(),
                     contract_version: None,
                     strategies: vec![],
@@ -401,6 +474,7 @@ impl BrokerClient {
                     agent_skills: vec![],
                     sandbox_run_code: None,
                     file_ingestion: None,
+                    ingestion_formats: HashMap::new(),
                     long_context_map_reduce: None,
                     max_active_workflows: None,
                     latency_ms: started.elapsed().as_millis(),
@@ -415,6 +489,7 @@ impl BrokerClient {
                 Ok(capabilities) => BrokerDiagnostic {
                     reachable: true,
                     ready: true,
+                    capabilities_verified: true,
                     base_url: self.base_url.to_string(),
                     contract_version: Some(capabilities.contract_version),
                     strategies: capabilities.strategies,
@@ -424,6 +499,7 @@ impl BrokerClient {
                     agent_skills: capabilities.agent_skills,
                     sandbox_run_code: Some(capabilities.sandbox_run_code),
                     file_ingestion: Some(capabilities.file_ingestion),
+                    ingestion_formats: capabilities.ingestion_formats,
                     long_context_map_reduce: Some(capabilities.long_context_map_reduce),
                     max_active_workflows: capabilities.max_active_workflows,
                     latency_ms,
@@ -431,7 +507,11 @@ impl BrokerClient {
                 },
                 Err(error) => BrokerDiagnostic {
                     reachable: true,
-                    ready: false,
+                    // La sonda de salud sí ha confirmado que el Broker puede
+                    // trabajar. Un fallo de lectura de capacidades es una
+                    // advertencia, no la prueba de que una función no exista.
+                    ready: true,
+                    capabilities_verified: false,
                     base_url: self.base_url.to_string(),
                     contract_version: None,
                     strategies: vec![],
@@ -441,15 +521,19 @@ impl BrokerClient {
                     agent_skills: vec![],
                     sandbox_run_code: None,
                     file_ingestion: None,
+                    ingestion_formats: HashMap::new(),
                     long_context_map_reduce: None,
                     max_active_workflows: None,
                     latency_ms,
-                    message: format!("Broker accesible, capacidades no verificadas: {error}"),
+                    message: format!(
+                        "Broker AI está listo, pero sus capacidades no pudieron verificarse: {error}"
+                    ),
                 },
             },
             Ok(response) => BrokerDiagnostic {
                 reachable: true,
                 ready: false,
+                capabilities_verified: false,
                 base_url: self.base_url.to_string(),
                 contract_version: None,
                 strategies: vec![],
@@ -459,6 +543,7 @@ impl BrokerClient {
                 agent_skills: vec![],
                 sandbox_run_code: None,
                 file_ingestion: None,
+                ingestion_formats: HashMap::new(),
                 long_context_map_reduce: None,
                 max_active_workflows: None,
                 latency_ms,
@@ -471,6 +556,7 @@ impl BrokerClient {
             Err(error) => BrokerDiagnostic {
                 reachable: false,
                 ready: false,
+                capabilities_verified: false,
                 base_url: self.base_url.to_string(),
                 contract_version: None,
                 strategies: vec![],
@@ -480,6 +566,7 @@ impl BrokerClient {
                 agent_skills: vec![],
                 sandbox_run_code: None,
                 file_ingestion: None,
+                ingestion_formats: HashMap::new(),
                 long_context_map_reduce: None,
                 max_active_workflows: None,
                 latency_ms,
@@ -498,8 +585,9 @@ pub struct PollPolicy {
 impl Default for PollPolicy {
     fn default() -> Self {
         Self {
-            initial_ms: 750,
-            maximum_ms: 15_000,
+            // Contrato 2.7: el intervalo recomendado para tareas es 2–5 s.
+            initial_ms: 2_000,
+            maximum_ms: 5_000,
         }
     }
 }
@@ -512,7 +600,8 @@ impl PollPolicy {
             .saturating_mul(1_u64 << exponent)
             .min(self.maximum_ms);
         let bounded_jitter = jitter_basis_points.clamp(-1_500, 1_500) as i64;
-        ((base as i64) * (10_000 + bounded_jitter) / 10_000).max(100) as u64
+        (((base as i64) * (10_000 + bounded_jitter) / 10_000).max(100) as u64)
+            .min(self.maximum_ms)
     }
 }
 
@@ -533,10 +622,10 @@ mod tests {
     #[test]
     fn polling_is_bounded_and_backed_off() {
         let policy = PollPolicy::default();
-        assert_eq!(policy.delay_ms(0, 0), 750);
-        assert_eq!(policy.delay_ms(2, 0), 3_000);
-        assert_eq!(policy.delay_ms(30, 0), 15_000);
-        assert_eq!(policy.delay_ms(30, 1_500), 17_250);
+        assert_eq!(policy.delay_ms(0, 0), 2_000);
+        assert_eq!(policy.delay_ms(1, 0), 4_000);
+        assert_eq!(policy.delay_ms(30, 0), 5_000);
+        assert_eq!(policy.delay_ms(30, 1_500), 5_000);
     }
 
     /// El diagnóstico distingue los tres estados que la interfaz debe mostrar.
@@ -561,6 +650,7 @@ mod tests {
                 "agent_skills": ["web_search"],
                 "sandbox_run_code": true,
                 "file_ingestion": true,
+                "ingestion_formats": {"pdf": [".pdf"], "text": [".txt", ".md"]},
                 "long_context_map_reduce": true,
                 "max_active_workflows": 2
             })),
@@ -568,7 +658,9 @@ mod tests {
         let diagnostic = block_on(client_for(&ready).diagnose());
         assert!(diagnostic.reachable && diagnostic.ready);
         assert_eq!(diagnostic.contract_version.as_deref(), Some("2.7"));
+        assert!(diagnostic.capabilities_verified);
         assert_eq!(diagnostic.strategies, ["single", "agent"]);
+        assert_eq!(diagnostic.ingestion_formats["pdf"], [".pdf"]);
         assert_eq!(diagnostic.sandbox_run_code, Some(true));
         assert_eq!(diagnostic.max_active_workflows, Some(2));
         assert_eq!(diagnostic.message, "Broker AI está listo");
@@ -581,7 +673,8 @@ mod tests {
         assert!(!diagnostic.ready);
         assert_eq!(diagnostic.message, "Broker AI responde, pero no está listo");
 
-        // Sano pero con capacidades ilegibles: accesible y explícitamente no listo.
+        // Sano pero con capacidades ilegibles: puede trabajar, aunque la UI no
+        // debe inventar qué capacidades tiene.
         let mismatched = SimulatedBroker::start();
         mismatched.always(
             "GET /health/ready",
@@ -590,10 +683,8 @@ mod tests {
         mismatched.always("GET /api/v1/capabilities", ScriptedResponse::malformed());
         let diagnostic = block_on(client_for(&mismatched).diagnose());
         assert!(diagnostic.reachable);
-        assert!(
-            !diagnostic.ready,
-            "sin capacidades verificadas no puede declararse listo"
-        );
+        assert!(diagnostic.ready, "la sonda de salud sí lo declaró listo");
+        assert!(!diagnostic.capabilities_verified);
         assert!(diagnostic.message.contains("capacidades no verificadas"));
 
         // No accesible: puerto cerrado. El simulador se apaga al soltarlo.
@@ -628,6 +719,34 @@ mod tests {
             }
             other => panic!("se esperaba una respuesta rechazada, no {other:?}"),
         }
+    }
+
+    #[test]
+    fn contract_errors_expose_safe_field_paths_and_authentication_guidance() {
+        let fields = super::rejection_message(
+            reqwest::StatusCode::UNPROCESSABLE_ENTITY,
+            serde_json::to_string(&json!({
+                "code": "CONTRACT_VALIDATION_FAILED",
+                "message": "Request does not satisfy Broker contract v1",
+                "fields": [{
+                    "loc": ["body", "execution", "scheduling"],
+                    "msg": "preset fast only supports sequential",
+                    "input": "contenido que no debe mostrarse"
+                }]
+            }))
+            .expect("json")
+            .as_bytes(),
+        );
+        assert!(fields.contains("body.execution.scheduling"));
+        assert!(fields.contains("preset fast only supports sequential"));
+        assert!(!fields.contains("contenido que no debe mostrarse"));
+
+        let auth = super::rejection_message(
+            reqwest::StatusCode::FORBIDDEN,
+            br#"{"code":"ADMIN_AUTH_REQUIRED","message":"forbidden"}"#,
+        );
+        assert!(auth.contains("Inicio"));
+        assert!(auth.contains("tareas remotas siguen guardadas"));
     }
 
     /// La credencial viaja en la cabecera y solo cuando existe.

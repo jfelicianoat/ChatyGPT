@@ -677,6 +677,8 @@ export type BrokerDiagnostic = {
   ready: boolean;
   baseUrl: string;
   contractVersion?: string;
+  capabilitiesVerified: boolean;
+  ingestionFormats: Record<string, string[]>;
   strategies: string[];
   presets: Record<string, string[]> | unknown;
   derivedDataBoundary?: boolean;
@@ -1290,8 +1292,32 @@ export type ConversationMessage = {
     model: string;
   };
   responseDurationMs?: number;
+  usage?: Record<string, unknown>;
+  fallbackUsed?: boolean;
+  longContext?: Record<string, unknown>;
   sources: ConversationSource[];
   createdAt: string;
+};
+
+export const brokerAttachmentExtensions = (broker?: BrokerDiagnostic): string[] => {
+  if (!broker?.capabilitiesVerified) return [];
+  return [...new Set(Object.values(broker.ingestionFormats)
+    .flat()
+    .map((extension) => extension.trim().replace(/^\./, "").toLowerCase())
+    .filter((extension) => /^[a-z0-9]{1,16}$/.test(extension)))]
+    .sort();
+};
+
+export const formatResponseUsage = (usage?: Record<string, unknown>): string | null => {
+  if (!usage) return null;
+  const total = [usage.total_tokens, usage.totalTokens, usage.tokens]
+    .find((value) => typeof value === "number" && Number.isFinite(value)) as number | undefined;
+  const cost = [usage.cost_usd, usage.costUsd, usage.estimated_cost_usd]
+    .find((value) => typeof value === "number" && Number.isFinite(value)) as number | undefined;
+  const parts: string[] = [];
+  if (total !== undefined) parts.push(`${total.toLocaleString("es-ES")} tokens`);
+  if (cost !== undefined) parts.push(`${cost.toLocaleString("es-ES", { maximumFractionDigits: 4 })} USD`);
+  return parts.length > 0 ? parts.join(" · ") : null;
 };
 
 export const formatResponseDuration = (milliseconds?: number): string | null => {
