@@ -10,6 +10,12 @@ import {
   canSendMessage,
   canStartMemoryEdit,
   canUseSemanticMemory,
+  shouldPollMemoryIndex,
+  shouldPollMemorySearch,
+  shouldReloadConversationAfterTurn,
+  activeMemoriesForConversation,
+  semanticReadyMemoriesForConversation,
+  visibleConversations,
   canRevealContextSource,
   confirmationSummary,
   formatResponseDuration,
@@ -65,6 +71,7 @@ import {
   type ScheduledRunPageView,
   type ScheduledTaskTemplateView,
   type ScheduledTaskView,
+  type PerformanceReportView,
   type WindowsStartupStatus
 } from "./domain";
 import { platform } from "./platform";
@@ -88,20 +95,42 @@ import {
   type ResolvedAppearance
 } from "./appearance";
 import { isEditableKeyboardTarget, keyboardShortcutAction } from "./keyboard";
+import { dialogCopy, type DialogState } from "./dialogs";
+import { describeError } from "./errors";
+import {
+  sandboxDeniedByCustomGpt,
+  sandboxDiagnosticFailure,
+  sandboxSendDecision
+} from "./composer";
+import {
+  canSaveScheduleTemplate,
+  pendingScheduledRunNotifications,
+  defaultScheduledLocalTime,
+  resolvedSchedulerTimezone,
+  validateScheduleDraft,
+  schedulerCalendarConflictCount,
+  schedulerCalendarDays,
+  loadSchedulerReadNotifications,
+  persistSchedulerReadNotifications,
+  scheduledLocalTimeValue,
+  scheduledRunLabel,
+  schedulerReadNotificationsExist
+} from "./schedulerView";
+import {
+  budgetVerdictLabel,
+  budgetVerdictTone,
+  formatDuration,
+  isInteractionEntry,
+  FLUSH_INTERVAL_MS,
+  INTERACTION_THRESHOLD_MS,
+  PerformanceSampleBuffer,
+  type PerformanceMetric
+} from "./performance";
 
 type Loadable<T> =
   | { state: "loading" }
   | { state: "ready"; value: T }
   | { state: "error"; message: string };
-
-type DialogState =
-  | { kind: "project-create" }
-  | { kind: "project-rename"; project: ProjectSummary }
-  | { kind: "project-instructions"; project: ProjectSummary }
-  | { kind: "project-archive"; project: ProjectSummary }
-  | { kind: "conversation-rename"; conversation: ConversationView }
-  | { kind: "conversation-archive"; conversation: ConversationView }
-  | { kind: "conversation-delete"; conversation: ConversationView };
 
 type MemoryEditDraft = {
   content: string;
@@ -115,135 +144,6 @@ type ScreenCapturePreview = CapturedScreenFrame & {
   previewUrl: string;
   source: "screen" | "camera";
 };
-
-function describeError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function scheduledLocalTimeValue(value: Date): string {
-  const part = (value: number) => String(value).padStart(2, "0");
-  return `${value.getFullYear()}-${part(value.getMonth() + 1)}-${part(value.getDate())}T${part(value.getHours())}:${part(value.getMinutes())}`;
-}
-
-function defaultScheduledLocalTime(now = new Date()): string {
-  return scheduledLocalTimeValue(new Date(now.getTime() + 60 * 60 * 1000));
-}
-
-const SCHEDULER_READ_NOTIFICATIONS_KEY = "chatygpt.scheduler.readNotifications.v1";
-
-function loadSchedulerReadNotifications(): Set<string> {
-  try {
-    const stored = window.localStorage.getItem(SCHEDULER_READ_NOTIFICATIONS_KEY);
-    const values = stored ? JSON.parse(stored) : [];
-    return new Set(Array.isArray(values) ? values.filter((value) => typeof value === "string") : []);
-  } catch {
-    return new Set();
-  }
-}
-
-function schedulerReadNotificationsExist(): boolean {
-  try {
-    return window.localStorage.getItem(SCHEDULER_READ_NOTIFICATIONS_KEY) !== null;
-  } catch {
-    return false;
-  }
-}
-
-function persistSchedulerReadNotifications(ids: Set<string>): void {
-  try {
-    window.localStorage.setItem(
-      SCHEDULER_READ_NOTIFICATIONS_KEY,
-      JSON.stringify([...ids].slice(-200))
-    );
-  } catch {
-    // El historial de ejecuciones sigue disponible aunque WebView2 no permita almacenamiento local.
-  }
-}
-
-function scheduledRunLabel(status: ScheduledTaskView["runs"][number]["status"]): string {
-  switch (status) {
-    case "claimed": return "Preparando";
-    case "running": return "En ejecución";
-    case "completed": return "Completada";
-    case "failed": return "Fallida";
-    case "cancelled": return "Cancelada";
-    case "skipped": return "Omitida";
-  }
-}
-
-function dialogCopy(dialog: DialogState): {
-  title: string;
-  description: string;
-  fieldLabel?: string;
-  initialValue?: string;
-  multiline?: boolean;
-  allowEmpty?: boolean;
-  maxLength?: number;
-  destructive?: boolean;
-  action: string;
-} {
-  switch (dialog.kind) {
-    case "project-create":
-      return {
-        title: "Nuevo proyecto",
-        description: "Agrupa conversaciones relacionadas sin mover sus datos fuera de SQLite.",
-        fieldLabel: "Nombre del proyecto",
-        action: "Crear proyecto"
-      };
-    case "project-rename":
-      return {
-        title: "Renombrar proyecto",
-        description: "Las conversaciones asociadas conservarán su relación con el proyecto.",
-        fieldLabel: "Nombre del proyecto",
-        initialValue: dialog.project.name,
-        action: "Guardar"
-      };
-    case "project-instructions":
-      return {
-        title: "Instrucciones del proyecto",
-        description:
-          "Se aplicarán a todos los mensajes de los chats de este proyecto y aparecerán en el inspector de contexto.",
-        fieldLabel: "Cómo debe trabajar ChatyGPT en este proyecto",
-        initialValue: dialog.project.instructions ?? "",
-        multiline: true,
-        allowEmpty: true,
-        maxLength: 8_000,
-        action: dialog.project.instructions ? "Actualizar instrucciones" : "Guardar instrucciones"
-      };
-    case "project-archive":
-      return {
-        title: "Archivar proyecto",
-        description:
-          "El proyecto desaparecerá de la barra lateral. Sus conversaciones seguirán disponibles sin proyecto.",
-        destructive: true,
-        action: "Archivar"
-      };
-    case "conversation-rename":
-      return {
-        title: "Renombrar conversación",
-        description: "El contenido y el historial no cambiarán.",
-        fieldLabel: "Título",
-        initialValue: dialog.conversation.title,
-        action: "Guardar"
-      };
-    case "conversation-archive":
-      return {
-        title: "Archivar conversación",
-        description:
-          "La conversación saldrá de la lista activa, pero sus mensajes se conservarán localmente.",
-        destructive: true,
-        action: "Archivar"
-      };
-    case "conversation-delete":
-      return {
-        title: "Eliminar conversación",
-        description:
-          "La conversación quedará marcada como eliminada. Esta acción no borra físicamente los registros todavía.",
-        destructive: true,
-        action: "Eliminar"
-      };
-  }
-}
 
 export function App() {
   const messageListRef = useRef<HTMLDivElement>(null);
@@ -259,6 +159,13 @@ export function App() {
     document.documentElement.dataset.theme === "dark" ? "dark" : "light"
   );
   const [keyboardHelpOpen, setKeyboardHelpOpen] = useState(false);
+  /** Muestras de rendimiento pendientes de enviar, agrupadas para no medir caro. */
+  const performanceBufferRef = useRef(new PerformanceSampleBuffer());
+  /** El arranque se mide una sola vez por sesión. */
+  const appStartRecordedRef = useRef(false);
+  const [performanceReport, setPerformanceReport] =
+    useState<Loadable<PerformanceReportView>>({ state: "loading" });
+  const [performanceBusy, setPerformanceBusy] = useState(false);
   const [broker, setBroker] = useState<Loadable<BrokerDiagnostic> | null>(null);
   const [auditEvents, setAuditEvents] = useState<Loadable<AuditEventView[]>>({ state: "loading" });
   const [memory, setMemory] = useState<Loadable<MemoryOverview>>({ state: "loading" });
@@ -677,6 +584,16 @@ export function App() {
   };
 
   const removeBrokerCredential = async () => {
+    // La orden de Rust exige confirmación explícita. Hasta ahora el frontend la
+    // afirmaba por su cuenta, de modo que la comprobación no protegía nada:
+    // quien decide es la persona, y aquí es donde se le pregunta.
+    if (
+      !window.confirm(
+        "¿Retirar la credencial de Broker AI de este equipo? Tendrás que volver a introducirla para enviar mensajes."
+      )
+    ) {
+      return;
+    }
     setCredentialBusy(true);
     setCredentialNotice(null);
     try {
@@ -691,6 +608,15 @@ export function App() {
   };
 
   const revokeFolder = async (folderId: string) => {
+    // Misma razón que al retirar la credencial: revocar una carpeta autorizada
+    // es una decisión de la persona, no un trámite que el frontend dé por hecho.
+    if (
+      !window.confirm(
+        "¿Revocar la autorización de escritura de esta carpeta? Las próximas exportaciones volverán a pedir permiso."
+      )
+    ) {
+      return;
+    }
     setFolderBusy(folderId);
     try {
       setAuthorizedFolders({
@@ -702,6 +628,16 @@ export function App() {
     } finally {
       setFolderBusy(null);
     }
+  };
+
+  /**
+   * Anota una duración observada.
+   *
+   * Es deliberadamente infalible: medir no puede alterar ni interrumpir la
+   * acción medida, de modo que una muestra inadmisible simplemente se descarta.
+   */
+  const recordSample = (metric: PerformanceMetric, durationMs: number) => {
+    performanceBufferRef.current.push(metric, durationMs);
   };
 
   const loadConversation = async (
@@ -803,46 +739,135 @@ export function App() {
         } catch (error) {
           setCustomGpts({ state: "error", message: describeError(error) });
         }
+        // Los dos paneles de seguridad se cargaban únicamente desde
+        // `reloadNavigation`, que solo se ejecuta tras una acción de la persona.
+        // Al abrir la aplicación se quedaban en «Comprobando credencial…» y
+        // «Cargando permisos…» para siempre: quien solo quisiera revisar su
+        // credencial o revocar una carpeta no llegaba a verlas nunca.
+        try {
+          setBrokerCredential({
+            state: "ready",
+            value: await platform.getBrokerCredential()
+          });
+        } catch (error) {
+          setBrokerCredential({ state: "error", message: describeError(error) });
+        }
+        try {
+          setAuthorizedFolders({
+            state: "ready",
+            value: await platform.listAuthorizedFolders()
+          });
+        } catch (error) {
+          setAuthorizedFolders({ state: "error", message: describeError(error) });
+        }
         if (items[0]) {
           await loadConversation(items[0].id, true);
         }
+        // La aplicación es usable a partir de aquí: hay navegación y, si existe,
+        // una conversación en pantalla. `performance.now()` se cuenta desde que
+        // la vista web empieza a cargar, no desde que arranca el proceso.
+        if (!appStartRecordedRef.current) {
+          appStartRecordedRef.current = true;
+          recordSample("app_start", performance.now());
+        }
       })
       .catch((error) => setBootstrap({ state: "error", message: describeError(error) }));
+    platform.getPerformanceReport()
+      .then((value) => setPerformanceReport({ state: "ready", value }))
+      .catch((error) =>
+        setPerformanceReport({ state: "error", message: describeError(error) })
+      );
   }, []);
+
+  /**
+   * Observa la respuesta de la interfaz a las interacciones reales.
+   *
+   * El umbral de 16 ms es el mínimo que admite la API: las interacciones más
+   * rápidas no llegan a observarse, por lo que los percentiles calculados son
+   * un límite superior y nunca una cifra optimista.
+   */
+  useEffect(() => {
+    if (typeof PerformanceObserver === "undefined") return;
+    if (!PerformanceObserver.supportedEntryTypes?.includes("event")) return;
+    const observer = new PerformanceObserver((list) => {
+      for (const entry of list.getEntries()) {
+        const interaction = entry as PerformanceEntry & { interactionId?: number };
+        if (isInteractionEntry(interaction)) {
+          recordSample("ui_response", interaction.duration);
+        }
+      }
+    });
+    try {
+      observer.observe({
+        type: "event",
+        buffered: true,
+        durationThreshold: INTERACTION_THRESHOLD_MS
+      } as PerformanceObserverInit);
+    } catch {
+      // WebView2 sin Event Timing: la métrica queda sin muestras y, por tanto,
+      // sin veredicto. Es preferible a inventar una medida sustitutiva.
+      return;
+    }
+    return () => observer.disconnect();
+  }, []);
+
+  /** Vacía el búfer por lotes y refresca el informe cuando Inicio está visible. */
+  useEffect(() => {
+    if (bootstrap.state !== "ready") return;
+    const homeVisible = conversation === null;
+    const flush = async () => {
+      const batches = performanceBufferRef.current.drain();
+      if (batches.length === 0) return;
+      try {
+        for (const batch of batches) {
+          await platform.recordPerformanceSamples(batch.metric, batch.durationsMs);
+        }
+      } catch {
+        // Perder muestras no degrada la aplicación: el informe simplemente
+        // describe menos ejecuciones. No se reencolan para no acumularlas
+        // indefinidamente si el fallo es persistente.
+        return;
+      }
+      if (!homeVisible) return;
+      try {
+        setPerformanceReport({
+          state: "ready",
+          value: await platform.getPerformanceReport()
+        });
+      } catch (error) {
+        setPerformanceReport({ state: "error", message: describeError(error) });
+      }
+    };
+    const timer = window.setInterval(() => void flush(), FLUSH_INTERVAL_MS);
+    return () => {
+      window.clearInterval(timer);
+      void flush();
+    };
+  }, [bootstrap.state, conversation === null]);
 
   useEffect(() => {
     if (bootstrap.state !== "ready") return;
     const refresh = () => {
       platform.listScheduledTasks()
         .then((value) => {
-          const historyWasInitialized = schedulerHistoryInitializedRef.current;
-          for (const task of value) {
-            for (const run of task.runs) {
-              const previous = scheduledRunStatesRef.current.get(run.id);
-              const terminal = ["completed", "failed", "cancelled"].includes(run.status);
-              if (
-                historyWasInitialized &&
-                previous !== run.status &&
-                terminal &&
-                schedulerNotifications === "granted"
-              ) {
-                try {
-                  new window.Notification(
-                    run.status === "completed"
-                      ? "Tarea programada completada"
-                      : "Tarea programada finalizada",
-                    {
-                      body: `${task.name} · ${task.conversationTitle} · ${scheduledRunLabel(run.status)}`,
-                      tag: `chatygpt-${run.id}`
-                    }
-                  );
-                } catch {
-                  // El historial visible sigue siendo la fuente durable si Windows rechaza el aviso.
-                }
-              }
-              scheduledRunStatesRef.current.set(run.id, run.status);
+          const { notifications, nextStates } = pendingScheduledRunNotifications({
+            tasks: value,
+            knownStates: scheduledRunStatesRef.current,
+            historyInitialized: schedulerHistoryInitializedRef.current,
+            permissionGranted: schedulerNotifications === "granted"
+          });
+          for (const notification of notifications) {
+            try {
+              new window.Notification(notification.title, {
+                body: notification.body,
+                tag: notification.tag
+              });
+            } catch {
+              // El historial visible sigue siendo la fuente durable si Windows
+              // rechaza el aviso.
             }
           }
+          scheduledRunStatesRef.current = nextStates;
           schedulerHistoryInitializedRef.current = true;
           setScheduledTasks({ state: "ready", value });
         })
@@ -906,8 +931,14 @@ export function App() {
       return;
     }
     const timeout = window.setTimeout(() => {
+      // Se cronometra la consulta, no la espera deliberada de 250 ms que evita
+      // preguntar a SQLite en cada tecla.
+      const startedAt = performance.now();
       platform.searchConversations(query)
-        .then(setSearchResults)
+        .then((results) => {
+          recordSample("conversation_search", performance.now() - startedAt);
+          setSearchResults(results);
+        })
         .catch((error) => setNavigationError(describeError(error)));
     }, 250);
     return () => window.clearTimeout(timeout);
@@ -992,10 +1023,7 @@ export function App() {
   ]);
 
   useEffect(() => {
-    if (
-      memory.state !== "ready" ||
-      !memory.value.items.some((item) => item.embeddingStatus === "indexing")
-    ) {
+    if (memory.state !== "ready" || !shouldPollMemoryIndex(memory.value.items)) {
       return;
     }
     const interval = window.setInterval(() => {
@@ -1011,7 +1039,9 @@ export function App() {
   ]);
 
   useEffect(() => {
-    if (memorySearch?.state !== "ready" || memorySearch.value.status !== "searching") return;
+    if (memorySearch?.state !== "ready" || !shouldPollMemorySearch(memorySearch.value)) {
+      return;
+    }
     const searchId = memorySearch.value.id;
     const interval = window.setInterval(() => {
       platform.getMemorySearch(searchId)
@@ -1036,9 +1066,12 @@ export function App() {
           if (isTaskPollingComplete(value)) {
             await reloadNavigation();
             if (
-              turnConversationId &&
-              conversation?.state === "ready" &&
-              conversation.value.id === turnConversationId
+              shouldReloadConversationAfterTurn({
+                turnConversationId,
+                openConversationId:
+                  conversation?.state === "ready" ? conversation.value.id : null
+              }) &&
+              turnConversationId
             ) {
               await loadConversation(turnConversationId);
             }
@@ -1055,16 +1088,16 @@ export function App() {
     conversation?.state === "ready" ? conversation.value.id : null
   ]);
 
-  const visibleConversations = useMemo(() => {
-    const source = searchQuery.trim() ? searchResults : conversations;
-    if (searchQuery.trim() || selectedProjectId === null) {
-      return source;
-    }
-    if (selectedProjectId === "unassigned") {
-      return source.filter((item) => !item.projectId);
-    }
-    return source.filter((item) => item.projectId === selectedProjectId);
-  }, [conversations, searchQuery, searchResults, selectedProjectId]);
+  const visibleConversationList = useMemo(
+    () =>
+      visibleConversations({
+        conversations,
+        searchResults,
+        searchQuery,
+        selectedProjectId
+      }),
+    [conversations, searchQuery, searchResults, selectedProjectId]
+  );
 
   const selectedProject =
     projects.find((project) => project.id === selectedProjectId) ?? null;
@@ -1086,11 +1119,7 @@ export function App() {
     broker?.state === "ready" && broker.value.ready && Boolean(broker.value.sandboxRunCode);
   const activeGlobalMemoryCount =
     memory.state === "ready" && memory.value.enabled && conversation?.state === "ready"
-      ? memory.value.items.filter(
-          (item) =>
-            item.enabled &&
-            (!item.projectId || item.projectId === conversation.value.projectId)
-        ).length
+      ? activeMemoriesForConversation(memory.value.items, conversation.value.projectId).length
       : 0;
   const activeCustomGptMemoryCount =
     activeCustomGptKnowledge?.state === "ready"
@@ -1117,11 +1146,9 @@ export function App() {
     readyEligibleMemories:
       memory.state === "ready" && conversation?.state === "ready"
         ? (memory.value.enabled
-            ? memory.value.items.filter(
-                (item) =>
-                  item.enabled &&
-                  item.embeddingStatus === "ready" &&
-                  (!item.projectId || item.projectId === conversation.value.projectId)
+            ? semanticReadyMemoriesForConversation(
+                memory.value.items,
+                conversation.value.projectId
               ).length
             : 0) + readyCustomGptMemories
         : readyCustomGptMemories
@@ -1644,6 +1671,15 @@ export function App() {
   };
 
   const restoreCustomGptVersion = async (customGptId: string, versionId: string) => {
+    // Restaurar reemplaza la configuración vigente del GPT. Las versiones
+    // anteriores se conservan, pero la decisión sigue siendo de la persona.
+    if (
+      !window.confirm(
+        "¿Restaurar esta versión? Reemplazará la configuración actual del GPT; las versiones anteriores se conservan."
+      )
+    ) {
+      return;
+    }
     setCustomGptBusy(true);
     setCustomGptError(null);
     try {
@@ -2067,6 +2103,30 @@ export function App() {
     }
   };
 
+  /** Descarta las mediciones acumuladas, incluidas las aún no enviadas. */
+  const clearPerformanceSamples = async () => {
+    // Borrar las mediciones es irreversible y deja las métricas sin veredicto.
+    if (
+      !window.confirm(
+        "¿Vaciar las mediciones de rendimiento? Las cuatro métricas volverán a quedar sin medir."
+      )
+    ) {
+      return;
+    }
+    setPerformanceBusy(true);
+    try {
+      performanceBufferRef.current.drain();
+      setPerformanceReport({
+        state: "ready",
+        value: await platform.clearPerformanceSamples()
+      });
+    } catch (error) {
+      setPerformanceReport({ state: "error", message: describeError(error) });
+    } finally {
+      setPerformanceBusy(false);
+    }
+  };
+
   const openConversation = async (conversationId: string) => {
     followConversationScrollRef.current = true;
     setConversation({ state: "loading" });
@@ -2075,8 +2135,12 @@ export function App() {
     setDraftAttachmentIds([]);
     setAttachmentError(null);
     setNavigationError(null);
+    const startedAt = performance.now();
     try {
       await loadConversation(conversationId, true);
+      // Solo se mide la apertura completada: una que falla describe el error,
+      // no el rendimiento.
+      recordSample("conversation_open", performance.now() - startedAt);
     } catch (error) {
       setConversation({ state: "error", message: describeError(error) });
     }
@@ -2150,12 +2214,12 @@ export function App() {
     const useSandbox = sandboxOverride ?? sandboxEnabled;
     const requestsCodeExecution =
       shouldOfferSandboxForPrompt(text) || selectedAttachmentsNeedSandbox;
-    if (useSandbox && !selectedGptAllowsRunCode) {
-      setComposerError({
-        title: "Este GPT no tiene permiso para ejecutar código",
-        detail: "La versión seleccionada mantiene Código aislado denegado.",
-        action: "Edita el GPT para permitir solicitudes con confirmación o selecciona otro GPT."
-      });
+    const gptDenial = sandboxDeniedByCustomGpt({
+      useSandbox,
+      gptAllowsRunCode: selectedGptAllowsRunCode
+    });
+    if (gptDenial) {
+      setComposerError(gptDenial);
       return;
     }
     let sandboxCanRun = sandboxAvailable;
@@ -2172,27 +2236,24 @@ export function App() {
         sandboxCanRun = diagnostic.ready && Boolean(diagnostic.sandboxRunCode);
         diagnosticMessage = diagnostic.ready ? undefined : diagnostic.message;
       } catch (error) {
-        setComposerError({
-          title: "No se pudo comprobar Código aislado",
-          detail: describeError(error),
-          action: "Comprueba que Broker AI está arrancado y vuelve a intentarlo. El mensaje no se ha enviado."
-        });
+        setComposerError(sandboxDiagnosticFailure(describeError(error)));
         return;
       }
     }
-    if (
-      !skipSandboxSuggestion &&
-      !useSandbox &&
-      requestsCodeExecution &&
-      sandboxCanRun
-    ) {
+    const decision = sandboxSendDecision({
+      skipSuggestion: skipSandboxSuggestion,
+      useSandbox,
+      requestsCodeExecution,
+      sandboxAvailable: sandboxCanRun,
+      attachmentsNeedSandbox: selectedAttachmentsNeedSandbox,
+      diagnosticMessage
+    });
+    if (decision.kind === "suggest-sandbox") {
       setSandboxSuggestionPending(true);
       return;
     }
-    if (!skipSandboxSuggestion && !useSandbox && requestsCodeExecution && !sandboxCanRun) {
-      setComposerError(
-        sandboxUnavailableGuidance(selectedAttachmentsNeedSandbox, diagnosticMessage)
-      );
+    if (decision.kind === "blocked") {
+      setComposerError(decision.error);
       return;
     }
     setSandboxSuggestionPending(false);
@@ -2565,36 +2626,12 @@ export function App() {
       : [],
     [scheduledTasks, schedulerCalendarRange]
   );
-  const schedulerCalendarDays = useMemo(() => {
-    const days = new Map<
-      string,
-      { key: string; label: string; items: ScheduledCalendarOccurrence[] }
-    >();
-    for (const item of schedulerCalendarItems) {
-      const date = new Date(item.startsAt);
-      const key = item.overdue
-        ? "overdue"
-        : `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(
-            date.getDate()
-          ).padStart(2, "0")}`;
-      const label = item.overdue
-        ? "Pendientes atrasadas"
-        : date.toLocaleDateString("es-ES", {
-            weekday: "long",
-            day: "numeric",
-            month: "long"
-          });
-      const day = days.get(key) ?? { key, label, items: [] };
-      day.items.push(item);
-      days.set(key, day);
-    }
-    return [...days.values()];
-  }, [schedulerCalendarItems]);
-  const schedulerCalendarConflictCount = Math.floor(
-    schedulerCalendarItems.reduce(
-      (total, item) => total + item.conflictingTaskIds.length,
-      0
-    ) / 2
+  const schedulerCalendarGroupedDays = useMemo(
+    () => schedulerCalendarDays(schedulerCalendarItems),
+    [schedulerCalendarItems]
+  );
+  const schedulerCalendarConflicts = schedulerCalendarConflictCount(
+    schedulerCalendarItems
   );
 
   const submitDialog = async () => {
@@ -2647,22 +2684,23 @@ export function App() {
   };
 
   const createSchedule = async () => {
-    if (
-      !scheduleName.trim() ||
-      !scheduleConversationId ||
-      !schedulePrompt.trim() ||
-      !scheduleAt ||
-      !scheduleConfirmed
-    ) return;
+    const validation = validateScheduleDraft({
+      name: scheduleName,
+      conversationId: scheduleConversationId,
+      prompt: schedulePrompt,
+      at: scheduleAt,
+      confirmed: scheduleConfirmed
+    });
+    if (validation.status === "incomplete") return;
     setScheduleBusyId("create");
     setScheduleError(null);
     setScheduleNotice(null);
     try {
-      const dueAt = new Date(scheduleAt);
-      if (Number.isNaN(dueAt.getTime()) || dueAt.getTime() <= Date.now()) {
-        throw new Error("Elige una fecha y hora futuras.");
+      if (validation.status === "invalid-date") {
+        throw new Error(validation.message);
       }
-      const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+      const dueAt = new Date(validation.dueAtIso);
+      const timezone = resolvedSchedulerTimezone();
       if (scheduleEditingId) {
         await platform.updateScheduledTask(
           scheduleEditingId,
@@ -2761,7 +2799,7 @@ export function App() {
   };
 
   const saveScheduledTaskTemplate = async () => {
-    if (!scheduleName.trim() || !schedulePrompt.trim()) return;
+    if (!canSaveScheduleTemplate({ name: scheduleName, prompt: schedulePrompt })) return;
     setScheduleBusyId("template-create");
     setScheduleError(null);
     setScheduleNotice(null);
@@ -3077,6 +3115,18 @@ export function App() {
   };
 
   const toggleSchedule = async (task: ScheduledTaskView) => {
+    // Rust solo exige confirmación al reactivar, y con razón: pausar no ejecuta
+    // nada, mientras que reactivar devuelve a la tarea la capacidad de lanzar
+    // trabajos contra el Broker sin que nadie esté delante. Se pregunta en el
+    // mismo caso, para que la comprobación del backend responda a una decisión.
+    if (
+      !task.enabled &&
+      !window.confirm(
+        `¿Reactivar «${task.name}»? Volverá a ejecutarse sola en la fecha prevista.`
+      )
+    ) {
+      return;
+    }
     setScheduleBusyId(task.id);
     setScheduleError(null);
     try {
@@ -3304,13 +3354,13 @@ export function App() {
           <p className="nav-label">
             {searchQuery.trim() ? "Resultados" : selectedProject?.name ?? "Recientes"}
           </p>
-          {visibleConversations.length === 0 ? (
+          {visibleConversationList.length === 0 ? (
             <div className="empty-nav">
               {searchQuery.trim()
                 ? "No hay conversaciones que coincidan."
                 : "No hay conversaciones en esta sección."}
             </div>
-          ) : visibleConversations.map((item) => (
+          ) : visibleConversationList.map((item) => (
             <button
               key={item.id}
               className={`conversation-link ${
@@ -3583,15 +3633,22 @@ export function App() {
                         <div className="message-text">{message.text}</div>
                       )
                     ) : message.error ? (
-                      <div className="task-failure" role="alert">
-                        <strong>{taskFailureSummary(message.error)?.title}</strong>
-                        <span>{taskFailureSummary(message.error)?.detail}</span>
-                        <small>
-                          {taskFailureSummary(message.error)?.retryable
-                            ? "El Broker indica que puede tener sentido volver a intentarlo."
-                            : "Revisa las opciones o el contenido antes de repetir la petición."}
-                        </small>
-                      </div>
+                      (() => {
+                        const failure = taskFailureSummary(message.error);
+                        if (!failure) return null;
+                        return (
+                          <div className="task-failure" role="alert">
+                            <strong>{failure.title}</strong>
+                            <span>{failure.detail}</span>
+                            {failure.guidance && <span>{failure.guidance}</span>}
+                            <small>
+                              {failure.retryable
+                                ? "El Broker indica que puede tener sentido volver a intentarlo."
+                                : "Revisa las opciones o el contenido antes de repetir la petición."}
+                            </small>
+                          </div>
+                        );
+                      })()
                     ) : null}
                     {message.role === "assistant" &&
                       message.brokerTaskId &&
@@ -4486,11 +4543,14 @@ export function App() {
                       />
                       Buscar recuerdos
                     </label>
-                    {researchMode && semanticMemoryEnabled && (
-                      <span className="research-mode-note">
-                        La investigación usará los adjuntos activos; la búsqueda semántica de recuerdos se retomará en un corte posterior.
-                      </span>
-                    )}
+                    {researchMode &&
+                      ((semanticMemoryEnabled && semanticMemoryReady) || semanticDocumentsReady) && (
+                        <span className="research-mode-note">
+                          Primero se recupera el contexto relacionado y después la
+                          investigación parte de él. Las herramientas quedan fijadas al
+                          enviar, así que un reinicio la retoma tal y como la autorizaste.
+                        </span>
+                      )}
                     <label
                       className="tools-toggle"
                       title={
@@ -4676,6 +4736,79 @@ export function App() {
                   Tema visible: {resolvedAppearance === "dark" ? "oscuro" : "claro"}
                   {appearancePreference === "system" ? " · cambia con Windows" : ""}.
                 </small>
+              </section>
+
+              <section className="performance-card" aria-labelledby="performance-heading">
+                <div>
+                  <span className="kicker">Medición local</span>
+                  <h3 id="performance-heading">Rendimiento</h3>
+                  <p>
+                    Mediciones tomadas en este equipo mientras usas la aplicación. Se
+                    guardan únicamente duraciones: ni textos, ni títulos, ni rutas. Cada
+                    objetivo se compara con el percentil 95 de las muestras conservadas.
+                  </p>
+                </div>
+                {performanceReport.state === "loading" && <small>Cargando mediciones…</small>}
+                {performanceReport.state === "error" && (
+                  <small role="alert">{performanceReport.message}</small>
+                )}
+                {performanceReport.state === "ready" && (
+                  <>
+                    <div className="performance-grid">
+                      {performanceReport.value.metrics.map((summary) => (
+                        <article key={summary.metric} className="performance-metric">
+                          <header>
+                            <strong>{summary.label}</strong>
+                            <span
+                              className={`badge ${budgetVerdictTone(summary.meetsBudget)}`}
+                            >
+                              {budgetVerdictLabel(summary.meetsBudget)}
+                            </span>
+                          </header>
+                          <dl>
+                            <div>
+                              <dt>Objetivo</dt>
+                              <dd>≤ {formatDuration(summary.budgetMs)} (p95)</dd>
+                            </div>
+                            <div>
+                              <dt>p95</dt>
+                              <dd>{formatDuration(summary.p95Ms)}</dd>
+                            </div>
+                            <div>
+                              <dt>Mediana</dt>
+                              <dd>{formatDuration(summary.p50Ms)}</dd>
+                            </div>
+                            <div>
+                              <dt>Peor caso</dt>
+                              <dd>{formatDuration(summary.maxMs)}</dd>
+                            </div>
+                            <div>
+                              <dt>Muestras</dt>
+                              <dd>{summary.samples}</dd>
+                            </div>
+                          </dl>
+                          <small>{summary.description}</small>
+                        </article>
+                      ))}
+                    </div>
+                    <div className="performance-actions">
+                      <small aria-live="polite">
+                        {performanceReport.value.totalSamples} muestras conservadas ·
+                        se guardan como máximo {performanceReport.value.sampleLimit} por
+                        métrica y las antiguas se descartan.
+                      </small>
+                      <button
+                        className="secondary"
+                        disabled={
+                          performanceBusy || performanceReport.value.totalSamples === 0
+                        }
+                        onClick={() => void clearPerformanceSamples()}
+                      >
+                        {performanceBusy ? "Vaciando…" : "Vaciar mediciones"}
+                      </button>
+                    </div>
+                  </>
+                )}
               </section>
 
               <section className="broker-credential" aria-labelledby="credential-heading">
@@ -4990,20 +5123,20 @@ export function App() {
                         {schedulerCalendarExportMessage.text}
                       </div>
                     )}
-                    {schedulerCalendarConflictCount > 0 && (
+                    {schedulerCalendarConflicts > 0 && (
                       <div className="scheduler-calendar-warning" role="status">
-                        {schedulerCalendarConflictCount} coincidencia(s): hay tareas distintas
+                        {schedulerCalendarConflicts} coincidencia(s): hay tareas distintas
                         separadas por 15 minutos o menos. Revisa si quieres evitar que compitan
                         por los mismos recursos.
                       </div>
                     )}
-                    {schedulerCalendarDays.length === 0 ? (
+                    {schedulerCalendarGroupedDays.length === 0 ? (
                       <p className="activity-empty">
                         No hay tareas activas dentro de este periodo.
                       </p>
                     ) : (
                       <div className="scheduler-calendar-days">
-                        {schedulerCalendarDays.map((day) => (
+                        {schedulerCalendarGroupedDays.map((day) => (
                           <section key={day.key} className="scheduler-calendar-day">
                             <h4>{day.label}</h4>
                             <div>

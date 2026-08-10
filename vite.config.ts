@@ -20,23 +20,39 @@ export default defineConfig({
     coverage: {
       provider: "v8",
       reporter: ["text-summary", "lcov"],
-      // Solo lógica no visual: `App.tsx` es la capa de presentación y todavía no
-      // tiene pruebas de componente, así que se mide aparte para no inflar la
-      // cifra con archivos que nadie cubre.
-      include: ["apps/desktop/src/**/*.{ts,tsx}"],
+      // Las rutas son relativas a `root` (`apps/desktop`). Escribirlas desde la
+      // raíz del repositorio hacía que `include` no coincidiera con ningún
+      // archivo y la cobertura se calculara sobre 0 de 0, con lo que el umbral
+      // se cumplía sin medir nada.
+      //
+      // `App.tsx` queda fuera del umbral —no de las pruebas— porque son 7.000
+      // líneas de presentación con solo un puñado de pruebas de componente:
+      // incluirlo hundiría la cifra de la lógica que sí está cubierta y
+      // ocultaría una regresión real en ella.
+      // `platform.ts` queda fuera porque no contiene decisiones: son envoltorios
+      // mecánicos de `invoke`. Su corrección real —que cada nombre de orden y
+      // cada argumento existan en Rust— la comprueba
+      // `tests/test_frontend_contract.py` contra el código del backend, que es
+      // una garantía más fuerte que una prueba afirmando el literal que acabo
+      // de escribir.
+      include: ["src/**/*.{ts,tsx}"],
       exclude: [
-        "apps/desktop/src/App.tsx",
-        "apps/desktop/src/main.tsx",
-        "apps/desktop/src/env.d.ts",
-        "apps/desktop/src/platform.ts",
-        "apps/desktop/src/**/*.test.{ts,tsx}"
+        "src/App.tsx",
+        "src/platform.ts",
+        "src/main.tsx",
+        "src/env.d.ts",
+        "src/**/*.test.{ts,tsx}"
       ],
       thresholds: {
-        // Umbral del encargo para lógica no visual.
-        lines: 70,
-        functions: 70,
-        statements: 70,
-        branches: 70
+        // El encargo pide 70 % para lógica no visual. Se sube a 82 porque lo
+        // medido ronda el 85 % tras extraer la lógica de `App.tsx`: un umbral
+        // muy por debajo de lo alcanzado deja de detectar regresiones, que es
+        // justo lo que pasaba mientras el patrón `include` no coincidía con
+        // ningún archivo.
+        lines: 82,
+        functions: 82,
+        statements: 82,
+        branches: 82
       }
     }
   }

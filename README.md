@@ -45,7 +45,10 @@ el primer workflow de investigación incluyen:
   con plan, búsquedas, lectura, síntesis y citas; su expediente y sus etapas
   persisten, se recuperan tras reiniciar y comparten la cancelación durable; los
   enlaces web reales del informe se guardan como fuentes deduplicadas y
-  reaparecen al abrir o exportar la conversación;
+  reaparecen al abrir o exportar la conversación; puede combinarse con la
+  búsqueda semántica de recuerdos y documentos, que se recuperan primero para
+  que la investigación parta de ese contexto, y las herramientas quedan fijadas
+  al enviar para que un reinicio la retome tal y como se autorizó;
 - captura integrada de una pantalla o ventana, con selector seguro de Windows,
   previsualización, recorte visual local, compresión acotada y adjunto explícito
   mediante el flujo normal de ingesta;
@@ -215,6 +218,17 @@ propia ayuda con `?`. Las teclas simples no se capturan mientras se escribe. Al
 recorrer la página con Tab aparece **Saltar al contenido principal**; las
 ventanas mantienen el foco dentro, admiten `Esc` y lo devuelven al control que
 las abrió.
+En **Inicio → Rendimiento** se ven las mediciones tomadas en este equipo:
+arranque, apertura de una conversación, búsqueda y respuesta de la interfaz,
+cada una con su mediana, percentil 95, peor caso y objetivo. Se guardan
+exclusivamente duraciones —ni textos, ni títulos, ni rutas— y como máximo 200
+muestras por métrica, descartando las antiguas. Una métrica sin muestras aparece
+como **Sin medir**: no se declara cumplido un objetivo que no se ha ejecutado.
+La medida del arranque empieza cuando la vista web carga, por lo que no incluye
+la creación del proceso ni de WebView2; la de la interfaz solo observa
+interacciones de 16 ms o más, el mínimo que expone el navegador, de modo que sus
+percentiles son un límite superior. **Vaciar mediciones** las descarta y queda
+registrado en la auditoría.
 
 ## Desarrollo
 

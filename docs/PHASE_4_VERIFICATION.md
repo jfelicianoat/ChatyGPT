@@ -1,10 +1,20 @@
 # Evidencias de Fase 4
 
-Fecha: 2026-07-31.
+Fecha: 2026-08-04 (primer corte: 2026-07-31).
 
 Estado: **Fase 4 en curso**. El primer corte incorpora Investigación profunda
 como workflow durable asociado a una conversación y a la tarea real de Broker
 AI. No simula streaming ni progreso: muestra únicamente el estado persistido.
+
+El corte del 4 de agosto añade la medición local y visible de los objetivos de
+rendimiento. Mide lo que la aplicación puede observar realmente, declara las dos
+limitaciones de plataforma que no puede observar y no emite veredicto sobre una
+métrica que nadie ha ejecutado.
+
+El mismo corte cierra la limitación de búsqueda semántica del primer corte:
+Investigación profunda y recuperación semántica ya componen en lugar de
+excluirse. La política de recuperación que faltaba es un plan de investigación
+congelado al enviar, que sobrevive a la etapa de embeddings y a un reinicio.
 
 ## Matriz del primer corte
 
@@ -46,7 +56,21 @@ AI. No simula streaming ni progreso: muestra únicamente el estado persistido.
 | Fotografía mediante webcam | Verificado por compilación y pruebas de errores de permiso | `openCameraStream`, `captureVideoFrame`, indicador **Cámara activa** e importación común de imágenes capturadas | solo se solicita vídeo tras pulsar **Usar cámara**; nunca se solicita audio, todas las pistas se detienen al fotografiar, cancelar, navegar o cerrar y la foto requiere confirmación antes de adjuntarse | pulsar **Usar cámara**, conceder permiso de Windows, tomar una foto, revisar la imagen, adjuntarla y preguntar por su contenido |
 | Recuperación tras reinicio | Cubierto por la cola durable existente y persistencia del expediente | `recover_non_terminal_tasks.sql`, `broker_task_id` único e historial de etapas | no crea una segunda tarea al reabrir la aplicación | reiniciar mientras está activa y verificar que continúa el mismo expediente |
 | Convivencia con adjuntos | Verificado por compilación | reutiliza el constructor de contexto y los adjuntos activos | documentos seleccionados siguen formando parte de la petición | adjuntar un documento y pedir contrastarlo con fuentes web |
-| Búsqueda semántica | Limitación explícita del primer corte | la investigación tiene prioridad cuando ambos controles están activos | evita introducir dos workflows anidados sin una política de recuperación definida | comprobar el aviso visible junto al compositor |
+| Búsqueda semántica junto a investigación | Verificado por prueba durable y compilación | migración `0018_semantic_research_workflow.sql` y test `semantic_workflow_carries_a_frozen_research_plan_into_its_second_stage` | ambos controles ya componen: primero se recuperan recuerdos y fragmentos por similitud y la investigación parte de ese contexto en vez de descartarlo | activar **Investigación profunda** y **Buscar recuerdos** a la vez, enviar y abrir **Ver contexto utilizado** |
+| Política de recuperación de los workflows anidados | Verificado automáticamente | `ResearchPlan` congelado en `research_plan_json` y test `research_plan_is_frozen_and_survives_the_semantic_round_trip` | entre validar y enviar median una tarea de embeddings y quizá un reinicio; el plan persistido se aplica tal cual, de modo que un Broker con otras herramientas no altera una investigación ya autorizada | iniciar una investigación con recuerdos, cerrar la app durante la etapa de búsqueda y volver a abrirla |
+| Validación antes de persistir | Verificado automáticamente | `deep_research_plan` se ejecuta antes de escribir el mensaje en SQLite | si el Broker no anuncia `agent`, `web_search` o `fetch_url`, el turno se rechaza sin dejar un mensaje a medias, también por el camino semántico | detener una capacidad en Broker, activar ambos controles y comprobar el error accionable |
+| Expediente único de investigación | Verificado por prueba durable | `insert_research_run_if_needed` decide leyendo la petición ya construida y lo usan las dos rutas | una investigación abre las mismas tres etapas y el mismo evento `research.started` llegue por el camino directo o tras la recuperación semántica | comparar la ficha de progreso de una investigación con recuerdos y otra sin ellos |
+| Medición de arranque | Verificado por prueba durable y compilación | migración `0017_performance_samples.sql`, `metrics.rs` y test `performance_report_only_judges_metrics_that_were_executed` | se registra una sola muestra por sesión, desde que la vista web empieza a cargar hasta que hay navegación y primera conversación en pantalla | abrir con el BAT, ir a **Inicio → Rendimiento** y comprobar que **Arranque de la aplicación** tiene una muestra |
+| Medición de apertura de conversación | Verificado por prueba durable y compilación | `recordSample("conversation_open", …)` en `openConversation` y tests de resumen por percentil | solo se cronometra la apertura completada: una que falla describe el error, no el rendimiento | abrir varias conversaciones distintas y ver crecer el contador de muestras |
+| Medición de búsqueda | Verificado por prueba durable y compilación | cronometrado alrededor de `platform.searchConversations` | mide la consulta a SQLite, no la espera deliberada de 250 ms que evita consultar en cada tecla | escribir en **Buscar conversaciones** y revisar la métrica |
+| Medición de respuesta de la interfaz | Verificado por pruebas de dominio y compilación; límite de plataforma documentado | `PerformanceObserver` de tipo `event` filtrado por `interactionId` y test `solo considera interacciones deliberadas` | mide desde la interacción hasta el fotograma que la refleja; el umbral mínimo de 16 ms de la API deja fuera las más rápidas, por lo que los percentiles son un límite superior y nunca una cifra optimista | hacer clic y escribir en varios controles y comprobar que aparecen muestras |
+| Objetivo comparado con el percentil 95 | Verificado automáticamente | `metrics::summarize` y test `summary_compares_the_ninety_fifth_percentile_against_the_budget` | el percentil usa rango más cercano, devuelve un valor realmente observado y trata el objetivo como «como máximo», no como «por debajo» | comparar la columna p95 con el objetivo mostrado |
+| Sin veredicto sin ejecución | Verificado automáticamente | `meets_budget` es `Option<bool>` y test `summary_without_samples_has_no_verdict` | una métrica sin muestras aparece como **Sin medir**; nunca como cumplida | abrir el panel en una instalación nueva y comprobar las cuatro métricas |
+| Muestras acotadas | Verificado por prueba durable | poda dentro de la misma transacción del `INSERT` y test `performance_samples_are_bounded_typed_and_free_of_personal_content` | 250 muestras dejan exactamente las 200 últimas; el búfer del cliente también descarta lo antiguo antes de crecer | usar la aplicación un rato y comprobar que el total no supera 200 por métrica |
+| Sin contenido personal | Verificado por esquema y prueba | CHECK de vocabulario cerrado, columnas `id`/`metric`/`duration_ms`/`recorded_at` y comprobación de `pragma_table_info` | la tabla no tiene ninguna columna capaz de guardar un prompt, un título o una ruta, y una métrica desconocida se rechaza antes de tocarla | abrir la base con un visor SQLite y revisar `performance_samples` |
+| Vaciado de mediciones | Verificado por prueba durable | `clear_performance_samples` exige confirmación y audita `performance.samples_cleared` | descarta también las muestras aún no enviadas, deja las cuatro métricas sin veredicto y queda registrado | pulsar **Vaciar mediciones** y revisar **Auditoría** |
+| Coste de medir acotado | Verificado por pruebas de dominio | `PerformanceSampleBuffer` agrupa y envía por lotes cada cinco segundos, con división en lotes de 100 | la instrumentación no realiza una escritura por interacción ni bloquea la interfaz | interactuar rápidamente y comprobar que la aplicación responde igual |
+| Arranque del proceso | Limitación de plataforma documentada | `performance.now()` se cuenta desde el inicio de la vista web | la creación del proceso Tauri y de WebView2 no es observable desde el frontend y queda excluida de la medida, declarado junto a la métrica | contrastar con un cronómetro externo si se necesita la cifra completa |
 
 ## Verificación automática
 
@@ -60,9 +84,45 @@ python -m unittest discover -s tests -v
 git diff --check
 ```
 
-## Siguiente corte
+## Objetivos de rendimiento adoptados
 
-Añadir medición local y visible de los objetivos de rendimiento iniciales:
-arranque, apertura de conversación, búsqueda y respuesta inmediata de la
-interfaz, con muestras acotadas y sin registrar contenido personal. La
-Herramienta Recortes nativa se retomará al incorporar una distribución MSIX.
+Los presupuestos viven en `PerformanceMetric::budget_ms` y se comparan siempre
+con el percentil 95 de las muestras conservadas. Son los valores iniciales
+adoptados por el proyecto para poder medir; ajustarlos exige cambiar únicamente
+ese punto del código.
+
+| Métrica | Objetivo (p95) | Qué abarca |
+|---|---|---|
+| Arranque de la aplicación | ≤ 2.000 ms | desde el inicio de la vista web hasta tener navegación y primera conversación; excluye proceso y WebView2 |
+| Apertura de una conversación | ≤ 400 ms | mensajes, adjuntos y archivos de proyecto cargados |
+| Búsqueda de conversaciones | ≤ 300 ms | consulta a SQLite; excluye la espera antirrebote de 250 ms |
+| Respuesta inmediata de la interfaz | ≤ 100 ms | interacción hasta el fotograma que la refleja; solo observable a partir de 16 ms |
+
+## Subtareas reales de Investigación profunda
+
+Completado el 6 de agosto de 2026. **Ya no está bloqueado**: el Broker admite herramientas de cliente, de modo que puede pausar
+la tarea y pedirle a ChatyGPT que ejecute un paso, con su nombre y sus
+argumentos visibles antes de resolverlo. El diseño adoptado es híbrido —buscar
+lo sigue haciendo el Broker; abrir enlaces lo hace ChatyGPT— y su consecuencia
+se asume por escrito:
+
+> Las búsquedas que ejecuta el Broker no pausan la tarea ni aparecen en
+> `pending_tool_calls`. Los pasos registrados dirán «abrí esta URL» sin el
+> «busqué esto» que la produjo. Pasar `web_search` a herramienta de cliente
+> daría la traza completa y no costaría iteraciones, pero exige antes elegir un
+> proveedor de búsqueda, conseguir una credencial y aceptar que salga tráfico
+> del equipo hacia un tercero. Mientras esa decisión no se tome, la mitad del
+> recorrido es una caja negra y el registro no debe aparentar lo contrario.
+
+| Bucle de herramientas | Verificado de extremo a extremo contra el Broker simulado | test `a_research_resolves_its_own_tools_and_records_each_one_as_a_step` | al llegar a `waiting_for_tools`, una investigación ejecuta sus herramientas y devuelve **todas** en una sola petición, como exige el contrato; un turno corriente sigue esperando la decisión de la persona | activar Investigación profunda y observar los pasos aparecer |
+| Herramientas acotadas al equipo | Verificado por pruebas puras y de integración | `validate_fetch_url` rechaza esquemas no web, credenciales incrustadas y direcciones locales o privadas | un modelo no puede hacer que ChatyGPT abra `file://` ni llame a la puerta de su propio Broker desde una URL que él eligió | pedir una investigación sobre algo con enlaces y revisar las fuentes |
+| Fallo de herramienta sin bloqueo | Verificado de extremo a extremo | el resultado de error viaja al modelo en `tool_results` | una fuente que no se puede abrir no deja la investigación esperando para siempre: el modelo recibe el motivo y prueba otra | — |
+| Pasos reales | Verificado por prueba durable | `record_research_tool_step` y test `executed_tools_become_the_real_research_steps` | cada herramienta ejecutada es un paso con su parámetro visible, su estado y su resultado; la identidad es el `tool_call_id`, así que reejecutar tras un reinicio actualiza el mismo paso | comparar el expediente con el de una investigación anterior |
+| Desenlace de un paso conservado | Verificado por prueba durable | la proyección terminal ya no reescribe estados terminales | que la investigación acabe bien no convierte en buena una fuente que no se pudo abrir | provocar un enlace roto y revisar el expediente |
+| Reanudación tras reinicio | Cubierto por la recuperación existente | `recover_non_terminal_tasks.sql` marca toda tarea no terminal, `waiting_for_tools` incluida | una investigación pausada se retoma sola al abrir la aplicación; `broker_tasks` es el registro propio de `task_id` que el Broker no puede ofrecer | cerrar la app durante una investigación y volver a abrirla |
+| Cierre de investigaciones abandonadas | Verificado de extremo a extremo | test `a_startup_closes_abandoned_tasks_that_are_still_paused_in_the_broker` | al arrancar se consulta cada tarea huérfana con remoto vivo y se cancela con `DELETE`, porque `waiting_for_tools` no caduca; queda auditado como aviso | revisar **Auditoría** tras un fallo permanente |
+| Tarea que terminó sola | Verificado de extremo a extremo | test `an_abandoned_task_that_finished_on_its_own_is_not_cancelled` | si mientras tanto acabó, se anota su desenlace en vez de cancelarla: no se descarta trabajo a ciegas | — |
+
+Falta la validación contra el esquema de respuesta en tiempo de ejecución —hoy
+se comprueba en pruebas, no en cada respuesta— y la Herramienta Recortes
+nativa, que se retomará al incorporar una distribución MSIX.

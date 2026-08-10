@@ -281,6 +281,34 @@ function renderBlocks(text: string, keyPrefix = "markdown"): ReactNode[] {
   return blocks;
 }
 
+/**
+ * Desenvuelve un documento que el modelo entregó dentro de un cercado.
+ *
+ * Los modelos devuelven a menudo un informe entero envuelto en
+ * ` ```markdown … ``` `, porque así lo escriben en un chat. Renderizarlo tal
+ * cual produce una caja de código dentro de la burbuja de la respuesta, con el
+ * Markdown en crudo: exactamente lo que la presentación debe evitar.
+ *
+ * Solo se desenvuelve cuando **todo** el mensaje es un único cercado y su
+ * lenguaje declarado es `markdown` o `md`. Un bloque sin lenguaje se respeta:
+ * puede ser código de verdad, y convertir un script en prosa sería peor que el
+ * problema que se arregla.
+ */
+export function unwrapFencedDocument(text: string): string {
+  const normalized = text.replace(/\r\n?/g, "\n").trim();
+  const match = normalized.match(
+    /^(```|~~~)[ \t]*(markdown|md)[ \t]*\n([\s\S]*?)\n?\1[ \t]*$/i
+  );
+  if (!match) return text;
+  const inner = match[3];
+  // Si el contenido abre otro cercado sin cerrarlo, desenvolver rompería el
+  // documento: se deja como estaba.
+  const fences = inner.match(/^(```|~~~)/gm)?.length ?? 0;
+  return fences % 2 === 0 ? inner : text;
+}
+
 export function MarkdownContent({ text }: MarkdownContentProps) {
-  return <div className="markdown-content">{renderBlocks(text)}</div>;
+  return (
+    <div className="markdown-content">{renderBlocks(unwrapFencedDocument(text))}</div>
+  );
 }

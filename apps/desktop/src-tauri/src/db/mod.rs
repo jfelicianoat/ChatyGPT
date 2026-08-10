@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 use crate::broker::{TaskAccepted, TaskState};
 use crate::error::AppError;
+use crate::metrics::{self, PerformanceMetric, PerformanceReportView};
 
 const INITIAL_MIGRATION: &str = include_str!("../../migrations/0001_initial.sql");
 const ATTACHMENTS_MIGRATION: &str = include_str!("../../migrations/0002_attachments.sql");
@@ -37,9 +38,13 @@ const SCHEDULED_TASK_TEMPLATES_MIGRATION: &str =
     include_str!("../../migrations/0015_scheduled_task_templates.sql");
 const CONFIRMATION_REQUESTS_MIGRATION: &str =
     include_str!("../../migrations/0016_confirmation_requests.sql");
+const PERFORMANCE_SAMPLES_MIGRATION: &str =
+    include_str!("../../migrations/0017_performance_samples.sql");
+const SEMANTIC_RESEARCH_WORKFLOW_MIGRATION: &str =
+    include_str!("../../migrations/0018_semantic_research_workflow.sql");
 const RECOVER_NON_TERMINAL_TASKS: &str =
     include_str!("../../queries/recover_non_terminal_tasks.sql");
-pub const SCHEMA_VERSION: i64 = 16;
+pub const SCHEMA_VERSION: i64 = 18;
 
 #[derive(Clone)]
 pub struct Database {
@@ -628,6 +633,12 @@ pub struct SemanticChatWorkflow {
     pub tools_enabled: bool,
     pub sandbox_enabled: bool,
     pub execution_preferences: ConversationExecutionPreferences,
+    /// Plan de Investigación profunda congelado al enviar el turno.
+    ///
+    /// `None` es un turno semántico ordinario. Cuando existe, la segunda etapa
+    /// y cualquier recuperación posterior aplican este plan tal cual, sin
+    /// volver a preguntar al Broker qué herramientas anuncia hoy.
+    pub research_plan: Option<Value>,
     pub status: String,
 }
 
@@ -708,6 +719,7 @@ fn audit_presentation(event_type: &str) -> (&'static str, &'static str, &'static
         "remote.status_changed" => ("task", "Cambió el estado de una tarea", "info"),
         "transport.error" => ("task", "Error temporal de conexión", "error"),
         "local.orphaned" => ("task", "Tarea pendiente marcada para revisión", "warning"),
+        "task.abandoned_cancelled" => ("task", "Tarea abandonada cerrada en Broker AI", "warning"),
         "local.tool_decisions_prepared" => ("tool", "Decisiones de herramientas guardadas", "info"),
         "remote.tool_results_accepted" => ("tool", "Broker AI aceptó los resultados", "info"),
         "export.pending" => ("export", "Exportación iniciada", "info"),
@@ -1176,9 +1188,23 @@ impl Database {
             transaction.commit()?;
         }
         let current: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if current < SCHEMA_VERSION {
+        if current < 16 {
             let transaction = connection.transaction()?;
             transaction.execute_batch(CONFIRMATION_REQUESTS_MIGRATION)?;
+            transaction.pragma_update(None, "user_version", 16)?;
+            transaction.commit()?;
+        }
+        let current: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        if current < 17 {
+            let transaction = connection.transaction()?;
+            transaction.execute_batch(PERFORMANCE_SAMPLES_MIGRATION)?;
+            transaction.pragma_update(None, "user_version", 17)?;
+            transaction.commit()?;
+        }
+        let current: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        if current < SCHEMA_VERSION {
+            let transaction = connection.transaction()?;
+            transaction.execute_batch(SEMANTIC_RESEARCH_WORKFLOW_MIGRATION)?;
             transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             transaction.commit()?;
         }
@@ -5445,6 +5471,7 @@ impl Database {
         tools_enabled: bool,
         sandbox_enabled: bool,
         execution_preferences: &ConversationExecutionPreferences,
+        research_plan: Option<&Value>,
     ) -> Result<BrokerTaskRecord, AppError> {
         self.prepare_semantic_chat_turn_with_project_instruction(
             workflow_id,
@@ -5462,6 +5489,7 @@ impl Database {
             tools_enabled,
             sandbox_enabled,
             execution_preferences,
+            research_plan,
         )
     }
 
@@ -5483,7 +5511,12 @@ impl Database {
         tools_enabled: bool,
         sandbox_enabled: bool,
         execution_preferences: &ConversationExecutionPreferences,
+        research_plan: Option<&Value>,
     ) -> Result<BrokerTaskRecord, AppError> {
+        let research_plan_json = research_plan
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|error| AppError::BrokerContract(error.to_string()))?;
         let request_json = serde_json::to_string(embedding_request)
             .map_err(|error| AppError::BrokerContract(error.to_string()))?;
         let context_json = serde_json::to_string(context)
@@ -5595,8 +5628,9 @@ impl Database {
                 id, conversation_id, user_message_id, assistant_message_id,
                 embedding_task_id, user_text, context_json, attachment_ids_json,
                 tools_enabled, sandbox_enabled, execution_preferences_json,
-                project_instruction_json, custom_gpt_context_json
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                project_instruction_json, custom_gpt_context_json,
+                research_plan_json
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
                 workflow_id,
                 conversation_id,
@@ -5610,7 +5644,8 @@ impl Database {
                 i64::from(sandbox_enabled),
                 execution_preferences_json,
                 project_instruction_json,
-                custom_gpt_context_json
+                custom_gpt_context_json,
+                research_plan_json
             ],
         )?;
         transaction.execute(
@@ -5644,7 +5679,7 @@ impl Database {
                         embedding_task_id, chat_task_id, user_text, context_json,
                         attachment_ids_json, tools_enabled, sandbox_enabled,
                         execution_preferences_json, status, project_instruction_json,
-                        custom_gpt_context_json
+                        custom_gpt_context_json, research_plan_json
                  FROM semantic_chat_workflows
                  WHERE embedding_task_id = ?1 OR chat_task_id = ?1",
                 params![task_id],
@@ -5699,6 +5734,18 @@ impl Database {
                             })
                         })
                         .transpose()?;
+                    let research_plan_json: Option<String> = row.get(15)?;
+                    let research_plan = research_plan_json
+                        .map(|value| {
+                            serde_json::from_str(&value).map_err(|error| {
+                                rusqlite::Error::FromSqlConversionFailure(
+                                    value.len(),
+                                    rusqlite::types::Type::Text,
+                                    Box::new(error),
+                                )
+                            })
+                        })
+                        .transpose()?;
                     Ok(SemanticChatWorkflow {
                         id: row.get(0)?,
                         conversation_id: row.get(1)?,
@@ -5714,6 +5761,7 @@ impl Database {
                         tools_enabled: row.get(9)?,
                         sandbox_enabled: row.get(10)?,
                         execution_preferences,
+                        research_plan,
                         status: row.get(12)?,
                     })
                 },
@@ -5940,6 +5988,13 @@ impl Database {
             "UPDATE messages SET broker_task_id = ?2, updated_at = datetime('now')
              WHERE id = ?1",
             params![workflow.assistant_message_id, local_task_id],
+        )?;
+        insert_research_run_if_needed(
+            &transaction,
+            request,
+            &workflow.conversation_id,
+            local_task_id,
+            &workflow.user_text,
         )?;
         let snapshot_id = format!("ctx_{}", Uuid::new_v4().simple());
         transaction.execute(
@@ -6364,54 +6419,13 @@ impl Database {
             "UPDATE messages SET broker_task_id = ?2 WHERE id = ?1",
             params![assistant_message_id, local_task_id],
         )?;
-        if request
-            .get("content")
-            .and_then(|content| content.get("metadata"))
-            .and_then(|metadata| metadata.get("workflow_kind"))
-            .and_then(Value::as_str)
-            == Some("deep_research")
-        {
-            let research_run_id = format!("research_{}", Uuid::new_v4().simple());
-            transaction.execute(
-                "INSERT INTO research_runs(
-                    id, conversation_id, broker_task_id, objective, status
-                 ) VALUES (?1, ?2, ?3, ?4, 'planning')",
-                params![research_run_id, conversation_id, local_task_id, user_text],
-            )?;
-            for (ordinal, kind, title) in [
-                (0_i64, "plan", "Preparar el plan"),
-                (1_i64, "research", "Buscar y contrastar fuentes"),
-                (2_i64, "synthesis", "Sintetizar el informe con citas"),
-            ] {
-                transaction.execute(
-                    "INSERT INTO research_steps(
-                        id, research_run_id, ordinal, objective, status,
-                        broker_task_id, kind, title
-                     ) VALUES (?1, ?2, ?3, ?5, 'pending', ?6, ?4, ?5)",
-                    params![
-                        format!("research_step_{}", Uuid::new_v4().simple()),
-                        research_run_id,
-                        ordinal,
-                        kind,
-                        title,
-                        local_task_id
-                    ],
-                )?;
-            }
-            transaction.execute(
-                "INSERT INTO audit_events(
-                    event_type, actor, conversation_id, payload_json
-                 ) VALUES ('research.started', 'user', ?1, ?2)",
-                params![
-                    conversation_id,
-                    serde_json::json!({
-                        "research_run_id": research_run_id,
-                        "broker_task_id": local_task_id
-                    })
-                    .to_string()
-                ],
-            )?;
-        }
+        insert_research_run_if_needed(
+            &transaction,
+            request,
+            conversation_id,
+            local_task_id,
+            user_text,
+        )?;
         let snapshot_id = format!("ctx_{}", Uuid::new_v4().simple());
         let has_summary = context.iter().any(|source| source.role == "summary");
         let strategy_version = match (
@@ -7036,7 +7050,7 @@ impl Database {
             |row| row.get(0),
         )?;
         if research_run_exists {
-            let (run_status, active_ordinal) = if state.status.is_terminal() {
+            let (run_status, _active_ordinal) = if state.status.is_terminal() {
                 (
                     match state.status.as_str() {
                         "completed" => "completed",
@@ -7072,8 +7086,11 @@ impl Database {
                 transaction.execute(
                     "UPDATE research_steps
                      SET status = CASE
-                           WHEN ?2 = 'completed' THEN 'completed'
-                           WHEN status = 'completed' THEN status
+                           -- Un paso que ya terminó conserva su desenlace: que
+                           -- la investigación acabe bien no convierte en buena
+                           -- una fuente que no se pudo abrir. Solo se cierran
+                           -- los pasos que se quedaron a medias.
+                           WHEN status IN ('completed', 'failed', 'cancelled') THEN status
                            ELSE ?2
                          END,
                          started_at = COALESCE(started_at, datetime('now')),
@@ -7083,28 +7100,12 @@ impl Database {
                      )",
                     params![id, step_status],
                 )?;
-            } else if let Some(active_ordinal) = active_ordinal {
-                transaction.execute(
-                    "UPDATE research_steps
-                     SET status = CASE
-                           WHEN ordinal < ?2 THEN 'completed'
-                           WHEN ordinal = ?2 THEN 'running'
-                           ELSE 'pending'
-                         END,
-                         started_at = CASE
-                           WHEN ordinal <= ?2 THEN COALESCE(started_at, datetime('now'))
-                           ELSE started_at
-                         END,
-                         completed_at = CASE
-                           WHEN ordinal < ?2 THEN COALESCE(completed_at, datetime('now'))
-                           ELSE NULL
-                         END
-                     WHERE research_run_id = (
-                       SELECT id FROM research_runs WHERE broker_task_id = ?1
-                     )",
-                    params![id, active_ordinal],
-                )?;
             }
+            // Sin proyección por ordinal: antes se derivaba el estado de cada
+            // etapa fija de la fase remota, porque las etapas eran una
+            // plantilla. Los pasos reales llevan su propio estado, el de la
+            // herramienta que se ejecutó, y sobrescribirlo desde la fase de la
+            // tarea daría por «pendiente» una fuente ya abierta.
         }
         if previous != state.status.as_str() {
             transaction.execute(
@@ -8102,6 +8103,269 @@ impl Database {
             .into_iter()
             .find(|template| template.id == id)
             .ok_or_else(|| AppError::NotFound("plantilla programada recién creada".to_owned()))
+    }
+
+    /// Registra un lote de duraciones de una misma métrica y poda las antiguas.
+    ///
+    /// Insertar y podar en la misma transacción es lo que hace que el límite sea
+    /// real: no existe un instante en el que la tabla supere las muestras
+    /// conservadas, ni una tarea de mantenimiento que pueda no ejecutarse nunca.
+    pub fn record_performance_samples(
+        &self,
+        metric: &str,
+        durations_ms: &[i64],
+    ) -> Result<i64, AppError> {
+        let metric = PerformanceMetric::parse(metric).ok_or_else(|| {
+            AppError::Validation("la métrica de rendimiento no es válida".to_owned())
+        })?;
+        if durations_ms.is_empty() {
+            return Ok(0);
+        }
+        if durations_ms.len() > metrics::MAX_SAMPLES_PER_CALL {
+            return Err(AppError::Validation(
+                "demasiadas muestras de rendimiento en una sola llamada".to_owned(),
+            ));
+        }
+        if let Some(invalid) = durations_ms
+            .iter()
+            .find(|duration| !metrics::is_reportable_sample(**duration))
+        {
+            return Err(AppError::Validation(format!(
+                "la duración {invalid} ms está fuera del rango admitido"
+            )));
+        }
+
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        {
+            let mut insert = transaction
+                .prepare("INSERT INTO performance_samples(metric, duration_ms) VALUES (?1, ?2)")?;
+            for duration in durations_ms {
+                insert.execute(params![metric.as_str(), duration])?;
+            }
+        }
+        transaction.execute(
+            "DELETE FROM performance_samples
+             WHERE metric = ?1
+               AND id NOT IN (
+                   SELECT id FROM performance_samples
+                   WHERE metric = ?1
+                   ORDER BY id DESC
+                   LIMIT ?2
+               )",
+            params![metric.as_str(), metrics::MAX_SAMPLES_PER_METRIC],
+        )?;
+        let retained: i64 = transaction.query_row(
+            "SELECT COUNT(*) FROM performance_samples WHERE metric = ?1",
+            params![metric.as_str()],
+            |row| row.get(0),
+        )?;
+        transaction.commit()?;
+        Ok(retained)
+    }
+
+    /// Tareas que aquí se dieron por perdidas pero siguen vivas en el Broker.
+    ///
+    /// Una tarea queda `orphaned` cuando un error permanente impide seguir
+    /// atendiéndola —por ejemplo, si el envío de resultados de herramienta es
+    /// rechazado por contrato—. La recuperación las excluye a propósito: no
+    /// tiene sentido reintentar algo que no puede mejorar repitiéndolo.
+    ///
+    /// El problema es el otro lado. Si el Broker la dejó pausada esperando una
+    /// herramienta, `waiting_for_tools` **no caduca**: seguiría esperando una
+    /// respuesta que ChatyGPT ya no va a enviar. Estas son las que hay que
+    /// cerrar explícitamente al arrancar.
+    pub fn abandoned_remote_tasks(&self) -> Result<Vec<(String, String)>, AppError> {
+        let connection = self.connect()?;
+        let mut statement = connection.prepare(
+            "SELECT id, remote_task_id FROM broker_tasks
+             WHERE local_state = 'orphaned'
+               AND remote_task_id IS NOT NULL
+               AND remote_status NOT IN ('completed', 'failed', 'cancelled')
+             ORDER BY created_at",
+        )?;
+        let rows = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Deja constancia de que se cerró una tarea abandonada.
+    ///
+    /// Se audita porque es trabajo del Broker que ChatyGPT decide descartar sin
+    /// preguntar: conviene poder responder después a «¿quién canceló esto?».
+    pub fn record_abandoned_cancellation(
+        &self,
+        local_task_id: &str,
+        remote_task_id: &str,
+        remote_status: &str,
+    ) -> Result<(), AppError> {
+        let connection = self.connect()?;
+        connection.execute(
+            "INSERT INTO audit_events(event_type, actor, conversation_id, payload_json)
+             SELECT 'task.abandoned_cancelled', 'chatygpt', conversation_id, ?2
+             FROM broker_tasks WHERE id = ?1",
+            params![
+                local_task_id,
+                serde_json::json!({
+                    "broker_task_id": local_task_id,
+                    "remote_task_id": remote_task_id,
+                    "remote_status": remote_status
+                })
+                .to_string()
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Anota una herramienta ejecutada como paso real de la investigación.
+    ///
+    /// Sustituye a las tres etapas fijas por lo que de verdad ocurrió: cada
+    /// llamada que el modelo pidió, con su parámetro visible —la URL—, su
+    /// resultado y su marca de tiempo. El `tool_call_id` es la identidad: el
+    /// mismo paso no se registra dos veces aunque una recuperación reejecute
+    /// la herramienta.
+    ///
+    /// `kind` es `research` porque el CHECK de la tabla solo admite las tres
+    /// clases originales; el detalle real vive en `objective` y `result_json`.
+    pub fn record_research_tool_step(
+        &self,
+        broker_task_id: &str,
+        tool_call_id: &str,
+        tool_name: &str,
+        argument: &str,
+        status: &str,
+        result: &Value,
+    ) -> Result<(), AppError> {
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let research_run_id: Option<String> = transaction
+            .query_row(
+                "SELECT id FROM research_runs WHERE broker_task_id = ?1",
+                params![broker_task_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(research_run_id) = research_run_id else {
+            return Ok(());
+        };
+        // La identidad del paso es la llamada, no su posición: reejecutar la
+        // herramienta tras un reinicio actualiza el mismo registro.
+        let existing: Option<String> = transaction
+            .query_row(
+                "SELECT id FROM research_steps
+                 WHERE research_run_id = ?1
+                   AND json_extract(result_json, '$.tool_call_id') = ?2",
+                params![research_run_id, tool_call_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let mut payload = result.clone();
+        payload["tool_call_id"] = serde_json::json!(tool_call_id);
+        payload["tool"] = serde_json::json!(tool_name);
+        let payload_json = payload.to_string();
+        match existing {
+            Some(step_id) => {
+                transaction.execute(
+                    "UPDATE research_steps
+                     SET status = ?2,
+                         result_json = ?3,
+                         completed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                         updated_at = datetime('now')
+                     WHERE id = ?1",
+                    params![step_id, status, payload_json],
+                )?;
+            }
+            None => {
+                let next_ordinal: i64 = transaction.query_row(
+                    "SELECT COALESCE(MAX(ordinal), -1) + 1 FROM research_steps
+                     WHERE research_run_id = ?1",
+                    params![research_run_id],
+                    |row| row.get(0),
+                )?;
+                transaction.execute(
+                    "INSERT INTO research_steps(
+                        id, research_run_id, ordinal, objective, status,
+                        broker_task_id, kind, title, started_at, completed_at,
+                        result_json
+                     ) VALUES (
+                        ?1, ?2, ?3, ?4, ?5, ?6, 'research', ?7,
+                        strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                        strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                        ?8
+                     )",
+                    params![
+                        format!("research_step_{}", Uuid::new_v4().simple()),
+                        research_run_id,
+                        next_ordinal,
+                        argument,
+                        status,
+                        broker_task_id,
+                        format!("{tool_name}: {argument}"),
+                        payload_json
+                    ],
+                )?;
+            }
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Informe de rendimiento sobre las muestras conservadas.
+    pub fn performance_report(&self) -> Result<PerformanceReportView, AppError> {
+        let connection = self.connect()?;
+        let mut summaries = Vec::with_capacity(PerformanceMetric::ALL.len());
+        let mut total = 0_i64;
+        for metric in PerformanceMetric::ALL {
+            let mut statement = connection.prepare(
+                "SELECT duration_ms FROM performance_samples
+                 WHERE metric = ?1
+                 ORDER BY id DESC
+                 LIMIT ?2",
+            )?;
+            let durations = statement
+                .query_map(
+                    params![metric.as_str(), metrics::MAX_SAMPLES_PER_METRIC],
+                    |row| row.get::<_, i64>(0),
+                )?
+                .collect::<Result<Vec<_>, _>>()?;
+            let last_recorded_at = connection
+                .query_row(
+                    "SELECT recorded_at FROM performance_samples
+                     WHERE metric = ?1
+                     ORDER BY id DESC
+                     LIMIT 1",
+                    params![metric.as_str()],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            total += durations.len() as i64;
+            summaries.push(metrics::summarize(metric, &durations, last_recorded_at));
+        }
+        Ok(PerformanceReportView {
+            metrics: summaries,
+            sample_limit: metrics::MAX_SAMPLES_PER_METRIC,
+            total_samples: total,
+        })
+    }
+
+    /// Borra todas las mediciones. Exige confirmación y queda auditado.
+    pub fn clear_performance_samples(&self, confirmed: bool) -> Result<(), AppError> {
+        if !confirmed {
+            return Err(AppError::Validation(
+                "vaciar las mediciones requiere confirmación explícita".to_owned(),
+            ));
+        }
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let removed = transaction.execute("DELETE FROM performance_samples", [])?;
+        transaction.execute(
+            "INSERT INTO audit_events(event_type, actor, payload_json)
+             VALUES ('performance.samples_cleared', 'user', ?1)",
+            params![serde_json::json!({ "removed_samples": removed }).to_string()],
+        )?;
+        transaction.commit()?;
+        Ok(())
     }
 
     pub fn delete_scheduled_task_template(
@@ -9245,6 +9509,55 @@ fn cosine_similarity(left: &[f64], right: &[f64]) -> f64 {
     }
 }
 
+/// Abre el expediente durable de una investigación cuando la petición lo es.
+///
+/// La decisión se toma leyendo la petición ya construida, no un parámetro
+/// aparte: así una investigación abre exactamente el mismo expediente tanto si
+/// llega por el camino directo como si llega tras una recuperación semántica, y
+/// no puede existir una petición `deep_research` sin sus etapas asociadas.
+fn insert_research_run_if_needed(
+    transaction: &rusqlite::Transaction<'_>,
+    request: &Value,
+    conversation_id: &str,
+    local_task_id: &str,
+    user_text: &str,
+) -> Result<(), AppError> {
+    if request
+        .get("content")
+        .and_then(|content| content.get("metadata"))
+        .and_then(|metadata| metadata.get("workflow_kind"))
+        .and_then(Value::as_str)
+        != Some("deep_research")
+    {
+        return Ok(());
+    }
+    let research_run_id = format!("research_{}", Uuid::new_v4().simple());
+    transaction.execute(
+        "INSERT INTO research_runs(
+            id, conversation_id, broker_task_id, objective, status
+         ) VALUES (?1, ?2, ?3, ?4, 'planning')",
+        params![research_run_id, conversation_id, local_task_id, user_text],
+    )?;
+    // Sin etapas fijas. Antes se insertaban tres —plan, búsqueda, síntesis— que
+    // no describían nada: eran una plantilla dibujada antes de que ocurriera
+    // nada. Los pasos reales los escribe `record_research_tool_step` conforme
+    // el modelo pide herramientas, cada uno con su parámetro y su resultado.
+    transaction.execute(
+        "INSERT INTO audit_events(
+            event_type, actor, conversation_id, payload_json
+         ) VALUES ('research.started', 'user', ?1, ?2)",
+        params![
+            conversation_id,
+            serde_json::json!({
+                "research_run_id": research_run_id,
+                "broker_task_id": local_task_id
+            })
+            .to_string()
+        ],
+    )?;
+    Ok(())
+}
+
 fn lexical_terms(text: &str) -> HashSet<String> {
     text.to_lowercase()
         .split(|character: char| !character.is_alphanumeric())
@@ -9284,6 +9597,376 @@ mod tests {
         ] {
             let _ = std::fs::remove_file(candidate);
         }
+    }
+
+    /// Investigación profunda y recuperación semántica ya conviven.
+    ///
+    /// Antes, activar ambos controles descartaba la recuperación en silencio.
+    /// Ahora el plan se congela en la primera etapa, sobrevive a un reinicio y
+    /// la segunda etapa abre el mismo expediente de investigación que abriría
+    /// el camino directo.
+    #[test]
+    fn semantic_workflow_carries_a_frozen_research_plan_into_its_second_stage() {
+        let database = test_database();
+        let conversation = database
+            .create_conversation("Investigación con contexto", None)
+            .expect("conversation should be created");
+        let embedding_request = serde_json::json!({
+            "inference_kind": "embedding",
+            "content": {"metadata": {
+                "source_type": "chat_memory_search",
+                "source_id": "research-workflow",
+                "content_sha256": "research-hash"
+            }}
+        });
+        let context = vec![ContextMessage {
+            message_id: "research-user".to_owned(),
+            role: "user".to_owned(),
+            text: "Contrasta el informe adjunto con fuentes públicas".to_owned(),
+        }];
+        let plan = serde_json::json!({ "skills": ["web_search"], "client_tools": ["fetch_url"], "max_iterations": 12 });
+        database
+            .prepare_semantic_chat_turn(
+                "research-workflow",
+                &conversation.id,
+                "research-user",
+                "research-assistant",
+                "research-embedding-task",
+                "research-embedding-key",
+                "Contrasta el informe adjunto con fuentes públicas",
+                &embedding_request,
+                &context,
+                &[],
+                false,
+                false,
+                &ConversationExecutionPreferences::default(),
+                Some(&plan),
+            )
+            .expect("semantic research turn should persist");
+
+        // El plan se recupera intacto, que es lo que hace posible reanudar
+        // tras un reinicio sin volver a negociar capacidades con el Broker.
+        let workflow = database
+            .semantic_chat_workflow_for_task("research-embedding-task")
+            .expect("workflow should load")
+            .expect("workflow should exist");
+        assert_eq!(workflow.research_plan.as_ref(), Some(&plan));
+        assert_eq!(workflow.status, "searching");
+
+        // Un turno semántico ordinario sigue sin plan.
+        database
+            .prepare_semantic_chat_turn(
+                "plain-workflow",
+                &conversation.id,
+                "plain-user",
+                "plain-assistant",
+                "plain-embedding-task",
+                "plain-embedding-key",
+                "Resume lo que ya hemos hablado",
+                &embedding_request,
+                &context,
+                &[],
+                false,
+                false,
+                &ConversationExecutionPreferences::default(),
+                None,
+            )
+            .expect("plain semantic turn should persist");
+        assert!(database
+            .semantic_chat_workflow_for_task("plain-embedding-task")
+            .expect("workflow should load")
+            .expect("workflow should exist")
+            .research_plan
+            .is_none());
+
+        // La segunda etapa abre el expediente durable de la investigación.
+        let chat_request = serde_json::json!({
+            "idempotency_key": "chatygpt:semantic-chat:research-workflow",
+            "inference_kind": "chat",
+            "content": {
+                "prompt": "Ejecuta una investigación profunda y trazable.",
+                "metadata": {"workflow_kind": "deep_research"}
+            }
+        });
+        database
+            .prepare_semantic_chat_submission(
+                "research-workflow",
+                "research-chat-task",
+                "chatygpt:semantic-chat:research-workflow",
+                &chat_request,
+                &[],
+                &[],
+            )
+            .expect("second stage should persist");
+
+        let view = database
+            .conversation_view(&conversation.id)
+            .expect("conversation should load");
+        assert_eq!(view.research_runs.len(), 1);
+        assert_eq!(view.research_runs[0].status, "planning");
+        // Sin etapas fijas: los pasos aparecen cuando el modelo pide una
+        // herramienta, no dibujados de antemano.
+        assert_eq!(view.research_runs[0].steps.len(), 0);
+        assert_eq!(
+            view.research_runs[0].objective,
+            "Contrasta el informe adjunto con fuentes públicas"
+        );
+
+        let connection = database.connect().expect("connection should open");
+        let audited: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events WHERE event_type = 'research.started'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("audit count should succeed");
+        assert_eq!(audited, 1);
+        drop(connection);
+
+        cleanup(&database);
+    }
+
+    /// Cada herramienta ejecutada es un paso real, con su parámetro visible.
+    ///
+    /// Sustituye a las tres etapas fijas: aquellas eran una plantilla dibujada
+    /// antes de que ocurriera nada, y decían lo mismo en toda investigación.
+    #[test]
+    fn executed_tools_become_the_real_research_steps() {
+        let database = test_database();
+        let conversation = database
+            .create_conversation("Investigación con pasos reales", None)
+            .expect("conversation should be created");
+        let request = serde_json::json!({
+            "idempotency_key": "research:1:1",
+            "inference_kind": "chat",
+            "content": {
+                "prompt": "Investiga la normativa",
+                "metadata": {"workflow_kind": "deep_research"}
+            }
+        });
+        database
+            .prepare_chat_turn_with_project_instruction(
+                &conversation.id,
+                "msg-user",
+                "msg-assistant",
+                "local-research",
+                "research:1:1",
+                "Investiga la normativa",
+                &request,
+                &[],
+                None,
+                None,
+                &[],
+                &[],
+                &[],
+            )
+            .expect("research turn should persist");
+
+        // Al abrirse, el expediente no tiene ningún paso: nada ha ocurrido aún.
+        let inicial = database
+            .conversation_view(&conversation.id)
+            .expect("conversation should load");
+        assert_eq!(inicial.research_runs.len(), 1);
+        assert!(inicial.research_runs[0].steps.is_empty());
+
+        database
+            .record_research_tool_step(
+                "local-research",
+                "call_1",
+                "fetch_url",
+                "https://example.org/normativa",
+                "completed",
+                &serde_json::json!({"url": "https://example.org/normativa", "truncated": false}),
+            )
+            .expect("el paso debe registrarse");
+        database
+            .record_research_tool_step(
+                "local-research",
+                "call_2",
+                "fetch_url",
+                "https://example.org/roto",
+                "failed",
+                &serde_json::json!({"error": "la página respondió HTTP 500"}),
+            )
+            .expect("un fallo también es un paso");
+
+        let view = database
+            .conversation_view(&conversation.id)
+            .expect("conversation should load");
+        let steps = &view.research_runs[0].steps;
+        assert_eq!(steps.len(), 2);
+        // El parámetro con el que se llamó es visible, que es lo que faltaba:
+        // «abrí esta URL» en vez de «buscar y contrastar fuentes».
+        assert_eq!(steps[0].title, "fetch_url: https://example.org/normativa");
+        assert_eq!(steps[0].kind, "research");
+        assert_eq!(steps[0].status, "completed");
+        // Un fallo se registra como paso, no se omite: el recorrido incluye
+        // las fuentes que no se pudieron leer.
+        assert_eq!(steps[1].status, "failed");
+
+        // Reejecutar la misma llamada tras un reinicio actualiza el paso, no
+        // añade uno nuevo: la identidad es la llamada, no su posición.
+        database
+            .record_research_tool_step(
+                "local-research",
+                "call_2",
+                "fetch_url",
+                "https://example.org/roto",
+                "completed",
+                &serde_json::json!({"url": "https://example.org/roto"}),
+            )
+            .expect("el reintento debe actualizar el mismo paso");
+        let reintentado = database
+            .conversation_view(&conversation.id)
+            .expect("conversation should load");
+        assert_eq!(reintentado.research_runs[0].steps.len(), 2);
+        assert_eq!(reintentado.research_runs[0].steps[1].status, "completed");
+
+        cleanup(&database);
+    }
+
+    #[test]
+    fn performance_samples_are_bounded_typed_and_free_of_personal_content() {
+        let database = test_database();
+
+        // Una métrica desconocida no llega a tocar la tabla.
+        let rejected = database.record_performance_samples("prompt del usuario", &[10]);
+        assert!(matches!(rejected, Err(AppError::Validation(_))));
+        // Tampoco una duración imposible.
+        assert!(matches!(
+            database.record_performance_samples("app_start", &[-1]),
+            Err(AppError::Validation(_))
+        ));
+        assert!(matches!(
+            database.record_performance_samples("app_start", &[600_001]),
+            Err(AppError::Validation(_))
+        ));
+        // Ni un lote mayor que el máximo por llamada.
+        let oversized = vec![1_i64; 101];
+        assert!(matches!(
+            database.record_performance_samples("ui_response", &oversized),
+            Err(AppError::Validation(_))
+        ));
+
+        // La retención es real: 250 muestras dejan exactamente 200 conservadas.
+        let durations: Vec<i64> = (1..=250).collect();
+        for lote in durations.chunks(50) {
+            database
+                .record_performance_samples("conversation_open", lote)
+                .expect("las muestras válidas deben registrarse");
+        }
+        let connection = database.connect().expect("connection should open");
+        let retained: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM performance_samples WHERE metric = 'conversation_open'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count should succeed");
+        assert_eq!(retained, 200);
+        // Se conservan las últimas, no las primeras.
+        let oldest: i64 = connection
+            .query_row(
+                "SELECT MIN(duration_ms) FROM performance_samples
+                 WHERE metric = 'conversation_open'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("min should succeed");
+        assert_eq!(oldest, 51);
+
+        // La tabla no tiene ninguna columna capaz de guardar texto libre.
+        let columns: Vec<String> = connection
+            .prepare("SELECT name FROM pragma_table_info('performance_samples')")
+            .expect("pragma should prepare")
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("pragma should run")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("column names should be readable");
+        assert_eq!(columns, vec!["id", "metric", "duration_ms", "recorded_at"]);
+        drop(connection);
+
+        cleanup(&database);
+    }
+
+    #[test]
+    fn performance_report_only_judges_metrics_that_were_executed() {
+        let database = test_database();
+
+        // Sin ninguna muestra, ninguna métrica obtiene veredicto.
+        let empty = database
+            .performance_report()
+            .expect("el informe vacío debe poder consultarse");
+        assert_eq!(empty.metrics.len(), 4);
+        assert_eq!(empty.total_samples, 0);
+        assert_eq!(empty.sample_limit, 200);
+        for summary in &empty.metrics {
+            assert_eq!(summary.samples, 0);
+            assert_eq!(summary.meets_budget, None);
+            assert!(summary.last_recorded_at.is_none());
+            assert!(summary.budget_ms > 0);
+        }
+
+        // Veinte aperturas rápidas cumplen el objetivo; la búsqueda lenta no.
+        database
+            .record_performance_samples("conversation_open", &[120; 20])
+            .expect("las aperturas deben registrarse");
+        database
+            .record_performance_samples("conversation_search", &[900; 10])
+            .expect("las búsquedas deben registrarse");
+
+        let report = database
+            .performance_report()
+            .expect("el informe debe poder consultarse");
+        assert_eq!(report.total_samples, 30);
+        let open = report
+            .metrics
+            .iter()
+            .find(|summary| summary.metric == "conversation_open")
+            .expect("la apertura debe figurar");
+        assert_eq!(open.samples, 20);
+        assert_eq!(open.p95_ms, Some(120));
+        assert_eq!(open.meets_budget, Some(true));
+        assert!(open.last_recorded_at.is_some());
+        let search = report
+            .metrics
+            .iter()
+            .find(|summary| summary.metric == "conversation_search")
+            .expect("la búsqueda debe figurar");
+        assert_eq!(search.meets_budget, Some(false));
+        // Las métricas nunca ejecutadas siguen sin veredicto en el mismo informe.
+        let ui = report
+            .metrics
+            .iter()
+            .find(|summary| summary.metric == "ui_response")
+            .expect("la respuesta de interfaz debe figurar");
+        assert_eq!(ui.meets_budget, None);
+
+        // Vaciar exige confirmación y queda auditado.
+        assert!(matches!(
+            database.clear_performance_samples(false),
+            Err(AppError::Validation(_))
+        ));
+        database
+            .clear_performance_samples(true)
+            .expect("vaciar confirmado debe funcionar");
+        let cleared = database
+            .performance_report()
+            .expect("el informe debe seguir consultándose");
+        assert_eq!(cleared.total_samples, 0);
+        let connection = database.connect().expect("connection should open");
+        let audited: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events
+                 WHERE event_type = 'performance.samples_cleared'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("audit count should succeed");
+        assert_eq!(audited, 1);
+        drop(connection);
+
+        cleanup(&database);
     }
 
     #[test]
@@ -10158,7 +10841,7 @@ mod tests {
             .expect("research run should load");
         assert_eq!(initial.research_runs.len(), 1);
         assert_eq!(initial.research_runs[0].status, "planning");
-        assert_eq!(initial.research_runs[0].steps.len(), 3);
+        assert_eq!(initial.research_runs[0].steps.len(), 0);
 
         let synthesizing: TaskState = serde_json::from_value(serde_json::json!({
             "task_id": "remote-research",
@@ -10180,19 +10863,11 @@ mod tests {
         let synthesizing_view = database
             .conversation_view(&conversation.id)
             .expect("research progress should load");
+        // La fase remota sigue describiendo el expediente completo, pero ya no
+        // inventa el estado de ningún paso: los pasos son las herramientas que
+        // se ejecutaron, y no hay ninguna todavía.
         assert_eq!(synthesizing_view.research_runs[0].status, "synthesizing");
-        assert_eq!(
-            synthesizing_view.research_runs[0].steps[0].status,
-            "completed"
-        );
-        assert_eq!(
-            synthesizing_view.research_runs[0].steps[1].status,
-            "completed"
-        );
-        assert_eq!(
-            synthesizing_view.research_runs[0].steps[2].status,
-            "running"
-        );
+        assert!(synthesizing_view.research_runs[0].steps.is_empty());
 
         let completed: TaskState = serde_json::from_value(serde_json::json!({
             "task_id": "remote-research",
@@ -11618,6 +12293,7 @@ mod tests {
                 false,
                 false,
                 &ConversationExecutionPreferences::default(),
+                None,
             )
             .expect("turn and semantic search should persist atomically");
         database
@@ -11772,6 +12448,7 @@ mod tests {
                 false,
                 false,
                 &ConversationExecutionPreferences::default(),
+                None,
             )
             .expect("semantic turn should persist");
         database

@@ -31,6 +31,31 @@ export type BootstrapReport = {
   recoveryItems: RecoveryItemView[];
 };
 
+/**
+ * Resumen de una métrica de rendimiento sobre las muestras conservadas.
+ *
+ * `meetsBudget` es `null` mientras no exista ninguna muestra: el objetivo no se
+ * declara cumplido ni incumplido sin una ejecución real que lo respalde.
+ */
+export type PerformanceMetricSummary = {
+  metric: "app_start" | "conversation_open" | "conversation_search" | "ui_response";
+  label: string;
+  description: string;
+  budgetMs: number;
+  samples: number;
+  p50Ms: number | null;
+  p95Ms: number | null;
+  maxMs: number | null;
+  meetsBudget: boolean | null;
+  lastRecordedAt: string | null;
+};
+
+export type PerformanceReportView = {
+  metrics: PerformanceMetricSummary[];
+  sampleLimit: number;
+  totalSamples: number;
+};
+
 export type WindowsStartupStatus = {
   supported: boolean;
   enabled: boolean;
@@ -176,6 +201,75 @@ export const scheduledCalendarOccurrences = (
   }
   return occurrences;
 };
+
+/**
+ * Conversaciones que debe mostrar la barra lateral.
+ *
+ * Extraído de `App.tsx` (fase 2). Hay una regla que no es evidente y conviene
+ * fijar: **buscar tiene prioridad sobre el ámbito de proyecto**. Los resultados
+ * de una búsqueda se muestran completos aunque haya un proyecto seleccionado,
+ * porque quien busca espera encontrar, no que el filtro activo le esconda la
+ * conversación que estaba buscando.
+ */
+export const visibleConversations = ({
+  conversations,
+  searchResults,
+  searchQuery,
+  selectedProjectId
+}: {
+  conversations: ConversationSummary[];
+  searchResults: ConversationSummary[];
+  searchQuery: string;
+  /** `null` es «todos los chats» y `"unassigned"`, los que no tienen proyecto. */
+  selectedProjectId: string | null;
+}): ConversationSummary[] => {
+  const searching = searchQuery.trim().length > 0;
+  const source = searching ? searchResults : conversations;
+  if (searching || selectedProjectId === null) {
+    return source;
+  }
+  if (selectedProjectId === "unassigned") {
+    return source.filter((item) => !item.projectId);
+  }
+  return source.filter((item) => item.projectId === selectedProjectId);
+};
+
+/**
+ * Si un recuerdo alcanza a la conversación abierta.
+ *
+ * Un recuerdo sin proyecto es global y alcanza a cualquier conversación; uno
+ * acotado a un proyecto solo alcanza a las de ese proyecto. La regla estaba
+ * escrita dos veces en `App.tsx` —para contar los activos y para contar los que
+ * tienen índice— y esa duplicación es justo la forma en que estas reglas se
+ * desincronizan al cambiarlas.
+ */
+export const memoryAppliesToConversation = (
+  item: Pick<MemoryItemView, "projectId">,
+  conversationProjectId: string | null | undefined
+): boolean => !item.projectId || item.projectId === conversationProjectId;
+
+/** Recuerdos habilitados que alcanzan a la conversación abierta. */
+export const activeMemoriesForConversation = (
+  items: MemoryItemView[],
+  conversationProjectId: string | null | undefined
+): MemoryItemView[] =>
+  items.filter(
+    (item) => item.enabled && memoryAppliesToConversation(item, conversationProjectId)
+  );
+
+/**
+ * Recuerdos activos que además tienen índice semántico utilizable.
+ *
+ * Es deliberadamente un subconjunto de los activos: un recuerdo indexado pero
+ * deshabilitado, o acotado a otro proyecto, no puede recuperarse por similitud.
+ */
+export const semanticReadyMemoriesForConversation = (
+  items: MemoryItemView[],
+  conversationProjectId: string | null | undefined
+): MemoryItemView[] =>
+  activeMemoriesForConversation(items, conversationProjectId).filter(
+    (item) => item.embeddingStatus === "ready"
+  );
 
 const normalizeScheduledSearch = (value: string): string =>
   value
@@ -746,21 +840,53 @@ export const taskProgressSummary = (task: LocalTaskSnapshot): {
     : { label };
 };
 
+/**
+ * Fallos que piden una decisión de la persona, no un reintento.
+ *
+ * `RECOVERY_AMBIGUOUS_REMOTE_CALL` es el caso que obliga a distinguirlos: si
+ * ChatyGPT se reinicia con una llamada a un modelo remoto en vuelo, el Broker
+ * **no** reintenta por su cuenta para no pagar dos veces la misma inferencia.
+ * Presentarlo como «la tarea no pudo completarse» invitaría a reenviar, que es
+ * justo lo que se está evitando: quien decide si vale la pena volver a pagarla
+ * es la persona, y necesita saber que quizá ya se ejecutó.
+ */
+const TASK_FAILURE_TITLES: Record<string, string> = {
+  CONTEXT_LIMIT_EXCEEDED: "El contenido no cabe en el modelo seleccionado",
+  RECOVERY_AMBIGUOUS_REMOTE_CALL: "No se sabe si la respuesta llegó a generarse"
+};
+
+/** Qué hacer a continuación, cuando no es simplemente reintentar. */
+const TASK_FAILURE_GUIDANCE: Record<string, string> = {
+  RECOVERY_AMBIGUOUS_REMOTE_CALL:
+    "ChatyGPT se reinició mientras el modelo estaba respondiendo. El Broker no lo reintenta solo para no cobrar dos veces la misma inferencia. Revisa si la respuesta llegó antes de volver a enviarla.",
+  MODEL_CAPABILITY_MISMATCH:
+    "Elige otro modelo en las opciones de ejecución de la conversación.",
+  BUDGET_EXCEEDED: "Sube el presupuesto de la conversación y vuelve a enviarlo."
+};
+
 export const taskFailureSummary = (
   error?: Record<string, unknown>
-): { title: string; detail: string; retryable: boolean } | undefined => {
+): {
+  title: string;
+  detail: string;
+  retryable: boolean;
+  /** Presente cuando el fallo pide una decisión y no un reintento. */
+  guidance?: string;
+} | undefined => {
   if (!error) return undefined;
   const code = typeof error.code === "string" ? error.code : "TASK_FAILED";
   const detail =
     typeof error.message === "string" && error.message.trim()
       ? error.message.slice(0, 500)
       : "El Broker no proporcionó más detalles sobre el fallo.";
+  const guidance = TASK_FAILURE_GUIDANCE[code];
   return {
-    title: code === "CONTEXT_LIMIT_EXCEEDED"
-      ? "El contenido no cabe en el modelo seleccionado"
-      : "La tarea no pudo completarse",
+    title: TASK_FAILURE_TITLES[code] ?? "La tarea no pudo completarse",
     detail,
-    retryable: error.retryable === true
+    // El Broker manda: un fallo marcado como no reintentable no se ofrece como
+    // reintentable aunque su código nos resulte familiar.
+    retryable: error.retryable === true,
+    ...(guidance ? { guidance } : {})
   };
 };
 
@@ -886,6 +1012,38 @@ export const isTerminalTask = (task: LocalTaskSnapshot): boolean =>
 export const isTaskPollingComplete = (task: LocalTaskSnapshot): boolean =>
   isTerminalTask(task) ||
   ["waiting_for_tools", "orphaned"].includes(task.localState);
+
+/**
+ * Si queda algún recuerdo indexándose y por tanto hay que seguir sondeando.
+ *
+ * Extraído de `App.tsx` (fase 4). La condición de parada de un sondeo es una
+ * decisión: equivocarse deja un temporizador vivo para siempre o corta la
+ * actualización antes de que el índice esté listo.
+ */
+export const shouldPollMemoryIndex = (
+  items: Pick<MemoryItemView, "embeddingStatus">[]
+): boolean => items.some((item) => item.embeddingStatus === "indexing");
+
+/** Si una búsqueda semántica sigue en curso. */
+export const shouldPollMemorySearch = (
+  search: Pick<MemorySearchView, "status"> | null | undefined
+): boolean => search?.status === "searching";
+
+/**
+ * Si hay que recargar la conversación al terminar un turno.
+ *
+ * Solo cuando la conversación abierta es la misma en la que se envió: recargar
+ * otra sobreescribiría lo que la persona está leyendo ahora mismo, y el turno
+ * terminado ya quedó persistido en la suya.
+ */
+export const shouldReloadConversationAfterTurn = ({
+  turnConversationId,
+  openConversationId
+}: {
+  turnConversationId: string | null;
+  openConversationId: string | null;
+}): boolean =>
+  Boolean(turnConversationId) && turnConversationId === openConversationId;
 
 export const isTaskBlockingConversation = (task: LocalTaskSnapshot): boolean =>
   !isTerminalTask(task) && task.localState !== "orphaned";

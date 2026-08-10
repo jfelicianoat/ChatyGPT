@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { MarkdownContent } from "./MarkdownContent";
+import { MarkdownContent, unwrapFencedDocument } from "./MarkdownContent";
 
 function render(text: string): string {
   return renderToStaticMarkup(<MarkdownContent text={text} />);
@@ -61,5 +61,25 @@ línea dos`);
     expect(html).toContain('<ol start="3">');
     expect(html).toContain('aria-label="Completada"');
     expect(html).toContain("<br/>");
+  });
+
+  it("presenta como Markdown un informe que el modelo envolvió en un cercado", () => {
+    // Caso real de una Investigación profunda: el informe llegó dentro de
+    // ```markdown y se pintaba como una caja de código con el Markdown crudo.
+    const html = render(`\`\`\`markdown
+# Informe
+
+Texto con **negrita**.
+
+- Uno
+- Dos
+\`\`\``);
+
+    expect(html).toContain("<h1>Informe</h1>");
+    expect(html).toContain("<strong>negrita</strong>");
+    expect(html).toContain("<ul><li>Uno</li><li>Dos</li></ul>");
+    // Lo que no debe quedar: la caja con el Markdown sin interpretar.
+    expect(html).not.toContain("<pre>");
+    expect(html).not.toContain("# Informe");
   });
 });

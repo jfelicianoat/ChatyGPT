@@ -22,6 +22,7 @@ import type {
   MemoryItemView,
   MemoryOverview,
   MemorySearchView,
+  PerformanceReportView,
   ProjectKnowledgeOverview,
   ProjectSummary,
   ScheduledHistoryExportReport,
@@ -50,6 +51,17 @@ export const platform = {
     return invoke<WindowsStartupStatus>("set_windows_startup_enabled", {
       enabled,
       confirmed: enabled
+    });
+  },
+  recordPerformanceSamples(metric: string, durationsMs: number[]): Promise<void> {
+    return invoke<void>("record_performance_samples", { metric, durationsMs });
+  },
+  getPerformanceReport(): Promise<PerformanceReportView> {
+    return invoke<PerformanceReportView>("get_performance_report");
+  },
+  clearPerformanceSamples(): Promise<PerformanceReportView> {
+    return invoke<PerformanceReportView>("clear_performance_samples", {
+      confirmed: true
     });
   },
   listAuditEvents(): Promise<AuditEventView[]> {

@@ -144,7 +144,8 @@ nav { margin-top: 14px; overflow-y: auto; min-height: 0; padding-right: 2px; }
 .markdown-content a:hover { color: #4e370a; }
 .markdown-content code { padding: 2px 5px; border-radius: 5px; background: #eee8de; color: #5a3e18; font: .9em/1.45 ui-monospace, "Cascadia Code", Consolas, monospace; }
 .markdown-content pre { margin: 16px 0; padding: 15px 17px; overflow-x: auto; border: 1px solid #d8d0c4; border-radius: 11px; background: #24211d; color: #f4eee3; }
-.markdown-content pre code { padding: 0; background: transparent; color: inherit; white-space: pre; }
+/* `pre-wrap` en vez de `pre`: sin ajuste de línea, una respuesta larga se convierte en una línea interminable con barra horizontal, ilegible dentro de la burbuja. */
+.markdown-content pre code { padding: 0; background: transparent; color: inherit; white-space: pre-wrap; overflow-wrap: anywhere; }
 .markdown-content blockquote { margin: 15px 0; padding: 9px 16px; border-left: 4px solid #d2ad64; background: #f6f0e5; color: #62584e; }
 .markdown-content blockquote > :last-child { margin-bottom: 0; }
 .markdown-content hr { margin: 22px 0; border: 0; border-top: 1px solid #ddd4c7; }
@@ -366,6 +367,20 @@ nav { margin-top: 14px; overflow-y: auto; min-height: 0; padding-right: 2px; }
 .appearance-options button strong { font-size: 14px; }
 .appearance-options button span { color: #81766b; font-size: 12px; line-height: 1.35; }
 .appearance-options button.active span { color: #6d4f25; }
+.performance-card { display: grid; gap: 16px; margin-top: 18px; padding: 22px 24px; border: 1px solid #ddd7cd; border-radius: 16px; background: #faf8f3; }
+.performance-card h3 { margin: 4px 0 5px; font-family: Georgia, serif; font-size: 22px; font-weight: 500; }
+.performance-card p { margin: 0; max-width: 76ch; color: #766e64; font-size: 14px; line-height: 1.5; }
+.performance-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
+.performance-metric { display: grid; align-content: start; gap: 10px; border: 1px solid #d4ccc1; border-radius: 12px; background: #fffdf9; padding: 14px 16px; }
+.performance-metric header { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.performance-metric header strong { font-size: 14px; line-height: 1.35; }
+.performance-metric dl { display: grid; grid-template-columns: repeat(auto-fit, minmax(72px, 1fr)); margin: 0; gap: 8px; }
+.performance-metric dl div { border-left: 2px solid #e7bd68; padding-left: 8px; }
+.performance-metric dt { color: #8b8277; font-size: 10px; text-transform: uppercase; letter-spacing: .03em; }
+.performance-metric dd { margin: 2px 0 0; font-size: 14px; font-variant-numeric: tabular-nums; }
+.performance-metric > small { color: #81766b; font-size: 12px; line-height: 1.45; }
+.performance-actions { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; }
+.performance-actions small { color: #766e64; font-size: 12px; }
 .task-card { margin-top: 18px; background: #faf8f3; border: 1px solid #ddd7cd; border-radius: 18px; padding: 24px; }
 .panel-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
 .panel h3, .next-step h3 { margin: 6px 0 0; font-size: 18px; }
@@ -766,6 +781,7 @@ nav { margin-top: 14px; overflow-y: auto; min-height: 0; padding-right: 2px; }
   .next-step,
   .task-card,
   .appearance-card,
+  .performance-card,
   .authorized-folders,
   .broker-credential,
   .scheduler-card,
@@ -775,6 +791,7 @@ nav { margin-top: 14px; overflow-y: auto; min-height: 0; padding-right: 2px; }
 ) { border-color: #403a33; background: #211e1a; box-shadow: 0 16px 50px #00000035; }
 :root[data-theme="dark"] .workspace :is(
   .context-panel,
+  .performance-metric,
   .source-card,
   .research-run,
   .tool-confirmation,

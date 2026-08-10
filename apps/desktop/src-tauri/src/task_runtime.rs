@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::time::Duration;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -211,7 +211,20 @@ pub async fn start_chat_turn(
     });
     let project_instruction = database.project_instruction_for_conversation(conversation_id)?;
     let semantic_documents_available = database.attachments_have_semantic_index(attachment_ids)?;
-    if !research_mode && (semantic_memory_enabled || semantic_documents_available) {
+    // El plan se decide antes de persistir nada: si el Broker no anuncia las
+    // herramientas necesarias, el turno se rechaza sin dejar un mensaje a medias.
+    let research_plan = if research_mode {
+        let capabilities = broker.capabilities().await?;
+        Some(deep_research_plan(&capabilities)?)
+    } else {
+        None
+    };
+    let research_plan_value = research_plan
+        .as_ref()
+        .map(serde_json::to_value)
+        .transpose()
+        .map_err(|error| AppError::BrokerContract(error.to_string()))?;
+    if semantic_memory_enabled || semantic_documents_available {
         let workflow_id = format!("semantic_chat_{}", Uuid::new_v4().simple());
         let local_task_id = format!("local_{}", Uuid::new_v4().simple());
         let content_sha256 = format!("{:x}", Sha256::digest(user_text.as_bytes()));
@@ -244,6 +257,7 @@ pub async fn start_chat_turn(
             tools_enabled,
             sandbox_enabled,
             &execution_preferences,
+            research_plan_value.as_ref(),
         )?;
         let snapshot = database.task_snapshot(&local_task_id)?;
         spawn_submission_and_poll(database, broker, record);
@@ -269,9 +283,8 @@ pub async fn start_chat_turn(
             execution_preferences,
         },
     )?;
-    if research_mode {
-        let capabilities = broker.capabilities().await?;
-        request = deep_research_request(request, &capabilities)?;
+    if let Some(plan) = research_plan.as_ref() {
+        request = apply_deep_research_plan(request, plan)?;
     }
     let record = database.prepare_chat_turn_with_project_instruction(
         conversation_id,
@@ -293,10 +306,84 @@ pub async fn start_chat_turn(
     Ok(snapshot)
 }
 
-fn deep_research_request(
-    mut request: serde_json::Value,
-    capabilities: &BrokerCapabilities,
-) -> Result<serde_json::Value, AppError> {
+/// Decisión de Investigación profunda tomada al enviar el turno.
+///
+/// Se congela deliberadamente: cuando la investigación viaja dentro de un flujo
+/// semántico, entre la validación y el envío real media una tarea de embeddings
+/// y, posiblemente, un reinicio de la aplicación. Reconsultar las capacidades en
+/// ese punto permitiría que un Broker con otras herramientas cambiara una
+/// investigación ya autorizada por la persona.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResearchPlan {
+    /// Habilidades que ejecuta el Broker, validadas contra lo que anunciaba.
+    pub skills: Vec<String>,
+    /// Herramientas que ejecuta ChatyGPT y que el Broker pausa para pedirle.
+    #[serde(default)]
+    pub client_tools: Vec<String>,
+    /// Vueltas máximas del bucle del agente, acotadas al tope del contrato.
+    #[serde(default = "default_research_iterations")]
+    pub max_iterations: u32,
+}
+
+fn default_research_iterations() -> u32 {
+    RESEARCH_ITERATIONS
+}
+
+/// Vueltas que se piden por investigación.
+const RESEARCH_ITERATIONS: u32 = 12;
+
+/// Tope del contrato del Broker. El bucle **entero** cuenta contra él: las
+/// pausas para pedir una herramienta no lo reinician, así que este número es la
+/// profundidad total de una investigación, no la de un tramo.
+const MAX_RESEARCH_ITERATIONS: u32 = 20;
+
+/// Herramientas que ChatyGPT ejecuta por su cuenta durante una investigación.
+///
+/// La lista es cerrada a propósito: cada nombre aquí es código que corre en el
+/// equipo de la persona a petición de un modelo, así que ampliarla es una
+/// decisión, no una configuración.
+const RESEARCH_CLIENT_TOOLS: [&str; 1] = ["fetch_url"];
+
+/// Habilidades que se delegan al Broker si las anuncia.
+///
+/// `web_search` se queda en el Broker porque ChatyGPT no tiene motor de
+/// búsqueda: implementarlo exigiría un proveedor externo, una credencial y
+/// sacar tráfico del equipo hacia un tercero. `fetch_url`, en cambio, se
+/// ejecuta aquí para que cada fuente abierta sea una subtarea visible con su
+/// URL, que es donde está la cita.
+///
+/// **Coste asumido a sabiendas:** las búsquedas que ejecuta el Broker no pausan
+/// la tarea ni aparecen en `pending_tool_calls`, así que ChatyGPT no llega a
+/// saber qué se buscó. Los pasos registrados dirán «abrí esta URL» sin el
+/// «busqué esto» que la produjo. Mover `web_search` a herramienta de cliente no
+/// costaría iteraciones —cada llamada consume una vuelta la ejecute quien la
+/// ejecute, solo añade un viaje HTTP—, pero exige antes decidir el proveedor de
+/// búsqueda. Mientras esa decisión no se tome, la mitad del recorrido es una
+/// caja negra y conviene que el registro no aparente lo contrario.
+const RESEARCH_BROKER_SKILLS: [&str; 3] = ["web_search", "calculator", "current_datetime"];
+
+/// Definición de `fetch_url` tal y como la ve el modelo.
+fn fetch_url_tool_definition() -> serde_json::Value {
+    json!({
+        "name": "fetch_url",
+        "description": "Descarga una página web y devuelve su texto para poder citarla. \
+                        Úsala con enlaces concretos obtenidos de una búsqueda previa.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "URL http o https completa de la página que se quiere leer."
+                }
+            },
+            "required": ["url"],
+            "additionalProperties": false
+        }
+    })
+}
+
+/// Valida las capacidades y decide el plan. Falla antes de persistir nada.
+fn deep_research_plan(capabilities: &BrokerCapabilities) -> Result<ResearchPlan, AppError> {
     if !capabilities
         .strategies
         .iter()
@@ -307,26 +394,73 @@ fn deep_research_request(
                 .to_owned(),
         ));
     }
-    for required in ["web_search", "fetch_url"] {
-        if !capabilities
-            .agent_skills
-            .iter()
-            .any(|skill| skill == required)
-        {
-            return Err(AppError::Conflict(format!(
-                "Broker AI no anuncia la herramienta {required} necesaria para Investigación profunda"
-            )));
-        }
+    if !capabilities.client_tool_passthrough {
+        return Err(AppError::Conflict(
+            "Broker AI no admite herramientas de cliente, necesarias para ver cada fuente abierta"
+                .to_owned(),
+        ));
     }
-    let research_skills = ["web_search", "fetch_url", "calculator", "current_datetime"]
-        .into_iter()
-        .filter(|candidate| {
-            capabilities
-                .agent_skills
-                .iter()
-                .any(|skill| skill == candidate)
+    // Buscar sigue siendo del Broker: sin esa habilidad la investigación se
+    // quedaría en abrir enlaces que el modelo recuerde, que es justo lo que el
+    // prompt prohíbe.
+    if !capabilities
+        .agent_skills
+        .iter()
+        .any(|skill| skill == "web_search")
+    {
+        return Err(AppError::Conflict(
+            "Broker AI no anuncia la habilidad web_search necesaria para Investigación profunda"
+                .to_owned(),
+        ));
+    }
+    Ok(ResearchPlan {
+        skills: RESEARCH_BROKER_SKILLS
+            .into_iter()
+            .filter(|candidate| {
+                capabilities
+                    .agent_skills
+                    .iter()
+                    .any(|skill| skill == candidate)
+            })
+            .map(str::to_owned)
+            .collect(),
+        client_tools: RESEARCH_CLIENT_TOOLS.map(str::to_owned).to_vec(),
+        max_iterations: RESEARCH_ITERATIONS.min(MAX_RESEARCH_ITERATIONS),
+    })
+}
+
+/// Convierte una petición de chat en una de investigación aplicando el plan.
+///
+/// Es una función pura: no consulta al Broker, por lo que puede ejecutarse en la
+/// segunda etapa de un flujo semántico o durante una recuperación sin red.
+fn apply_deep_research_plan(
+    mut request: serde_json::Value,
+    plan: &ResearchPlan,
+) -> Result<serde_json::Value, AppError> {
+    let research_skills = &plan.skills;
+    // El contrato prohíbe que una herramienta de cliente se llame igual que una
+    // habilidad activa en la misma tarea: dos definiciones del mismo nombre son
+    // ambiguas para el modelo. Se comprueba aquí porque el plan viene
+    // persistido y podría haberse escrito con otra versión del código.
+    if let Some(collision) = plan
+        .client_tools
+        .iter()
+        .find(|tool| research_skills.contains(tool))
+    {
+        return Err(AppError::BrokerContract(format!(
+            "la herramienta de cliente {collision} colisiona con una habilidad del Broker"
+        )));
+    }
+    let client_tools = plan
+        .client_tools
+        .iter()
+        .map(|tool| match tool.as_str() {
+            "fetch_url" => Ok(fetch_url_tool_definition()),
+            other => Err(AppError::BrokerContract(format!(
+                "el plan declara una herramienta de cliente desconocida: {other}"
+            ))),
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, AppError>>()?;
     let original_prompt = request
         .pointer("/content/prompt")
         .and_then(serde_json::Value::as_str)
@@ -353,11 +487,16 @@ fn deep_research_request(
         "long_context": "fail",
         "agent": {
             "skills": research_skills,
-            "max_iterations": 12,
-            "client_tools": []
+            "max_iterations": plan.max_iterations.min(MAX_RESEARCH_ITERATIONS),
+            "client_tools": client_tools
         }
     });
     request["generation"]["max_output_tokens"] = json!(8000);
+    // La estrategia `agent` rechaza el formato JSON con 422. El campo del
+    // contrato es `output.format` —en `generation` solo van `temperature` y
+    // `max_output_tokens`—, así que se fija donde de verdad está: saneando
+    // `generation` el 422 llegaría igual y el saneado no haría nada.
+    request["output"]["format"] = json!("markdown");
     Ok(request)
 }
 
@@ -500,6 +639,7 @@ pub fn recover_at_start(database: Database, broker: BrokerClient) -> Result<usiz
     for embedding_task_id in database.semantic_chat_workflows_ready_to_continue()? {
         advance_semantic_chat(database.clone(), broker.clone(), &embedding_task_id);
     }
+    spawn_abandoned_task_cancellation(database.clone(), broker.clone());
     for attachment_id in database.attachments_needing_semantic_index()? {
         let _ = start_attachment_semantic_index(
             database.clone(),
@@ -509,6 +649,63 @@ pub fn recover_at_start(database: Database, broker: BrokerClient) -> Result<usiz
         );
     }
     Ok(recovered)
+}
+
+/// Cierra en el Broker las tareas que aquí se dieron por perdidas.
+///
+/// Una tarea huérfana con su remoto pausado seguiría esperando para siempre una
+/// respuesta que ChatyGPT ya no va a enviar, porque `waiting_for_tools` no
+/// caduca. Se hace **al arrancar** y no en el momento de darla por perdida: allí
+/// se decidiría en caliente, justo después de un fallo, cuando todavía no se
+/// sabe si el problema era pasajero.
+///
+/// Antes de cancelar se consulta el estado real. Si mientras tanto la tarea
+/// terminó por su cuenta, no se cancela nada: solo se registra su desenlace.
+fn spawn_abandoned_task_cancellation(database: Database, broker: BrokerClient) {
+    tauri::async_runtime::spawn(async move {
+        let Ok(abandoned) = database.abandoned_remote_tasks() else {
+            return;
+        };
+        for (local_id, remote_id) in abandoned {
+            let Ok(state) = broker.get_task(&remote_id).await else {
+                // Sin respuesta del Broker no se decide nada: la tarea sigue
+                // marcada como huérfana y volverá a revisarse al próximo
+                // arranque.
+                continue;
+            };
+            if state.status.is_terminal() {
+                // Terminó sola. No hay nada que cancelar; basta con dejar de
+                // considerarla viva.
+                let _ = database.record_remote_state(&local_id, &state);
+                continue;
+            }
+            match broker.cancel_task(&remote_id).await {
+                Ok(cancelled) => {
+                    logging::info(
+                        "task.abandoned_cancelled",
+                        Some(&local_id),
+                        &[
+                            ("remote_task_id", logging::id(&remote_id)),
+                            ("previous_status", logging::code(state.status.as_str())),
+                        ],
+                    );
+                    let _ = database.record_abandoned_cancellation(
+                        &local_id,
+                        &remote_id,
+                        state.status.as_str(),
+                    );
+                    let _ = database.record_remote_state(&local_id, &cancelled);
+                }
+                Err(error) => {
+                    logging::warn(
+                        "task.abandoned_cancel_failed",
+                        Some(&local_id),
+                        &[("error_kind", logging::error_kind(&error))],
+                    );
+                }
+            }
+        }
+    });
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -659,6 +856,133 @@ pub fn resolve_tool_calls(
     database.prepare_tool_outcomes(local_task_id, &outcomes)?;
     spawn_tool_resume(database.clone(), broker, local_task_id.to_owned());
     database.task_snapshot(local_task_id)
+}
+
+/// Resuelve por su cuenta las herramientas de una investigación.
+///
+/// Solo actúa si la tarea es una investigación y **todas** sus llamadas
+/// pendientes son herramientas que ChatyGPT sabe ejecutar. Si aparece
+/// cualquier otra, no toca nada y la tarea se queda esperando la decisión de la
+/// persona: el automatismo no puede convertirse en una vía para ejecutar sin
+/// confirmar algo que sí la necesita.
+///
+/// El contrato exige responder a todas las llamadas en una sola petición, así
+/// que se ejecutan todas y se envían juntas; una que falle viaja como resultado
+/// de error, no como silencio, para que el modelo pueda reaccionar.
+fn spawn_research_tool_execution(database: Database, broker: BrokerClient, local_task_id: String) {
+    tauri::async_runtime::spawn(async move {
+        let Ok(request) = database
+            .task_record(&local_task_id)
+            .map(|record| record.request)
+        else {
+            return;
+        };
+        if request["content"]["metadata"]["workflow_kind"] != json!("deep_research") {
+            return;
+        }
+        let Ok(pending) = database.pending_tool_calls(&local_task_id) else {
+            return;
+        };
+        if pending.is_empty()
+            || !pending
+                .iter()
+                .all(|call| RESEARCH_CLIENT_TOOLS.contains(&call.name.as_str()))
+        {
+            return;
+        }
+        let Ok(client) = crate::research_tools::web_client() else {
+            return;
+        };
+        let mut outcomes = Vec::with_capacity(pending.len());
+        for call in &pending {
+            let (status, content) = match call.name.as_str() {
+                "fetch_url" => {
+                    let url = call
+                        .arguments
+                        .get("url")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned();
+                    match crate::research_tools::fetch_url(&client, &url).await {
+                        Ok(page) => {
+                            logging::info(
+                                "research.tool_executed",
+                                Some(&local_task_id),
+                                &[
+                                    ("tool", logging::code("fetch_url")),
+                                    (
+                                        "characters",
+                                        logging::count(page.text.chars().count() as i64),
+                                    ),
+                                    ("truncated", logging::flag(page.truncated)),
+                                ],
+                            );
+                            let content = serde_json::to_string(&page).unwrap_or_default();
+                            let _ = database.record_research_tool_step(
+                                &local_task_id,
+                                &call.tool_call_id,
+                                "fetch_url",
+                                &url,
+                                "completed",
+                                &serde_json::json!({
+                                    "url": page.url,
+                                    "title": page.title,
+                                    "truncated": page.truncated
+                                }),
+                            );
+                            ("approved", content)
+                        }
+                        Err(error) => {
+                            // El motivo viaja al modelo para que pueda probar
+                            // otra fuente; al registro solo va su clase.
+                            logging::warn(
+                                "research.tool_failed",
+                                Some(&local_task_id),
+                                &[
+                                    ("tool", logging::code("fetch_url")),
+                                    ("error_kind", logging::error_kind(&error)),
+                                ],
+                            );
+                            let _ = database.record_research_tool_step(
+                                &local_task_id,
+                                &call.tool_call_id,
+                                "fetch_url",
+                                &url,
+                                "failed",
+                                &serde_json::json!({"error": error.to_string()}),
+                            );
+                            // La herramienta **se ejecutó**: `approved` describe
+                            // la decisión, no el desenlace. Que la página no se
+                            // pudiera abrir es el contenido que recibe el
+                            // modelo, y el estado real del paso se guarda como
+                            // fallido en el expediente de la investigación.
+                            (
+                                "approved",
+                                serde_json::json!({
+                                    "ok": false,
+                                    "error": error.to_string()
+                                })
+                                .to_string(),
+                            )
+                        }
+                    }
+                }
+                _ => return,
+            };
+            outcomes.push(ToolOutcomeRecord {
+                tool_call_id: call.tool_call_id.clone(),
+                status: status.to_owned(),
+                content,
+            });
+        }
+        if database
+            .prepare_tool_outcomes(&local_task_id, &outcomes)
+            .is_err()
+        {
+            return;
+        }
+        spawn_tool_resume(database, broker, local_task_id);
+    });
 }
 
 fn spawn_tool_resume(database: Database, broker: BrokerClient, local_task_id: String) {
@@ -868,6 +1192,18 @@ fn spawn_polling(database: Database, broker: BrokerClient, local_id: String) {
                                     false,
                                 );
                             }
+                        } else {
+                            // Una investigación resuelve sus propias herramientas:
+                            // la persona autorizó el recorrido entero al activarla,
+                            // y detenerse a preguntar por cada fuente lo haría
+                            // inservible. Un turno corriente sigue esperando su
+                            // decisión, que es lo que protege las acciones
+                            // sensibles.
+                            spawn_research_tool_execution(
+                                database.clone(),
+                                broker.clone(),
+                                local_id.clone(),
+                            );
                         }
                         return;
                     }
@@ -952,7 +1288,7 @@ fn advance_semantic_chat(database: Database, broker: BrokerClient, embedding_tas
                 )?;
                 let chat_task_id = format!("local_{}", Uuid::new_v4().simple());
                 let idempotency_key = format!("chatygpt:semantic-chat:{}", workflow.id);
-                let request = chat_request_with_project_instruction(
+                let mut request = chat_request_with_project_instruction(
                     &workflow.conversation_id,
                     &idempotency_key,
                     &workflow.user_text,
@@ -968,6 +1304,14 @@ fn advance_semantic_chat(database: Database, broker: BrokerClient, embedding_tas
                         execution_preferences: workflow.execution_preferences,
                     },
                 )?;
+                // La investigación se aplica sobre el contexto ya recuperado:
+                // los recuerdos y fragmentos seleccionados por similitud forman
+                // parte del objetivo que se investiga, no se descartan.
+                if let Some(plan) = workflow.research_plan.as_ref() {
+                    let plan: ResearchPlan = serde_json::from_value(plan.clone())
+                        .map_err(|error| AppError::BrokerContract(error.to_string()))?;
+                    request = apply_deep_research_plan(request, &plan)?;
+                }
                 database.prepare_semantic_chat_submission(
                     &workflow.id,
                     &chat_task_id,
@@ -1497,18 +1841,883 @@ fn chat_request_with_project_instruction(
 #[cfg(test)]
 mod tests {
     use super::{
-        chat_request, chat_request_with_project_instruction, custom_gpt_prompt_block,
-        deep_research_request, deterministic_jitter, embedding_request, is_tabular_attachment,
-        memory_embedding_request, persisted_custom_gpt_allows_tool, validate_sandbox_capability,
-        ChatExecutionOptions,
+        apply_deep_research_plan, chat_request, chat_request_with_project_instruction,
+        custom_gpt_prompt_block, deep_research_plan, deterministic_jitter, embedding_request,
+        is_tabular_attachment, memory_embedding_request, persisted_custom_gpt_allows_tool,
+        validate_sandbox_capability, ChatExecutionOptions, ResearchPlan,
     };
-    use crate::broker::BrokerCapabilities;
+    use super::{cancel_task, recover_at_start, resolve_tool_calls, start_chat_turn, ToolDecision};
+    use crate::broker::simulated::{
+        accepted_task, completed_chat_result, failed_task_state, task_state,
+        waiting_for_tools_state, ScriptedResponse, SimulatedBroker,
+    };
+    use crate::broker::{BrokerCapabilities, BrokerClient};
     use crate::db::{
         AttachmentRecord, ContextMessage, ConversationExecutionPreferences, CustomGptContext,
-        CustomGptToolPermissions, MemoryItemView, ProjectInstructionContext,
+        CustomGptToolPermissions, Database, MemoryItemView, ProjectInstructionContext,
         SelectedAttachmentChunk,
     };
     use serde_json::json;
+    use std::time::Duration;
+
+    /// Tiempo máximo que una prueba espera a que un bucle asíncrono se asiente.
+    ///
+    /// El sondeo arranca en 750 ms y crece; este margen cubre varias vueltas sin
+    /// convertir un fallo real en una prueba que cuelga la suite.
+    const SETTLE_TIMEOUT: Duration = Duration::from_secs(20);
+
+    fn integration_database() -> Database {
+        let path = std::env::temp_dir().join(format!(
+            "chatygpt-runtime-test-{}.sqlite",
+            uuid::Uuid::new_v4().simple()
+        ));
+        Database::open(path).expect("la base de pruebas debe abrirse")
+    }
+
+    fn cleanup(database: &Database) {
+        let path = database.path().to_path_buf();
+        for candidate in [
+            path.clone(),
+            path.with_extension("sqlite-wal"),
+            path.with_extension("sqlite-shm"),
+        ] {
+            let _ = std::fs::remove_file(candidate);
+        }
+    }
+
+    /// Envía un turno de chat corriente y devuelve el identificador local.
+    fn send_turn(database: &Database, broker: &BrokerClient, conversation_id: &str) -> String {
+        tauri::async_runtime::block_on(start_chat_turn(
+            database.clone(),
+            broker.clone(),
+            conversation_id,
+            "¿Qué dice la normativa sobre esto?",
+            &[],
+            false,
+            false,
+            false,
+            false,
+        ))
+        .expect("el turno debe persistirse y lanzarse")
+        .id
+    }
+
+    /// Al arrancar se cierra lo que quedó pausado y aquí ya se dio por perdido.
+    ///
+    /// `waiting_for_tools` no caduca: sin esto, una investigación huérfana
+    /// seguiría esperando en el Broker una respuesta que nadie va a enviar.
+    #[test]
+    fn a_startup_closes_abandoned_tasks_that_are_still_paused_in_the_broker() {
+        let simulated = SimulatedBroker::start();
+        simulated.script(
+            "POST /api/v1/tasks",
+            ScriptedResponse::accepted(accepted_task("remote-abandoned")),
+        );
+        let mut paused = task_state("remote-abandoned", "waiting_for_tools", None);
+        paused["result"] = json!({
+            "status": "waiting_for_tools",
+            "pending_tool_calls": [{
+                "id": "call_1",
+                "name": "rename_conversation",
+                "arguments": {"title": "Otro título"}
+            }]
+        });
+        simulated.always("GET /api/v1/tasks/{id}", ScriptedResponse::ok(paused));
+        simulated.always(
+            "DELETE /api/v1/tasks/{id}",
+            ScriptedResponse::ok(task_state("remote-abandoned", "cancelled", None)),
+        );
+
+        let database = integration_database();
+        let broker =
+            BrokerClient::for_base_url(simulated.base_url()).expect("el cliente debe construirse");
+        let conversation = database
+            .create_conversation("Abandonada", None)
+            .expect("la conversación debe crearse");
+        let local_id = send_turn(&database, &broker, &conversation.id);
+        assert!(
+            SimulatedBroker::wait_until(SETTLE_TIMEOUT, || database
+                .task_snapshot(&local_id)
+                .is_ok_and(|task| task.local_state == "waiting_for_tools")),
+            "la tarea debía quedar pausada esperando una decisión"
+        );
+
+        // Se da por perdida: un error permanente impidió seguir atendiéndola.
+        database
+            .mark_orphaned(&local_id, "el envío de resultados fue rechazado")
+            .expect("la tarea debe poder marcarse como huérfana");
+
+        recover_at_start(database.clone(), broker.clone()).expect("la recuperación debe correr");
+
+        // Se espera al efecto persistido, no a que asome la petición: el
+        // `DELETE` queda registrado en el simulador antes de que ChatyGPT haya
+        // procesado su respuesta, y comprobar ahí la base es una carrera.
+        assert!(
+            SimulatedBroker::wait_until(SETTLE_TIMEOUT, || database
+                .abandoned_remote_tasks()
+                .is_ok_and(|pending| pending.is_empty())),
+            "el arranque debía cerrar la tarea abandonada en el Broker"
+        );
+        assert!(!simulated
+            .requests_to("DELETE", "/api/v1/tasks/remote-abandoned")
+            .is_empty());
+        // Se consulta antes de cancelar: no se descarta trabajo a ciegas.
+        assert!(!simulated
+            .requests_to("GET", "/api/v1/tasks/remote-abandoned")
+            .is_empty());
+        assert_eq!(
+            simulated
+                .requests_to("DELETE", "/api/v1/tasks/remote-abandoned")
+                .len(),
+            1,
+            "cancelar una vez basta"
+        );
+
+        // Y queda auditado: es trabajo del Broker que se descarta sin preguntar.
+        let audited = database
+            .list_audit_events(200)
+            .expect("la auditoría debe poder consultarse")
+            .into_iter()
+            .filter(|event| event.summary == "Tarea abandonada cerrada en Broker AI")
+            .collect::<Vec<_>>();
+        assert_eq!(audited.len(), 1);
+        // No se presenta como una anotación más: cerrar trabajo del Broker sin
+        // preguntar merece verse como aviso.
+        assert_eq!(audited[0].severity, "warning");
+        assert_eq!(audited[0].actor, "chatygpt");
+
+        // Su estado remoto queda anotado, así que un segundo arranque no la
+        // vuelve a cancelar.
+        assert_eq!(
+            database
+                .task_snapshot(&local_id)
+                .expect("la tarea existe")
+                .remote_status,
+            "cancelled"
+        );
+
+        cleanup(&database);
+    }
+
+    /// Una tarea que terminó sola no se cancela: solo se anota su desenlace.
+    #[test]
+    fn an_abandoned_task_that_finished_on_its_own_is_not_cancelled() {
+        let simulated = SimulatedBroker::start();
+        simulated.script(
+            "POST /api/v1/tasks",
+            ScriptedResponse::accepted(accepted_task("remote-finished")),
+        );
+        simulated.script(
+            "GET /api/v1/tasks/{id}",
+            ScriptedResponse::ok(task_state("remote-finished", "generating", None)),
+        );
+        simulated.always(
+            "GET /api/v1/tasks/{id}",
+            ScriptedResponse::ok(task_state(
+                "remote-finished",
+                "completed",
+                Some(completed_chat_result("Terminó por su cuenta.")),
+            )),
+        );
+
+        let database = integration_database();
+        let broker =
+            BrokerClient::for_base_url(simulated.base_url()).expect("el cliente debe construirse");
+        let conversation = database
+            .create_conversation("Terminó sola", None)
+            .expect("la conversación debe crearse");
+        let local_id = send_turn(&database, &broker, &conversation.id);
+        assert!(
+            SimulatedBroker::wait_until(SETTLE_TIMEOUT, || database
+                .task_snapshot(&local_id)
+                .is_ok_and(|task| task.remote_task_id.is_some())),
+            "la tarea debía enlazarse con su identidad remota"
+        );
+        database
+            .mark_orphaned(&local_id, "se dio por perdida mientras trabajaba")
+            .expect("la tarea debe poder marcarse como huérfana");
+
+        recover_at_start(database.clone(), broker.clone()).expect("la recuperación debe correr");
+
+        assert!(
+            SimulatedBroker::wait_until(SETTLE_TIMEOUT, || database
+                .task_snapshot(&local_id)
+                .is_ok_and(|task| task.remote_status == "completed")),
+            "debía anotarse el desenlace real"
+        );
+        assert!(
+            simulated
+                .requests_to("DELETE", "/api/v1/tasks/remote-finished")
+                .is_empty(),
+            "no se cancela algo que ya había terminado"
+        );
+
+        cleanup(&database);
+    }
+
+    /// Capacidades mínimas que admiten una investigación.
+    fn research_capabilities() -> BrokerCapabilities {
+        BrokerCapabilities {
+            contract_version: "2.7".to_owned(),
+            strategies: vec!["single".to_owned(), "agent".to_owned()],
+            agent_skills: vec!["web_search".to_owned()],
+            client_tool_passthrough: true,
+            ..BrokerCapabilities::default()
+        }
+    }
+
+    /// Lanza una investigación contra el simulador.
+    fn send_research_turn(
+        database: &Database,
+        broker: &BrokerClient,
+        conversation_id: &str,
+    ) -> String {
+        tauri::async_runtime::block_on(start_chat_turn(
+            database.clone(),
+            broker.clone(),
+            conversation_id,
+            "Contrasta la normativa europea con fuentes públicas",
+            &[],
+            false,
+            false,
+            false,
+            true,
+        ))
+        .expect("la investigación debe persistirse y lanzarse")
+        .id
+    }
+
+    /// El bucle de herramientas se resuelve solo y deja un paso real.
+    ///
+    /// La URL que pide el modelo apunta al propio equipo, que es justo lo que
+    /// `validate_fetch_url` rechaza. Sirve para dos cosas a la vez: comprobar
+    /// que la guarda aguanta de extremo a extremo —un modelo no puede hacer
+    /// que ChatyGPT llame a la puerta de su propio Broker— y que un fallo de
+    /// herramienta viaja como resultado, no como silencio, de modo que la
+    /// tarea continúa en lugar de quedarse esperando para siempre.
+    #[test]
+    fn a_research_resolves_its_own_tools_and_records_each_one_as_a_step() {
+        let simulated = SimulatedBroker::start();
+        simulated.always(
+            "GET /api/v1/capabilities",
+            ScriptedResponse::ok(serde_json::to_value(research_capabilities()).unwrap()),
+        );
+        simulated.script(
+            "POST /api/v1/tasks",
+            ScriptedResponse::accepted(accepted_task("remote-research")),
+        );
+        let mut paused = task_state("remote-research", "waiting_for_tools", None);
+        paused["execution_strategy"] = json!("agent");
+        paused["progress"] = json!({
+            "phase": "generating",
+            "invocations_completed": 1,
+            "invocations_total": 1,
+            "agent_iteration": 2,
+            "agent_max_iterations": 12
+        });
+        paused["result"] = json!({
+            "status": "waiting_for_tools",
+            "pending_tool_calls": [{
+                "id": "call_1",
+                "name": "fetch_url",
+                "arguments": {"url": "http://127.0.0.1:8765/api/v1/tasks"}
+            }]
+        });
+        simulated.always("GET /api/v1/tasks/{id}", ScriptedResponse::ok(paused));
+        let resolved = task_state(
+            "remote-research",
+            "completed",
+            Some(completed_chat_result("Informe con las fuentes accesibles.")),
+        );
+        simulated.always(
+            "POST /api/v1/tasks/{id}/tool_results",
+            ScriptedResponse::ok(resolved.clone()),
+        );
+        // Recibir los resultados es lo que reanuda la tarea.
+        simulated.after(
+            "POST /api/v1/tasks/{id}/tool_results",
+            "GET /api/v1/tasks/{id}",
+            ScriptedResponse::ok(resolved),
+        );
+
+        let database = integration_database();
+        let broker =
+            BrokerClient::for_base_url(simulated.base_url()).expect("el cliente debe construirse");
+        let conversation = database
+            .create_conversation("Investigación", None)
+            .expect("la conversación debe crearse");
+        let local_id = send_research_turn(&database, &broker, &conversation.id);
+
+        assert!(
+            SimulatedBroker::wait_until(SETTLE_TIMEOUT, || database
+                .task_snapshot(&local_id)
+                .is_ok_and(|task| task.remote_status == "completed")),
+            "la investigación debía resolver su herramienta y continuar sola"
+        );
+
+        // La decisión se envió una sola vez, con el identificador de la llamada.
+        let submissions =
+            simulated.requests_to("POST", "/api/v1/tasks/remote-research/tool_results");
+        assert_eq!(submissions.len(), 1);
+        let results = submissions[0].body["tool_results"]
+            .as_array()
+            .expect("el contrato exige una lista de resultados");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["tool_call_id"], "call_1");
+
+        // La guarda aguantó: no se abrió ninguna dirección del propio equipo.
+        assert!(
+            results[0]["content"]
+                .as_str()
+                .is_some_and(|content| content.contains("propio equipo")),
+            "el resultado debía explicar por qué no se abrió la URL"
+        );
+
+        // Y quedó como paso real, con su parámetro visible.
+        let view = database
+            .conversation_view(&conversation.id)
+            .expect("la conversación debe cargarse");
+        let steps = &view.research_runs[0].steps;
+        assert_eq!(steps.len(), 1);
+        assert_eq!(
+            steps[0].title,
+            "fetch_url: http://127.0.0.1:8765/api/v1/tasks"
+        );
+        assert_eq!(steps[0].status, "failed");
+
+        cleanup(&database);
+    }
+
+    /// El recorrido completo termina en estado terminal y materializa la respuesta.
+    ///
+    /// Es el criterio de aceptación «polling no bloquea la interfaz, aplica
+    /// límites y termina en estados terminales» comprobado contra un servidor,
+    /// no contra una función pura.
+    #[test]
+    fn chat_turn_polls_until_terminal_and_materializes_the_answer() {
+        let simulated = SimulatedBroker::start();
+        simulated.script(
+            "POST /api/v1/tasks",
+            ScriptedResponse::accepted(accepted_task("remote-happy")),
+        );
+        // Una fase intermedia antes del estado terminal: el sondeo debe seguir.
+        simulated.script(
+            "GET /api/v1/tasks/{id}",
+            ScriptedResponse::ok(task_state("remote-happy", "generating", None)),
+        );
+        simulated.always(
+            "GET /api/v1/tasks/{id}",
+            ScriptedResponse::ok(task_state(
+                "remote-happy",
+                "completed",
+                Some(completed_chat_result("La normativa exige contrato previo.")),
+            )),
+        );
+
+        let database = integration_database();
+        let broker =
+            BrokerClient::for_base_url(simulated.base_url()).expect("el cliente debe construirse");
+        let conversation = database
+            .create_conversation("Consulta normativa", None)
+            .expect("la conversación debe crearse");
+        let local_id = send_turn(&database, &broker, &conversation.id);
+
+        assert!(
+            SimulatedBroker::wait_until(SETTLE_TIMEOUT, || database
+                .task_snapshot(&local_id)
+                .is_ok_and(|task| task.remote_status == "completed")),
+            "la tarea debía alcanzar un estado terminal"
+        );
+
+        let task = database.task_snapshot(&local_id).expect("la tarea existe");
+        assert_eq!(task.remote_task_id.as_deref(), Some("remote-happy"));
+        assert!(task.error.is_none());
+        // El sondeo se detiene: no sigue preguntando tras el estado terminal.
+        let polls_at_settle = simulated
+            .requests_to("GET", "/api/v1/tasks/remote-happy")
+            .len();
+        std::thread::sleep(Duration::from_millis(1_500));
+        assert_eq!(
+            simulated
+                .requests_to("GET", "/api/v1/tasks/remote-happy")
+                .len(),
+            polls_at_settle,
+            "tras el estado terminal no debe haber más sondeos"
+        );
+
+        // La respuesta queda materializada como mensaje del asistente.
+        let view = database
+            .conversation_view(&conversation.id)
+            .expect("la conversación debe cargarse");
+        let answer = view
+            .messages
+            .iter()
+            .find(|message| message.role == "assistant")
+            .expect("debe existir la respuesta");
+        assert_eq!(answer.status, "complete");
+        assert!(answer
+            .text
+            .as_deref()
+            .is_some_and(|text| text.contains("contrato previo")));
+
+        cleanup(&database);
+    }
+
+    /// Un fallo transitorio se reintenta y no crea una segunda tarea remota.
+    ///
+    /// Es el criterio «la misma operación reintentada no duplica la tarea»:
+    /// aunque el cliente envíe dos veces, la clave idempotente es la misma y
+    /// localmente solo existe un identificador remoto.
+    #[test]
+    fn transient_failure_is_retried_with_the_same_idempotency_key() {
+        let simulated = SimulatedBroker::start();
+        simulated.script("POST /api/v1/tasks", ScriptedResponse::transient());
+        simulated.script(
+            "POST /api/v1/tasks",
+            ScriptedResponse::accepted(accepted_task("remote-retry")),
+        );
+        simulated.always(
+            "GET /api/v1/tasks/{id}",
+            ScriptedResponse::ok(task_state(
+                "remote-retry",
+                "completed",
+                Some(completed_chat_result("Respuesta tras el reintento.")),
+            )),
+        );
+
+        let database = integration_database();
+        let broker =
+            BrokerClient::for_base_url(simulated.base_url()).expect("el cliente debe construirse");
+        let conversation = database
+            .create_conversation("Reintento", None)
+            .expect("la conversación debe crearse");
+        let local_id = send_turn(&database, &broker, &conversation.id);
+
+        assert!(
+            SimulatedBroker::wait_until(SETTLE_TIMEOUT, || database
+                .task_snapshot(&local_id)
+                .is_ok_and(|task| task.remote_status == "completed")),
+            "el reintento debía completar la tarea"
+        );
+
+        let submissions = simulated.requests_to("POST", "/api/v1/tasks");
+        assert_eq!(
+            submissions.len(),
+            2,
+            "debía reintentarse exactamente una vez"
+        );
+        let first_key = submissions[0].body["idempotency_key"]
+            .as_str()
+            .expect("la petición lleva clave idempotente");
+        let second_key = submissions[1].body["idempotency_key"]
+            .as_str()
+            .expect("el reintento lleva clave idempotente");
+        assert_eq!(
+            first_key, second_key,
+            "el reintento debe reutilizar la clave para que el Broker deduplique"
+        );
+        // Localmente tampoco hay duplicado: una tarea, un identificador remoto.
+        let task = database.task_snapshot(&local_id).expect("la tarea existe");
+        assert_eq!(task.remote_task_id.as_deref(), Some("remote-retry"));
+
+        cleanup(&database);
+    }
+
+    /// Un rechazo permanente huérfana la tarea y no se reintenta jamás.
+    #[test]
+    fn permanent_rejection_orphans_the_task_without_retrying() {
+        let simulated = SimulatedBroker::start();
+        simulated.always("POST /api/v1/tasks", ScriptedResponse::permanent());
+
+        let database = integration_database();
+        let broker =
+            BrokerClient::for_base_url(simulated.base_url()).expect("el cliente debe construirse");
+        let conversation = database
+            .create_conversation("Contrato inválido", None)
+            .expect("la conversación debe crearse");
+        let local_id = send_turn(&database, &broker, &conversation.id);
+
+        assert!(
+            SimulatedBroker::wait_until(SETTLE_TIMEOUT, || database
+                .task_snapshot(&local_id)
+                .is_ok_and(|task| task.local_state == "orphaned")),
+            "un rechazo de contrato debía dejar la tarea huérfana"
+        );
+
+        // Lo esencial: un error permanente no entra en el bucle de reintento.
+        std::thread::sleep(Duration::from_millis(1_500));
+        assert_eq!(
+            simulated.requests_to("POST", "/api/v1/tasks").len(),
+            1,
+            "un error permanente no debe reintentarse"
+        );
+        let task = database.task_snapshot(&local_id).expect("la tarea existe");
+        assert!(task.remote_task_id.is_none());
+
+        cleanup(&database);
+    }
+
+    /// La cancelación refleja la respuesta real del Broker, no una suposición.
+    #[test]
+    fn cancellation_reflects_the_real_broker_response() {
+        let simulated = SimulatedBroker::start();
+        simulated.script(
+            "POST /api/v1/tasks",
+            ScriptedResponse::accepted(accepted_task("remote-cancel")),
+        );
+        // Mientras no se cancele, la tarea sigue trabajando.
+        simulated.always(
+            "GET /api/v1/tasks/{id}",
+            ScriptedResponse::ok(task_state("remote-cancel", "generating", None)),
+        );
+        simulated.always(
+            "DELETE /api/v1/tasks/{id}",
+            ScriptedResponse::ok(task_state("remote-cancel", "cancelled", None)),
+        );
+        // Aceptar la cancelación es lo que cambia el estado: a partir de ahí el
+        // sondeo tampoco puede volver a verla trabajando.
+        simulated.after(
+            "DELETE /api/v1/tasks/{id}",
+            "GET /api/v1/tasks/{id}",
+            ScriptedResponse::ok(task_state("remote-cancel", "cancelled", None)),
+        );
+
+        let database = integration_database();
+        let broker =
+            BrokerClient::for_base_url(simulated.base_url()).expect("el cliente debe construirse");
+        let conversation = database
+            .create_conversation("Cancelación", None)
+            .expect("la conversación debe crearse");
+        let local_id = send_turn(&database, &broker, &conversation.id);
+        assert!(
+            SimulatedBroker::wait_until(SETTLE_TIMEOUT, || database
+                .task_snapshot(&local_id)
+                .is_ok_and(|task| task.remote_task_id.is_some())),
+            "la tarea debía enlazarse con su identidad remota"
+        );
+
+        let cancelled = tauri::async_runtime::block_on(cancel_task(
+            database.clone(),
+            broker.clone(),
+            &local_id,
+        ))
+        .expect("la cancelación debe resolverse");
+        assert_eq!(cancelled.remote_status, "cancelled");
+        assert_eq!(
+            simulated
+                .requests_to("DELETE", "/api/v1/tasks/remote-cancel")
+                .len(),
+            1
+        );
+
+        cleanup(&database);
+    }
+
+    /// Un fallo remoto se traslada al mensaje sin inventar una respuesta.
+    #[test]
+    fn remote_failure_is_reported_instead_of_being_answered() {
+        let simulated = SimulatedBroker::start();
+        simulated.script(
+            "POST /api/v1/tasks",
+            ScriptedResponse::accepted(accepted_task("remote-failed")),
+        );
+        simulated.always(
+            "GET /api/v1/tasks/{id}",
+            ScriptedResponse::ok(failed_task_state(
+                "remote-failed",
+                "ningún proveedor local respondió",
+            )),
+        );
+
+        let database = integration_database();
+        let broker =
+            BrokerClient::for_base_url(simulated.base_url()).expect("el cliente debe construirse");
+        let conversation = database
+            .create_conversation("Fallo remoto", None)
+            .expect("la conversación debe crearse");
+        let local_id = send_turn(&database, &broker, &conversation.id);
+
+        assert!(
+            SimulatedBroker::wait_until(SETTLE_TIMEOUT, || database
+                .task_snapshot(&local_id)
+                .is_ok_and(|task| task.remote_status == "failed")),
+            "la tarea debía terminar como fallida"
+        );
+
+        let view = database
+            .conversation_view(&conversation.id)
+            .expect("la conversación debe cargarse");
+        let answer = view
+            .messages
+            .iter()
+            .find(|message| message.role == "assistant")
+            .expect("debe existir el mensaje del asistente");
+        // No se fabrica contenido: el mensaje queda fallido y conserva el error.
+        assert_eq!(answer.status, "failed");
+        assert!(answer.text.is_none());
+        assert_eq!(
+            answer
+                .error
+                .as_ref()
+                .and_then(|error| error["code"].as_str()),
+            Some("PROVIDER_UNAVAILABLE")
+        );
+
+        cleanup(&database);
+    }
+
+    /// El sondeo se detiene en `waiting_for_tools` y reanuda tras la decisión.
+    ///
+    /// Es la garantía de que ninguna herramienta se ejecuta sin confirmación:
+    /// el bucle no avanza solo, espera a que la persona decida.
+    #[test]
+    fn polling_waits_for_a_tool_decision_and_resumes_after_it() {
+        let simulated = SimulatedBroker::start();
+        simulated.script(
+            "POST /api/v1/tasks",
+            ScriptedResponse::accepted(accepted_task("remote-tools")),
+        );
+        simulated.always(
+            "GET /api/v1/tasks/{id}",
+            ScriptedResponse::ok(waiting_for_tools_state(
+                "remote-tools",
+                "call-rename-1",
+                "rename_conversation",
+            )),
+        );
+        let resolved_state = task_state(
+            "remote-tools",
+            "completed",
+            Some(completed_chat_result("Listo, he aplicado la decisión.")),
+        );
+        simulated.always(
+            "POST /api/v1/tasks/{id}/tool_results",
+            ScriptedResponse::ok(resolved_state.clone()),
+        );
+        // Recibir la decisión es lo que completa la tarea: a partir de ahí, el
+        // sondeo ya no puede volver a verla esperando herramientas.
+        simulated.after(
+            "POST /api/v1/tasks/{id}/tool_results",
+            "GET /api/v1/tasks/{id}",
+            ScriptedResponse::ok(resolved_state),
+        );
+
+        let database = integration_database();
+        let broker =
+            BrokerClient::for_base_url(simulated.base_url()).expect("el cliente debe construirse");
+        let conversation = database
+            .create_conversation("Herramientas", None)
+            .expect("la conversación debe crearse");
+        let local_id = send_turn(&database, &broker, &conversation.id);
+
+        assert!(
+            SimulatedBroker::wait_until(SETTLE_TIMEOUT, || database
+                .task_snapshot(&local_id)
+                .is_ok_and(|task| task.local_state == "waiting_for_tools")),
+            "la tarea debía detenerse a esperar la decisión"
+        );
+        // El bucle no avanza solo: sin decisión no se envían resultados.
+        std::thread::sleep(Duration::from_millis(1_500));
+        assert!(
+            simulated
+                .requests_to("POST", "/api/v1/tasks/remote-tools/tool_results")
+                .is_empty(),
+            "no debe enviarse ningún resultado antes de que la persona decida"
+        );
+        let waiting = database.task_snapshot(&local_id).expect("la tarea existe");
+        assert_eq!(waiting.pending_tool_calls.len(), 1);
+
+        let resolved = resolve_tool_calls(
+            database.clone(),
+            broker.clone(),
+            &local_id,
+            &[ToolDecision {
+                tool_call_id: waiting.pending_tool_calls[0].tool_call_id.clone(),
+                approved: false,
+            }],
+        )
+        .expect("la decisión debe resolverse");
+        assert!(resolved.pending_tool_calls.is_empty());
+
+        assert!(
+            SimulatedBroker::wait_until(SETTLE_TIMEOUT, || database
+                .task_snapshot(&local_id)
+                .is_ok_and(|task| task.remote_status == "completed")),
+            "tras la decisión la tarea debía continuar hasta completarse"
+        );
+        assert_eq!(
+            simulated
+                .requests_to("POST", "/api/v1/tasks/remote-tools/tool_results")
+                .len(),
+            1,
+            "la decisión se envía una sola vez"
+        );
+
+        cleanup(&database);
+    }
+
+    /// Un corte transitorio durante el sondeo no da la tarea por perdida.
+    ///
+    /// Es la diferencia entre «el Broker no responde ahora» y «esta tarea no
+    /// existe»: lo primero se reintenta conservando la identidad remota.
+    #[test]
+    fn transient_polling_errors_are_retried_without_losing_the_task() {
+        let simulated = SimulatedBroker::start();
+        simulated.script(
+            "POST /api/v1/tasks",
+            ScriptedResponse::accepted(accepted_task("remote-flaky")),
+        );
+        simulated.script("GET /api/v1/tasks/{id}", ScriptedResponse::transient());
+        simulated.script("GET /api/v1/tasks/{id}", ScriptedResponse::transient());
+        simulated.always(
+            "GET /api/v1/tasks/{id}",
+            ScriptedResponse::ok(task_state(
+                "remote-flaky",
+                "completed",
+                Some(completed_chat_result("Respuesta pese al corte.")),
+            )),
+        );
+
+        let database = integration_database();
+        let broker =
+            BrokerClient::for_base_url(simulated.base_url()).expect("el cliente debe construirse");
+        let conversation = database
+            .create_conversation("Corte transitorio", None)
+            .expect("la conversación debe crearse");
+        let local_id = send_turn(&database, &broker, &conversation.id);
+
+        assert!(
+            SimulatedBroker::wait_until(SETTLE_TIMEOUT, || database
+                .task_snapshot(&local_id)
+                .is_ok_and(|task| task.remote_status == "completed")),
+            "el sondeo debía superar los cortes y completar la tarea"
+        );
+
+        let task = database.task_snapshot(&local_id).expect("la tarea existe");
+        // La identidad remota nunca se pierde ni se reenvía la tarea.
+        assert_eq!(task.remote_task_id.as_deref(), Some("remote-flaky"));
+        assert_eq!(task.local_state, "terminal");
+        assert_eq!(simulated.requests_to("POST", "/api/v1/tasks").len(), 1);
+        assert!(
+            simulated
+                .requests_to("GET", "/api/v1/tasks/remote-flaky")
+                .len()
+                >= 3,
+            "debían registrarse los dos cortes y el sondeo con éxito"
+        );
+
+        cleanup(&database);
+    }
+
+    /// Un error de contrato durante el sondeo huérfana la tarea en lugar de
+    /// reintentar indefinidamente contra algo que no puede mejorar.
+    #[test]
+    fn permanent_polling_error_orphans_the_task_instead_of_looping() {
+        let simulated = SimulatedBroker::start();
+        simulated.script(
+            "POST /api/v1/tasks",
+            ScriptedResponse::accepted(accepted_task("remote-broken")),
+        );
+        simulated.always("GET /api/v1/tasks/{id}", ScriptedResponse::permanent());
+
+        let database = integration_database();
+        let broker =
+            BrokerClient::for_base_url(simulated.base_url()).expect("el cliente debe construirse");
+        let conversation = database
+            .create_conversation("Contrato roto al sondear", None)
+            .expect("la conversación debe crearse");
+        let local_id = send_turn(&database, &broker, &conversation.id);
+
+        assert!(
+            SimulatedBroker::wait_until(SETTLE_TIMEOUT, || database
+                .task_snapshot(&local_id)
+                .is_ok_and(|task| task.local_state == "orphaned")),
+            "un error permanente al sondear debía dejar la tarea huérfana"
+        );
+
+        let polls_at_settle = simulated
+            .requests_to("GET", "/api/v1/tasks/remote-broken")
+            .len();
+        std::thread::sleep(Duration::from_millis(1_500));
+        assert_eq!(
+            simulated
+                .requests_to("GET", "/api/v1/tasks/remote-broken")
+                .len(),
+            polls_at_settle,
+            "el bucle debe detenerse, no seguir preguntando"
+        );
+        // La tarea conserva su identidad remota: queda trazada, no borrada.
+        let task = database.task_snapshot(&local_id).expect("la tarea existe");
+        assert_eq!(task.remote_task_id.as_deref(), Some("remote-broken"));
+
+        cleanup(&database);
+    }
+
+    /// Un reinicio reanuda una tarea activa sin crear una segunda en el Broker.
+    ///
+    /// Es el criterio «un reinicio recupera tareas activas sin pérdida»: la
+    /// tarea ya tenía identidad remota, así que recuperarla debe sondearla, no
+    /// volver a enviarla.
+    #[test]
+    fn restart_resumes_an_active_task_without_submitting_it_again() {
+        let simulated = SimulatedBroker::start();
+        simulated.script(
+            "POST /api/v1/tasks",
+            ScriptedResponse::accepted(accepted_task("remote-recovered")),
+        );
+        // Durante la primera vida de la aplicación la tarea sigue trabajando.
+        simulated.script(
+            "GET /api/v1/tasks/{id}",
+            ScriptedResponse::ok(task_state("remote-recovered", "generating", None)),
+        );
+
+        let database = integration_database();
+        let broker =
+            BrokerClient::for_base_url(simulated.base_url()).expect("el cliente debe construirse");
+        let conversation = database
+            .create_conversation("Recuperación", None)
+            .expect("la conversación debe crearse");
+        let local_id = send_turn(&database, &broker, &conversation.id);
+        assert!(
+            SimulatedBroker::wait_until(SETTLE_TIMEOUT, || database
+                .task_snapshot(&local_id)
+                .is_ok_and(|task| task.remote_task_id.is_some())),
+            "la tarea debía enlazarse antes de simular el reinicio"
+        );
+        let submissions_before_restart = simulated.requests_to("POST", "/api/v1/tasks").len();
+        assert_eq!(submissions_before_restart, 1);
+
+        // Al reabrir, el Broker ya tiene la respuesta lista.
+        simulated.always(
+            "GET /api/v1/tasks/{id}",
+            ScriptedResponse::ok(task_state(
+                "remote-recovered",
+                "completed",
+                Some(completed_chat_result(
+                    "Respuesta recuperada tras reiniciar.",
+                )),
+            )),
+        );
+        let recovered = recover_at_start(database.clone(), broker.clone())
+            .expect("la recuperación debe ejecutarse");
+        assert!(recovered >= 1, "debía recuperarse al menos la tarea activa");
+
+        assert!(
+            SimulatedBroker::wait_until(SETTLE_TIMEOUT, || database
+                .task_snapshot(&local_id)
+                .is_ok_and(|task| task.remote_status == "completed")),
+            "la tarea recuperada debía completarse"
+        );
+        assert_eq!(
+            simulated.requests_to("POST", "/api/v1/tasks").len(),
+            submissions_before_restart,
+            "recuperar una tarea con identidad remota no debe reenviarla"
+        );
+        let task = database.task_snapshot(&local_id).expect("la tarea existe");
+        assert_eq!(task.remote_task_id.as_deref(), Some("remote-recovered"));
+
+        cleanup(&database);
+    }
 
     #[test]
     fn custom_gpt_instructions_are_explicit_context_without_granting_tools() {
@@ -1903,10 +3112,12 @@ mod tests {
                 "calculator".to_owned(),
                 "current_datetime".to_owned(),
             ],
+            client_tool_passthrough: true,
             ..BrokerCapabilities::default()
         };
+        let plan = deep_research_plan(&capabilities).expect("research plan should be decided");
         let research =
-            deep_research_request(request, &capabilities).expect("research workflow should build");
+            apply_deep_research_plan(request, &plan).expect("research workflow should build");
         assert_eq!(
             research["content"]["metadata"]["workflow_kind"],
             "deep_research"
@@ -1917,21 +3128,155 @@ mod tests {
             "Broker contract: agent strategy only supports preset fast"
         );
         assert_eq!(research["execution"]["agent"]["max_iterations"], 12);
+        // Diseño híbrido: buscar lo hace el Broker, abrir enlaces lo hace
+        // ChatyGPT para que cada fuente sea una subtarea visible.
         assert_eq!(
             research["execution"]["agent"]["skills"],
-            json!(["web_search", "fetch_url", "calculator", "current_datetime"])
+            json!(["web_search", "calculator", "current_datetime"])
         );
+        let client_tools = research["execution"]["agent"]["client_tools"]
+            .as_array()
+            .expect("las herramientas de cliente deben ser una lista");
+        assert_eq!(client_tools.len(), 1);
+        assert_eq!(client_tools[0]["name"], "fetch_url");
+        assert_eq!(client_tools[0]["parameters"]["required"], json!(["url"]));
+        // Ningún nombre puede estar en las dos listas a la vez.
+        assert!(!research["execution"]["agent"]["skills"]
+            .as_array()
+            .expect("las habilidades deben ser una lista")
+            .iter()
+            .any(|skill| skill == "fetch_url"));
         let prompt = research["content"]["prompt"]
             .as_str()
             .expect("research prompt should be text");
         assert!(prompt.contains("No la trates como una sola búsqueda"));
         assert!(prompt.contains("contrasta"));
+        // La estrategia `agent` rechaza el formato JSON con 422, y el campo del
+        // contrato es `output.format`: sanearlo en `generation` no haría nada.
+        assert_eq!(research["output"]["format"], "markdown");
+        assert!(research["generation"].get("output_format").is_none());
 
-        let missing_fetch = BrokerCapabilities {
-            agent_skills: vec!["web_search".to_owned()],
+        // Sin `web_search` la investigación se quedaría en abrir enlaces que el
+        // modelo recuerde, que es justo lo que el prompt prohíbe.
+        let missing_search = BrokerCapabilities {
+            agent_skills: vec!["calculator".to_owned()],
             ..capabilities
         };
-        assert!(deep_research_request(research, &missing_fetch).is_err());
+        assert!(deep_research_plan(&missing_search).is_err());
+        // Sin passthrough no hay subtareas visibles: el Broker no podría
+        // pausar la tarea para pedir `fetch_url`.
+        let no_passthrough = BrokerCapabilities {
+            client_tool_passthrough: false,
+            ..missing_search.clone()
+        };
+        assert!(deep_research_plan(&no_passthrough).is_err());
+        let missing_agent = BrokerCapabilities {
+            strategies: vec!["single".to_owned()],
+            ..missing_search
+        };
+        assert!(deep_research_plan(&missing_agent).is_err());
+    }
+
+    #[test]
+    fn a_research_turn_never_asks_the_agent_for_json() {
+        let capabilities = BrokerCapabilities {
+            strategies: vec!["agent".to_owned()],
+            agent_skills: vec!["web_search".to_owned()],
+            client_tool_passthrough: true,
+            ..BrokerCapabilities::default()
+        };
+        let plan = deep_research_plan(&capabilities).expect("plan should be decided");
+        let mut request = chat_request(
+            "conversation",
+            "json-key",
+            "Investiga esto",
+            &[ContextMessage {
+                message_id: "current".to_owned(),
+                role: "user".to_owned(),
+                text: "Investiga esto".to_owned(),
+            }],
+            &[],
+            &[],
+            &[],
+            ChatExecutionOptions::default(),
+        )
+        .expect("base request should build");
+        // Aunque el turno base pidiera JSON, la investigación sale en Markdown.
+        request["output"]["format"] = json!("json");
+        let research = apply_deep_research_plan(request, &plan).expect("should build");
+        assert_eq!(research["output"]["format"], "markdown");
+    }
+
+    /// El plan viaja con el flujo semántico y no vuelve a negociarse.
+    ///
+    /// Entre decidirlo y aplicarlo media una tarea de embeddings y, quizá, un
+    /// reinicio: si el Broker retira una herramienta mientras tanto, la
+    /// investigación ya autorizada debe ejecutarse tal y como se aprobó.
+    #[test]
+    fn research_plan_is_frozen_and_survives_the_semantic_round_trip() {
+        let capabilities = BrokerCapabilities {
+            contract_version: "2.7".to_owned(),
+            strategies: vec!["single".to_owned(), "agent".to_owned()],
+            agent_skills: vec![
+                "web_search".to_owned(),
+                "fetch_url".to_owned(),
+                "calculator".to_owned(),
+            ],
+            client_tool_passthrough: true,
+            ..BrokerCapabilities::default()
+        };
+        let plan = deep_research_plan(&capabilities).expect("research plan should be decided");
+        assert_eq!(plan.skills, ["web_search", "calculator"]);
+        // Solo se incluyen las habilidades realmente anunciadas.
+        assert!(!plan.skills.iter().any(|skill| skill == "current_datetime"));
+        // `fetch_url` no es una habilidad del Broker sino una herramienta
+        // nuestra: viaja en la otra lista aunque el Broker la anuncie.
+        assert!(!plan.skills.iter().any(|skill| skill == "fetch_url"));
+        assert_eq!(plan.client_tools, ["fetch_url"]);
+        // El tope del contrato acota la profundidad total de la investigación.
+        assert!(plan.max_iterations <= 20);
+
+        // Ida y vuelta por SQLite: se persiste como JSON y se recupera igual.
+        let persisted = serde_json::to_value(&plan).expect("plan should serialize");
+        let restored: ResearchPlan =
+            serde_json::from_value(persisted).expect("plan should deserialize");
+        assert_eq!(restored, plan);
+
+        // La segunda etapa aplica el plan sin consultar capacidades y conserva
+        // el contexto ya recuperado por similitud.
+        let request = chat_request(
+            "conversation",
+            "semantic-research-key",
+            "Contrasta lo que dice el informe adjunto con fuentes públicas",
+            &[ContextMessage {
+                message_id: "current".to_owned(),
+                role: "user".to_owned(),
+                text: "Contrasta lo que dice el informe adjunto con fuentes públicas".to_owned(),
+            }],
+            &[],
+            &[],
+            &[],
+            ChatExecutionOptions::default(),
+        )
+        .expect("base request should build");
+        let research = apply_deep_research_plan(request, &restored)
+            .expect("research workflow should build from the frozen plan");
+        assert_eq!(
+            research["content"]["metadata"]["workflow_kind"],
+            "deep_research"
+        );
+        assert_eq!(
+            research["execution"]["agent"]["skills"],
+            json!(["web_search", "calculator"])
+        );
+        assert_eq!(
+            research["execution"]["agent"]["client_tools"][0]["name"],
+            "fetch_url"
+        );
+        assert!(research["content"]["prompt"]
+            .as_str()
+            .expect("research prompt should be text")
+            .contains("Contrasta lo que dice el informe adjunto"));
     }
 
     #[test]

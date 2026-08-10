@@ -64,10 +64,19 @@ jobs:
 
       # El umbral global protege la lógica no visual del núcleo Rust: dominio,
       # persistencia, polling, exportación, permisos y custodia de secretos.
+      # Se sube a 77 tras cubrir contra el Broker simulado el envío, el sondeo,
+      # las herramientas, la recuperación, el diagnóstico y la ingesta completa
+      # de adjuntos: el umbral debe seguir a la cobertura real para que una
+      # regresión se note.
+      #
+      # La cobertura medida ronda el 78,8 % y oscila una décima entre pasadas,
+      # porque los bucles de sondeo ejecutan un número distinto de vueltas según
+      # los tiempos de cada máquina. El umbral se deja un punto por debajo a
+      # propósito: debe fallar ante una regresión real, no ante esa oscilación.
       - name: Pruebas de Rust con cobertura
         run: >
           cargo llvm-cov --manifest-path apps/desktop/src-tauri/Cargo.toml
-          --lib --fail-under-lines 70 --summary-only
+          --lib --fail-under-lines 77 --summary-only
 
       - name: Comprobación de tipos
         run: pnpm typecheck
@@ -77,6 +86,9 @@ jobs:
 
       - name: Construcción de producción del frontend
         run: pnpm build
+
+      - name: Instalar dependencias de las pruebas de Python
+        run: python -m pip install -r tests/requirements.txt
 
       - name: Pruebas de fundamentos en Python
         run: python -m unittest discover -s tests -v
@@ -111,6 +123,9 @@ jobs:
 
       - name: Pruebas de TypeScript
         run: pnpm test
+
+      - name: Instalar dependencias de las pruebas de Python
+        run: python -m pip install -r tests/requirements.txt
 
       - name: Pruebas de fundamentos en Python
         run: python -m unittest discover -s tests -v

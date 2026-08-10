@@ -220,12 +220,23 @@ Decisiones de ciclo de vida:
 
 ### 0E. Calidad y distribución
 
-- Unitarias Rust/TypeScript e integración SQLite. **Pendiente:** integración
-  contra Broker AI simulado y E2E.
-- **Implementado:** cobertura medida con `cargo-llvm-cov` (71,21 % de líneas) y
-  CI en `windows-latest` con umbral que falla si baja. Desglose y objetivos aún
-  no alcanzados en [Endurecimiento de Fase 0](PHASE_0_HARDENING.md).
-- Presupuestos de rendimiento instrumentados.
+- **Implementado:** unitarias Rust/TypeScript, integración SQLite e integración
+  contra un Broker AI simulado que cubre envío, reintento idempotente, sondeo,
+  espera de herramientas, cancelación, recuperación tras reinicio, diagnóstico
+  y la ingesta completa de adjuntos —subida multipart, conversión, fragmentación
+  y sus modos de fallo—. Además, una verificación estática del contrato entre
+  `platform.ts` y las órdenes de Tauri, y de que ninguna acción sensible envía
+  una confirmación que la persona no dio. Y pruebas de interfaz que montan la
+  aplicación con `jsdom` y comprueban que las acciones sensibles no se ejecutan
+  al cancelar. **Pendiente:** E2E sobre la aplicación empaquetada.
+- **Implementado:** cobertura medida con `cargo-llvm-cov` (~78,8 % de líneas,
+  con `task_runtime.rs` en ~81,5 %, `broker/mod.rs` en ~87,8 % y
+  `attachment_runtime.rs` en ~82,6 %) y CI en `windows-latest` con umbral 77 que
+  falla si baja. Desglose en
+  [Endurecimiento de Fase 0](PHASE_0_HARDENING.md).
+- **Implementado:** presupuestos de rendimiento instrumentados y visibles en
+  **Inicio → Rendimiento** (migración `0017`, módulo `metrics.rs`). Miden
+  arranque, apertura de conversación, búsqueda y respuesta de la interfaz.
 - MSI/NSIS, firma, actualización y rollback.
 - Matriz de Windows soportada.
 
@@ -610,6 +621,53 @@ ventanas con foco inicial, ciclo de Tab, cierre mediante Escape y restauración
 del foco previo. Ninguna de estas acciones modifica la persistencia o el
 contrato del Broker.
 
+Investigación profunda y recuperación semántica ya no se excluyen. Lo que
+faltaba no era código sino una política de recuperación para dos workflows
+anidados, y esa política es un plan congelado: `deep_research_plan` valida las
+capacidades del Broker y decide las herramientas **antes** de persistir el
+mensaje, y el resultado se guarda en `semantic_chat_workflows.research_plan_json`
+(migración `0018`). La segunda etapa y una recuperación tras reinicio aplican ese
+plan con una función pura, sin red. Así, un Broker que retire una herramienta
+mientras corre la etapa de embeddings no puede alterar una investigación que la
+persona ya autorizó, y un fallo de capacidades se manifiesta como rechazo del
+turno en vez de como un mensaje a medias en SQLite.
+
+El expediente de investigación lo abre `insert_research_run_if_needed`, que
+decide leyendo la petición ya construida en lugar de un parámetro aparte. Por
+eso las dos rutas —directa y semántica— crean las mismas tres etapas y el mismo
+evento `research.started`, y no puede existir una petición `deep_research` sin
+su expediente asociado. El contexto recuperado por similitud no se descarta: los
+recuerdos y fragmentos seleccionados forman parte del objetivo que se investiga.
+
+La medición de rendimiento vive en `performance_samples` (migración `0017`) y en
+`metrics.rs`. La tabla admite exclusivamente una métrica de un vocabulario
+cerrado por CHECK, un entero de milisegundos acotado a diez minutos y una marca
+de tiempo: no tiene ninguna columna capaz de contener un prompt, un título, una
+ruta ni un identificador de dominio, de modo que medir no crea un segundo
+registro de contenido personal. La retención se aplica dentro de la misma
+transacción que inserta —las últimas 200 muestras por métrica—, así que no
+existe un instante en el que la tabla supere el límite ni una tarea de
+mantenimiento que pudiera no ejecutarse.
+
+Los objetivos se comparan siempre con el percentil 95 calculado por rango más
+cercano, que devuelve un valor realmente observado en lugar de interpolar uno
+que nunca ocurrió. `meets_budget` es `Option<bool>`: una métrica sin muestras no
+obtiene veredicto, ni cumplido ni incumplido. Los presupuestos iniciales
+adoptados son 2.000 ms para el arranque, 400 ms para abrir una conversación,
+300 ms para la búsqueda y 100 ms para la respuesta de la interfaz, y viven en un
+único punto del código.
+
+La instrumentación del cliente acumula duraciones en un búfer acotado y las
+envía por lotes cada cinco segundos, de modo que medir no se convierte en un
+coste de rendimiento. El arranque se cuenta desde que la vista web empieza a
+cargar hasta que hay navegación y primera conversación en pantalla: no incluye
+la creación del proceso ni de WebView2, que el frontend no puede observar. La
+respuesta de la interfaz procede de la API de Event Timing filtrada por
+`interactionId`, cuyo umbral mínimo de 16 ms deja fuera las interacciones más
+rápidas; los percentiles resultantes son por tanto un límite superior y nunca
+una cifra optimista. Ambas limitaciones se declaran junto a la medida en la
+propia interfaz.
+
 ## 8. Riesgos técnicos principales
 
 | Riesgo | Mitigación |
@@ -631,8 +689,17 @@ contrato del Broker.
    futuras credenciales editables desde la interfaz usarán Credential Manager
    nativo o Stronghold.
 2. Confirmar si AI Broker siempre será loopback o también LAN/TLS.
-3. Obtener el OpenAPI vivo y comprobar si el endpoint expone eventos de tarea o
-   solo el snapshot agregado.
+3. ~~Obtener el OpenAPI vivo y comprobar si el endpoint expone eventos de tarea
+   o solo el snapshot agregado.~~ **Cerrada el 6-ago-2026.** El endpoint de
+   cliente expone **solo el snapshot agregado**, y es deliberado: el detalle por
+   paso llega por el *passthrough* de herramientas, no ampliando el API de
+   cliente. Cuando el agente se pausa, `result.pending_tool_calls` trae cada
+   llamada con su identificador, su nombre y sus argumentos ya deserializados
+   —que es el detalle por subtarea— y `progress.agent_iteration` dice por qué
+   vuelta del bucle va. El contrato queda fijado en
+   `contracts/broker/2.7/task-state.response.json`, copia literal del esquema
+   que publica el Broker, y validado por
+   `tests/test_broker_task_state_contract.py`.
 4. Confirmar modelos mínimos disponibles para el smoke test sin coste cloud.
 5. Definir ubicación del vault y política de conflicto.
 6. Definir política de retención/borrado físico.

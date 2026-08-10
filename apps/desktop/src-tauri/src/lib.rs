@@ -4,6 +4,8 @@ mod db;
 mod error;
 mod export;
 mod logging;
+mod metrics;
+mod research_tools;
 mod scheduler_runtime;
 mod secrets;
 mod startup;
@@ -247,6 +249,48 @@ fn list_scheduled_runs(
         page,
         page_size,
     )
+}
+
+/// Registra duraciones observadas por la interfaz.
+///
+/// La orden acepta un lote porque la respuesta inmediata de la interfaz produce
+/// una muestra por interacción: agruparlas evita que medir el rendimiento sea,
+/// en sí mismo, un coste de rendimiento.
+#[tauri::command]
+fn record_performance_samples(
+    metric: String,
+    durations_ms: Vec<i64>,
+    state: State<'_, AppState>,
+) -> Result<(), AppError> {
+    let retained = state
+        .database
+        .record_performance_samples(&metric, &durations_ms)?;
+    logging::info(
+        "performance.samples_recorded",
+        None,
+        &[
+            ("metric", logging::code(&metric)),
+            ("recorded", logging::count(durations_ms.len() as i64)),
+            ("retained", logging::count(retained)),
+        ],
+    );
+    Ok(())
+}
+
+#[tauri::command]
+fn get_performance_report(
+    state: State<'_, AppState>,
+) -> Result<metrics::PerformanceReportView, AppError> {
+    state.database.performance_report()
+}
+
+#[tauri::command]
+fn clear_performance_samples(
+    confirmed: bool,
+    state: State<'_, AppState>,
+) -> Result<metrics::PerformanceReportView, AppError> {
+    state.database.clear_performance_samples(confirmed)?;
+    state.database.performance_report()
 }
 
 #[tauri::command]
@@ -2035,6 +2079,9 @@ pub fn run() {
             start_smoke_task,
             get_local_task,
             cancel_local_task,
+            record_performance_samples,
+            get_performance_report,
+            clear_performance_samples,
             list_scheduled_tasks,
             list_scheduled_runs,
             list_scheduled_task_templates,

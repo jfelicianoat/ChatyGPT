@@ -1,4 +1,6 @@
 mod contracts;
+#[cfg(test)]
+pub mod simulated;
 
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
@@ -92,6 +94,31 @@ impl BrokerClient {
             base_url,
             http,
             admin_token: Arc::new(RwLock::new(admin_token)),
+        })
+    }
+
+    /// Cliente apuntado a una URL concreta, sin tocar el almacén de credenciales.
+    ///
+    /// Existe únicamente para las pruebas de integración contra el Broker
+    /// simulado: `bootstrap` resuelve la URL del entorno y la credencial de
+    /// DPAPI, que ninguna prueba debe depender de tener configurados. Los
+    /// tiempos de espera son cortos porque el servidor está en loopback.
+    #[cfg(test)]
+    pub fn for_base_url(base_url: &str) -> Result<Self, AppError> {
+        let mut base_url =
+            Url::parse(base_url).map_err(|error| AppError::InvalidBrokerUrl(error.to_string()))?;
+        if !base_url.path().ends_with('/') {
+            base_url.set_path(&format!("{}/", base_url.path()));
+        }
+        let http = Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(2))
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .map_err(|error| AppError::BrokerTransport(error.to_string()))?;
+        Ok(Self {
+            base_url,
+            http,
+            admin_token: Arc::new(RwLock::new(None)),
         })
     }
 
@@ -491,7 +518,17 @@ impl PollPolicy {
 
 #[cfg(test)]
 mod tests {
-    use super::PollPolicy;
+    use super::simulated::{accepted_file, file_state, ScriptedResponse, SimulatedBroker};
+    use super::{AppError, BrokerClient, PollPolicy};
+    use serde_json::json;
+
+    fn block_on<T>(future: impl std::future::Future<Output = T>) -> T {
+        tauri::async_runtime::block_on(future)
+    }
+
+    fn client_for(simulated: &SimulatedBroker) -> BrokerClient {
+        BrokerClient::for_base_url(simulated.base_url()).expect("el cliente debe construirse")
+    }
 
     #[test]
     fn polling_is_bounded_and_backed_off() {
@@ -500,5 +537,279 @@ mod tests {
         assert_eq!(policy.delay_ms(2, 0), 3_000);
         assert_eq!(policy.delay_ms(30, 0), 15_000);
         assert_eq!(policy.delay_ms(30, 1_500), 17_250);
+    }
+
+    /// El diagnóstico distingue los tres estados que la interfaz debe mostrar.
+    ///
+    /// «No accesible», «accesible pero no listo» y «listo» no son matices: la
+    /// aplicación decide con ellos si deja enviar un mensaje.
+    #[test]
+    fn diagnosis_separates_unreachable_not_ready_and_ready() {
+        // Listo: sonda de salud correcta y capacidades legibles.
+        let ready = SimulatedBroker::start();
+        ready.always(
+            "GET /health/ready",
+            ScriptedResponse::ok(json!({"ready": true})),
+        );
+        ready.always(
+            "GET /api/v1/capabilities",
+            ScriptedResponse::ok(json!({
+                "contract_version": "2.7",
+                "derived_data_boundary": true,
+                "work_lanes": ["inference", "ingestion"],
+                "strategies": ["single", "agent"],
+                "agent_skills": ["web_search"],
+                "sandbox_run_code": true,
+                "file_ingestion": true,
+                "long_context_map_reduce": true,
+                "max_active_workflows": 2
+            })),
+        );
+        let diagnostic = block_on(client_for(&ready).diagnose());
+        assert!(diagnostic.reachable && diagnostic.ready);
+        assert_eq!(diagnostic.contract_version.as_deref(), Some("2.7"));
+        assert_eq!(diagnostic.strategies, ["single", "agent"]);
+        assert_eq!(diagnostic.sandbox_run_code, Some(true));
+        assert_eq!(diagnostic.max_active_workflows, Some(2));
+        assert_eq!(diagnostic.message, "Broker AI está listo");
+
+        // Accesible pero arrancando: responde 503 a la sonda de salud.
+        let starting = SimulatedBroker::start();
+        starting.always("GET /health/ready", ScriptedResponse::status(503));
+        let diagnostic = block_on(client_for(&starting).diagnose());
+        assert!(diagnostic.reachable);
+        assert!(!diagnostic.ready);
+        assert_eq!(diagnostic.message, "Broker AI responde, pero no está listo");
+
+        // Sano pero con capacidades ilegibles: accesible y explícitamente no listo.
+        let mismatched = SimulatedBroker::start();
+        mismatched.always(
+            "GET /health/ready",
+            ScriptedResponse::ok(json!({"ready": true})),
+        );
+        mismatched.always("GET /api/v1/capabilities", ScriptedResponse::malformed());
+        let diagnostic = block_on(client_for(&mismatched).diagnose());
+        assert!(diagnostic.reachable);
+        assert!(
+            !diagnostic.ready,
+            "sin capacidades verificadas no puede declararse listo"
+        );
+        assert!(diagnostic.message.contains("capacidades no verificadas"));
+
+        // No accesible: puerto cerrado. El simulador se apaga al soltarlo.
+        let closed_url = {
+            let temporary = SimulatedBroker::start();
+            temporary.base_url().to_owned()
+        };
+        let unreachable = BrokerClient::for_base_url(&closed_url).expect("cliente construible");
+        let diagnostic = block_on(unreachable.diagnose());
+        assert!(!diagnostic.reachable);
+        assert!(!diagnostic.ready);
+    }
+
+    /// Un cuerpo con éxito pero fuera de contrato no se acepta como válido.
+    #[test]
+    fn responses_are_classified_as_contract_or_response_errors() {
+        let simulated = SimulatedBroker::start();
+        simulated.script("GET /api/v1/capabilities", ScriptedResponse::malformed());
+        simulated.always("GET /api/v1/capabilities", ScriptedResponse::permanent());
+        let client = client_for(&simulated);
+
+        // HTTP 200 con cuerpo ilegible: es un fallo de contrato, no de red.
+        let error = block_on(client.capabilities()).expect_err("un cuerpo ilegible debe fallar");
+        assert!(matches!(error, AppError::BrokerContract(_)));
+
+        // HTTP 422: se conserva el código y el detalle publicado por el Broker.
+        let error = block_on(client.capabilities()).expect_err("un 422 debe fallar");
+        match error {
+            AppError::BrokerResponse { status, message } => {
+                assert_eq!(status, 422);
+                assert!(message.contains("no cumple el contrato"));
+            }
+            other => panic!("se esperaba una respuesta rechazada, no {other:?}"),
+        }
+    }
+
+    /// La credencial viaja en la cabecera y solo cuando existe.
+    #[test]
+    fn the_admin_token_travels_only_after_it_is_configured() {
+        let simulated = SimulatedBroker::start();
+        simulated.always(
+            "GET /api/v1/capabilities",
+            ScriptedResponse::ok(json!({"contract_version": "2.7"})),
+        );
+        let client = client_for(&simulated);
+
+        block_on(client.capabilities()).expect("sin token la consulta sigue siendo válida");
+        let anonymous = &simulated.requests_to("GET", "/api/v1/capabilities")[0];
+        assert!(
+            !anonymous.headers.contains_key("x-admin-token"),
+            "sin credencial no debe enviarse una cabecera vacía"
+        );
+
+        client
+            .replace_admin_token(Some("token-de-prueba"))
+            .expect("la credencial debe poder fijarse en caliente");
+        block_on(client.capabilities()).expect("con token la consulta debe funcionar");
+        let authorized = &simulated.requests_to("GET", "/api/v1/capabilities")[1];
+        assert_eq!(
+            authorized.headers.get("x-admin-token").map(String::as_str),
+            Some("token-de-prueba")
+        );
+
+        // Retirarla deja de enviarla sin reiniciar la aplicación.
+        client
+            .replace_admin_token(None)
+            .expect("la credencial debe poder retirarse");
+        block_on(client.capabilities()).expect("sin token vuelve a ser anónima");
+        assert!(!simulated.requests_to("GET", "/api/v1/capabilities")[2]
+            .headers
+            .contains_key("x-admin-token"));
+
+        // Un token con caracteres imposibles en una cabecera se rechaza antes
+        // de salir a la red, y sin citar su contenido en el error.
+        let rejected = client
+            .replace_admin_token(Some("token\ncon salto"))
+            .expect_err("un token inválido debe rechazarse");
+        assert!(matches!(rejected, AppError::BrokerContract(_)));
+        assert!(!rejected.to_string().contains("con salto"));
+    }
+
+    /// La subida envía el archivo real como multipart y lee su estado después.
+    #[test]
+    fn file_upload_sends_the_real_content_and_reads_its_state() {
+        let simulated = SimulatedBroker::start();
+        simulated.always(
+            "POST /api/v1/files",
+            ScriptedResponse::ok(accepted_file("file-1", "informe.pdf", 21, &"a".repeat(64))),
+        );
+        simulated.always(
+            "GET /api/v1/files/{id}",
+            ScriptedResponse::ok(file_state(
+                "file-1",
+                "ready",
+                Some("/api/v1/files/file-1/markdown"),
+            )),
+        );
+
+        let path = std::env::temp_dir().join(format!(
+            "chatygpt-upload-{}.pdf",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let contenido = b"contenido del informe";
+        std::fs::write(&path, contenido).expect("el archivo de prueba debe escribirse");
+
+        let client = client_for(&simulated);
+        let accepted = block_on(client.upload_file(
+            &path,
+            "informe.pdf",
+            Some("application/pdf"),
+            contenido.len() as u64,
+        ))
+        .expect("la subida debe aceptarse");
+        assert_eq!(accepted.file_id, "file-1");
+        assert!(accepted.created);
+
+        // El multipart lleva el nombre declarado y el contenido real del archivo.
+        let upload = &simulated.requests_to("POST", "/api/v1/files")[0];
+        assert!(upload.raw_body.contains("informe.pdf"));
+        assert!(upload.raw_body.contains("contenido del informe"));
+        assert!(upload.raw_body.contains("application/pdf"));
+        assert!(upload
+            .headers
+            .get("content-type")
+            .is_some_and(|value| value.starts_with("multipart/form-data")));
+
+        let state = block_on(client.get_file("file-1")).expect("el estado debe leerse");
+        assert_eq!(state.status, "ready");
+        assert_eq!(
+            state.markdown_url.as_deref(),
+            Some("/api/v1/files/file-1/markdown")
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Un fallo al subir conserva el código HTTP y no se disfraza de éxito.
+    #[test]
+    fn a_rejected_upload_keeps_the_broker_status() {
+        let simulated = SimulatedBroker::start();
+        simulated.always("POST /api/v1/files", ScriptedResponse::permanent());
+
+        let path = std::env::temp_dir().join(format!(
+            "chatygpt-upload-rejected-{}.txt",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::write(&path, b"da igual").expect("el archivo de prueba debe escribirse");
+
+        let error = block_on(client_for(&simulated).upload_file(&path, "nota.txt", None, 8))
+            .expect_err("un 422 al subir debe fallar");
+        match error {
+            AppError::BrokerResponse { status, .. } => assert_eq!(status, 422),
+            other => panic!("se esperaba una respuesta rechazada, no {other:?}"),
+        }
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// La descarga del Markdown convertido acepta rutas relativas y absolutas,
+    /// y rechaza lo que no es texto ni HTTP.
+    #[test]
+    fn converted_markdown_download_is_bounded_to_http_and_utf8() {
+        let simulated = SimulatedBroker::start();
+        simulated.always(
+            "GET /api/v1/files/file-1/markdown",
+            ScriptedResponse::text("# Informe\n\nContenido convertido."),
+        );
+        simulated.always(
+            "GET /api/v1/files/roto/markdown",
+            ScriptedResponse::status(500),
+        );
+        // Bytes que no forman UTF-8 válido: no pueden convertirse en Markdown.
+        simulated.always(
+            "GET /api/v1/files/binario/markdown",
+            ScriptedResponse::bytes(vec![0xff, 0xfe, 0x00]),
+        );
+        let client = client_for(&simulated);
+
+        // Ruta relativa: se resuelve contra la base del Broker.
+        let markdown = block_on(client.download_text("/api/v1/files/file-1/markdown"))
+            .expect("el Markdown debe descargarse");
+        assert!(markdown.contains("Contenido convertido"));
+
+        // URL absoluta al mismo servidor: igualmente válida.
+        let absolute = format!("{}/api/v1/files/file-1/markdown", simulated.base_url());
+        assert_eq!(
+            block_on(client.download_text(&absolute)).expect("la URL absoluta debe funcionar"),
+            markdown
+        );
+
+        // Un esquema que no es web se rechaza antes de tocar la red.
+        let error = block_on(client.download_text("file:///C:/Windows/System32/config/SAM"))
+            .expect_err("un esquema no web debe rechazarse");
+        assert!(matches!(error, AppError::InvalidBrokerUrl(_)));
+
+        // Un error del servidor no se convierte en un documento vacío.
+        let error = block_on(client.download_text("/api/v1/files/roto/markdown"))
+            .expect_err("un 500 debe fallar");
+        assert!(matches!(
+            error,
+            AppError::BrokerResponse { status: 500, .. }
+        ));
+
+        // Bytes no UTF-8 se rechazan en lugar de guardarse con pérdidas.
+        let error = block_on(client.download_text("/api/v1/files/binario/markdown"))
+            .expect_err("un cuerpo no UTF-8 debe rechazarse");
+        assert!(matches!(error, AppError::BrokerContract(_)));
+    }
+
+    /// Solo se admiten esquemas web al construir el cliente.
+    #[test]
+    fn only_web_schemes_are_accepted_as_base_url() {
+        assert!(BrokerClient::for_base_url("no-es-una-url").is_err());
+        // La base sin barra final se normaliza para que `join` no pierda ruta.
+        let client = BrokerClient::for_base_url("http://127.0.0.1:9/api")
+            .expect("una base http debe aceptarse");
+        assert_eq!(client.base_url(), "http://127.0.0.1:9/api");
     }
 }
