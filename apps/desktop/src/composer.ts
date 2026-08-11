@@ -80,6 +80,7 @@ export function sandboxSendDecision({
   useSandbox,
   requestsCodeExecution,
   sandboxAvailable,
+  sandboxCapabilityKnown,
   attachmentsNeedSandbox,
   diagnosticMessage
 }: {
@@ -87,13 +88,16 @@ export function sandboxSendDecision({
   useSandbox: boolean;
   requestsCodeExecution: boolean;
   sandboxAvailable: boolean;
+  sandboxCapabilityKnown: boolean;
   attachmentsNeedSandbox: boolean;
   diagnosticMessage?: string;
 }): ComposerSendDecision {
   if (skipSuggestion || useSandbox || !requestsCodeExecution) {
     return { kind: "send" };
   }
-  if (sandboxAvailable) {
+  // Un fallo al leer capacidades no equivale a que el sandbox no exista. El
+  // contrato 2.7 deja que el endpoint de tareas sea autoritativo.
+  if (sandboxAvailable || !sandboxCapabilityKnown) {
     return { kind: "suggest-sandbox" };
   }
   return {

@@ -597,8 +597,8 @@ export const platform = {
   ): Promise<LocalTaskSnapshot> {
     return invoke<LocalTaskSnapshot>("resolve_tool_calls", { localTaskId, decisions });
   },
-  pickAttachmentPaths(): Promise<string[]> {
-    return invoke<string[]>("pick_attachment_paths");
+  pickAttachmentPaths(extensions: string[] = []): Promise<string[]> {
+    return invoke<string[]>("pick_attachment_paths", { extensions });
   },
   importAttachment(conversationId: string, sourcePath: string): Promise<AttachmentView> {
     return invoke<AttachmentView>("import_attachment", { conversationId, sourcePath });

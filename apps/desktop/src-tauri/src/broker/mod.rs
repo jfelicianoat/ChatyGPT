@@ -526,7 +526,7 @@ impl BrokerClient {
                     max_active_workflows: None,
                     latency_ms,
                     message: format!(
-                        "Broker AI está listo, pero sus capacidades no pudieron verificarse: {error}"
+                        "Broker AI está listo, pero tiene capacidades no verificadas: {error}"
                     ),
                 },
             },
@@ -600,8 +600,7 @@ impl PollPolicy {
             .saturating_mul(1_u64 << exponent)
             .min(self.maximum_ms);
         let bounded_jitter = jitter_basis_points.clamp(-1_500, 1_500) as i64;
-        (((base as i64) * (10_000 + bounded_jitter) / 10_000).max(100) as u64)
-            .min(self.maximum_ms)
+        (((base as i64) * (10_000 + bounded_jitter) / 10_000).max(100) as u64).min(self.maximum_ms)
     }
 }
 

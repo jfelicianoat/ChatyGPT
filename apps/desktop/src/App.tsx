@@ -7,6 +7,7 @@ import {
   attachmentSelectionOnConversationOpen,
   attachmentStatusLabel,
   brokerSupportsPreset,
+  brokerAttachmentExtensions,
   canSendMessage,
   canStartMemoryEdit,
   canUseSemanticMemory,
@@ -1118,6 +1119,8 @@ export function App() {
   });
   const sandboxAvailable =
     broker?.state === "ready" && broker.value.ready && Boolean(broker.value.sandboxRunCode);
+  const sandboxCapabilityKnown =
+    broker?.state === "ready" && broker.value.capabilitiesVerified !== false;
   const activeGlobalMemoryCount =
     memory.state === "ready" && memory.value.enabled && conversation?.state === "ready"
       ? activeMemoriesForConversation(memory.value.items, conversation.value.projectId).length
@@ -1185,7 +1188,9 @@ export function App() {
   const chooseAttachments = async () => {
     if (conversation?.state !== "ready") return;
     try {
-      const paths = await platform.pickAttachmentPaths();
+      const paths = await platform.pickAttachmentPaths(
+        broker?.state === "ready" ? brokerAttachmentExtensions(broker.value) : []
+      );
       if (paths.length > 0) await importAttachmentPaths(conversation.value.id, paths);
     } catch (error) {
       setAttachmentError(describeError(error));
@@ -1889,7 +1894,9 @@ export function App() {
     setCustomGptKnowledgeBusy(true);
     setCustomGptKnowledgeNotice(null);
     try {
-      const paths = await platform.pickAttachmentPaths();
+      const paths = await platform.pickAttachmentPaths(
+        broker?.state === "ready" ? brokerAttachmentExtensions(broker.value) : []
+      );
       if (paths.length === 0) return;
       const currentCount =
         customGptFiles?.customGptId === customGptId &&
@@ -2224,6 +2231,7 @@ export function App() {
       return;
     }
     let sandboxCanRun = sandboxAvailable;
+    let sandboxKnown = sandboxCapabilityKnown;
     let diagnosticMessage: string | undefined;
     if (shouldRefreshSandboxDiagnostic({
       requiresCodeExecution: requestsCodeExecution,
@@ -2235,6 +2243,7 @@ export function App() {
         const diagnostic = await platform.diagnoseBroker();
         setBroker({ state: "ready", value: diagnostic });
         sandboxCanRun = diagnostic.ready && Boolean(diagnostic.sandboxRunCode);
+        sandboxKnown = diagnostic.capabilitiesVerified !== false;
         diagnosticMessage = diagnostic.ready ? undefined : diagnostic.message;
       } catch (error) {
         setComposerError(sandboxDiagnosticFailure(describeError(error)));
@@ -2246,6 +2255,7 @@ export function App() {
       useSandbox,
       requestsCodeExecution,
       sandboxAvailable: sandboxCanRun,
+      sandboxCapabilityKnown: sandboxKnown,
       attachmentsNeedSandbox: selectedAttachmentsNeedSandbox,
       diagnosticMessage
     });
@@ -6706,6 +6716,7 @@ export function App() {
                 {smokeTask?.state === "ready" && smokeTask.value.result && (
                   <pre className="result-preview">
                     {String(
+                      smokeTask.value.result.assistant_content ??
                       smokeTask.value.result.result_markdown ??
                       JSON.stringify(smokeTask.value.result, null, 2)
                     )}

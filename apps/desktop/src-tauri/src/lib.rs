@@ -1547,23 +1547,26 @@ fn resolve_tool_calls(
 }
 
 #[tauri::command]
-fn pick_attachment_paths() -> Result<Vec<String>, AppError> {
+fn pick_attachment_paths(extensions: Vec<String>) -> Result<Vec<String>, AppError> {
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
-        let script = r#"
+        let patterns = attachment_filter_patterns(&extensions);
+        let script = format!(
+            r#"
             Add-Type -AssemblyName System.Windows.Forms
             $dialog = New-Object System.Windows.Forms.OpenFileDialog
             $dialog.Multiselect = $true
             $dialog.Title = 'Seleccionar archivos para ChatyGPT'
-            $dialog.Filter = 'Archivos compatibles|*.pdf;*.doc;*.docx;*.xls;*.xlsx;*.ppt;*.pptx;*.txt;*.md;*.csv;*.json;*.xml;*.html;*.htm;*.rtf;*.png;*.jpg;*.jpeg;*.gif;*.webp;*.bmp;*.tif;*.tiff;*.mp3;*.wav;*.m4a;*.mp4;*.mov;*.avi;*.webm;*.py;*.js;*.ts;*.tsx;*.jsx;*.rs;*.java;*.cs;*.cpp;*.c;*.h;*.sql|Todos los archivos|*.*'
-            if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+            $dialog.Filter = 'Archivos compatibles|{patterns}|Todos los archivos|*.*'
+            if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {{
                 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-                $dialog.FileNames | ForEach-Object { [Console]::WriteLine($_) }
-            }
-        "#;
+                $dialog.FileNames | ForEach-Object {{ [Console]::WriteLine($_) }}
+            }}
+        "#
+        );
         let output = std::process::Command::new("powershell.exe")
-            .args(["-NoProfile", "-NonInteractive", "-STA", "-Command", script])
+            .args(["-NoProfile", "-NonInteractive", "-STA", "-Command", &script])
             .creation_flags(0x0800_0000)
             .output()
             .map_err(|error| {
@@ -1585,6 +1588,29 @@ fn pick_attachment_paths() -> Result<Vec<String>, AppError> {
     Err(AppError::Validation(
         "el selector nativo todavía solo está disponible en Windows".to_owned(),
     ))
+}
+
+fn attachment_filter_patterns(extensions: &[String]) -> String {
+    let mut safe = extensions
+        .iter()
+        .map(|value| value.trim().trim_start_matches('.').to_ascii_lowercase())
+        .filter(|value| {
+            !value.is_empty()
+                && value.len() <= 16
+                && value
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric())
+        })
+        .collect::<Vec<_>>();
+    safe.sort();
+    safe.dedup();
+    if safe.is_empty() {
+        return "*.pdf;*.doc;*.docx;*.xls;*.xlsx;*.ppt;*.pptx;*.txt;*.md;*.csv;*.json;*.xml;*.html;*.htm;*.rtf;*.png;*.jpg;*.jpeg;*.gif;*.webp;*.bmp;*.tif;*.tiff;*.mp3;*.wav;*.m4a;*.mp4;*.mov;*.avi;*.webm;*.py;*.js;*.ts;*.tsx;*.jsx;*.rs;*.java;*.cs;*.cpp;*.c;*.h;*.sql".to_owned();
+    }
+    safe.into_iter()
+        .map(|value| format!("*.{value}"))
+        .collect::<Vec<_>>()
+        .join(";")
 }
 
 #[tauri::command]
@@ -2178,7 +2204,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::validated_managed_source_path;
+    use super::{attachment_filter_patterns, validated_managed_source_path};
     use crate::error::AppError;
     use std::fs;
     use uuid::Uuid;
@@ -2211,5 +2237,18 @@ mod tests {
             Err(AppError::NotFound(_))
         ));
         fs::remove_dir_all(base).expect("test directory should be removed");
+    }
+
+    #[test]
+    fn attachment_filter_uses_only_safe_extensions_from_capabilities() {
+        assert_eq!(
+            attachment_filter_patterns(&[
+                ".PDF".to_owned(),
+                "csv".to_owned(),
+                "csv".to_owned(),
+                "x';Remove-Item".to_owned(),
+            ]),
+            "*.csv;*.pdf"
+        );
     }
 }

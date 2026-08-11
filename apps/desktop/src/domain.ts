@@ -386,6 +386,7 @@ export const scheduledRunDetail = (
   const nestedError = result?.error;
   const candidates = [
     result?.message,
+    result?.assistant_content,
     result?.result_markdown,
     result?.text,
     result?.detail,
@@ -677,8 +678,8 @@ export type BrokerDiagnostic = {
   ready: boolean;
   baseUrl: string;
   contractVersion?: string;
-  capabilitiesVerified: boolean;
-  ingestionFormats: Record<string, string[]>;
+  capabilitiesVerified?: boolean;
+  ingestionFormats?: Record<string, string[]>;
   strategies: string[];
   presets: Record<string, string[]> | unknown;
   derivedDataBoundary?: boolean;
@@ -1301,7 +1302,7 @@ export type ConversationMessage = {
 
 export const brokerAttachmentExtensions = (broker?: BrokerDiagnostic): string[] => {
   if (!broker?.capabilitiesVerified) return [];
-  return [...new Set(Object.values(broker.ingestionFormats)
+  return [...new Set(Object.values(broker.ingestionFormats ?? {})
     .flat()
     .map((extension) => extension.trim().replace(/^\./, "").toLowerCase())
     .filter((extension) => /^[a-z0-9]{1,16}$/.test(extension)))]

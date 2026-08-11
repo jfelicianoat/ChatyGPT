@@ -7,6 +7,7 @@ import {
   attachmentStatusLabel,
   authorizedFolderPurpose,
   brokerCredentialLabel,
+  brokerAttachmentExtensions,
   brokerSupportsPreset,
   canSendMessage,
   canStartMemoryEdit,
@@ -15,6 +16,7 @@ import {
   confirmationSummary,
   customGptVersionSummary,
   formatResponseDuration,
+  formatResponseUsage,
   filterProjectKnowledge,
   filterScheduledRuns,
   filterScheduledTasks,
@@ -40,6 +42,29 @@ import {
   type ProjectKnowledgeOverview,
   type ScheduledTaskView
 } from "./domain";
+
+describe("contrato 2.7 del Broker", () => {
+  it("normaliza y limita el selector a los formatos de ingesta anunciados", () => {
+    expect(brokerAttachmentExtensions({
+      reachable: true,
+      ready: true,
+      baseUrl: "http://broker",
+      capabilitiesVerified: true,
+      ingestionFormats: { documents: [".PDF", "docx"], tabular: ["csv", "../exe"] },
+      strategies: [],
+      presets: {},
+      workLanes: [],
+      agentSkills: [],
+      latencyMs: 1,
+      message: "listo"
+    })).toEqual(["csv", "docx", "pdf"]);
+  });
+
+  it("presenta el uso nuevo sin depender de un único estilo de claves", () => {
+    expect(formatResponseUsage({ total_tokens: 1234, cost_usd: 0.0123 }))
+      .toBe("1234 tokens · 0,0123 USD");
+  });
+});
 
 describe("response duration", () => {
   it("keeps short and long response times readable", () => {

@@ -26,6 +26,17 @@ describe("permiso del GPT sobre Código aislado", () => {
     });
     expect(error?.action).toContain("Edita el GPT");
   });
+
+  it("no confunde capacidades no verificadas con sandbox ausente", () => {
+    expect(sandboxSendDecision({
+      skipSuggestion: false,
+      useSandbox: false,
+      attachmentsNeedSandbox: false,
+      requestsCodeExecution: true,
+      sandboxAvailable: false,
+      sandboxCapabilityKnown: false
+    })).toEqual({ kind: "suggest-sandbox" });
+  });
 });
 
 describe("fallo al diagnosticar el sandbox", () => {
@@ -42,6 +53,7 @@ describe("decisión de envío", () => {
     useSandbox: false,
     requestsCodeExecution: false,
     sandboxAvailable: true,
+    sandboxCapabilityKnown: true,
     attachmentsNeedSandbox: false
   };
 

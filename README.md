@@ -316,6 +316,20 @@ Credencial de Broker AI:
 - `Arrancar ChatyGPT.bat` reutiliza la credencial guardada y solo pide el token
   cuando no existe o no puede descifrarse.
 
+Compatibilidad con el contrato 2.7:
+
+- La especificación de cliente vigente es [docs/Client_API.md](docs/Client_API.md).
+- Las capacidades nuevas son aditivas. Si no pueden verificarse, ChatyGPT avisa
+  pero permite enviar; la creación de la tarea sigue siendo la autoridad final.
+- El selector de adjuntos usa los grupos de `ingestion_formats` anunciados por
+  el Broker. Si todavía no se pudieron leer, conserva el filtro compatible
+  anterior sin bloquear la selección.
+- Las respuestas leen primero `assistant_content` y mantienen
+  `result_markdown` para tareas antiguas. Cuando el Broker proporciona `usage`,
+  `fallback_used` o `long_context`, esa información aparece bajo la respuesta.
+- Una rotación de credencial (`401`/`403`) no convierte la tarea en un fallo
+  permanente: puede reanudarse tras actualizar el token protegido.
+
 ## Documentación
 
 - [Arquitectura y plan](docs/ARCHITECTURE.md)
