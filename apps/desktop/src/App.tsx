@@ -147,6 +147,8 @@ type ScreenCapturePreview = CapturedScreenFrame & {
   source: "screen" | "camera";
 };
 
+type WorkspaceDestination = "chats" | "projects" | "gpts" | "automations" | "settings";
+
 export function App() {
   const messageListRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -255,7 +257,10 @@ export function App() {
   const [searchResults, setSearchResults] = useState<ConversationSummary[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
+  const [workspaceDestination, setWorkspaceDestination] =
+    useState<WorkspaceDestination>("chats");
   const [conversation, setConversation] = useState<Loadable<ConversationView> | null>(null);
+  const [contextInspectorOpen, setContextInspectorOpen] = useState(true);
   const [activeTurn, setActiveTurn] = useState<Loadable<LocalTaskSnapshot> | null>(null);
   const [activeTurnConversationId, setActiveTurnConversationId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
@@ -2136,6 +2141,7 @@ export function App() {
   };
 
   const openConversation = async (conversationId: string) => {
+    setWorkspaceDestination("chats");
     followConversationScrollRef.current = true;
     setConversation({ state: "loading" });
     setAttachments([]);
@@ -2152,6 +2158,13 @@ export function App() {
     } catch (error) {
       setConversation({ state: "error", message: describeError(error) });
     }
+  };
+
+  const openWorkspaceDestination = (destination: WorkspaceDestination) => {
+    setWorkspaceDestination(destination);
+    setConversation(null);
+    setNavigationError(null);
+    if (destination !== "projects") setSelectedProjectId(null);
   };
 
   const createConversation = async () => {
@@ -3310,57 +3323,70 @@ export function App() {
 
         <nav aria-label="Navegación principal">
           <p className="nav-label">Espacio</p>
-          <button
-            className={`nav-item ${conversation === null ? "active" : ""}`}
-            onClick={() => setConversation(null)}
-            aria-current={conversation === null ? "page" : undefined}
-            aria-keyshortcuts="Alt+1"
-          >
-            ◌ Inicio
-          </button>
-
-          <div className="nav-label-row">
-            <p className="nav-label">Proyectos</p>
+          {([
+            ["chats", "Chats"],
+            ["projects", "Proyectos"],
+            ["gpts", "GPTs"],
+            ["automations", "Automatizaciones"],
+            ["settings", "Ajustes"],
+          ] as const).map(([destination, label], index) => (
             <button
-              className="icon-button"
-              onClick={() => openDialog({ kind: "project-create" })}
-              aria-label="Crear proyecto"
+              key={destination}
+              className={`nav-item ${conversation === null && workspaceDestination === destination ? "active" : ""}`}
+              onClick={() => openWorkspaceDestination(destination)}
+              aria-current={conversation === null && workspaceDestination === destination ? "page" : undefined}
+              aria-keyshortcuts={`Alt+${index + 1}`}
             >
-              ＋
+              {label}
             </button>
-          </div>
-          <button
-            className={`project-link ${selectedProjectId === null ? "active" : ""}`}
-            onClick={() => setSelectedProjectId(null)}
-          >
-            <span>Todos los chats</span><small>{conversations.length}</small>
-          </button>
-          <button
-            className={`project-link ${selectedProjectId === "unassigned" ? "active" : ""}`}
-            onClick={() => setSelectedProjectId("unassigned")}
-          >
-            <span>Sin proyecto</span>
-            <small>{conversations.filter((item) => !item.projectId).length}</small>
-          </button>
-          {projects.map((project) => (
-            <div className="project-row" key={project.id}>
-              <button
-                className={`project-link ${selectedProjectId === project.id ? "active" : ""}`}
-                onClick={() => setSelectedProjectId(project.id)}
-              >
-                <span>◇ {project.name}</span><small>{project.conversationCount}</small>
-              </button>
-              {selectedProjectId === project.id && (
-                <button
-                  className="project-menu"
-                  onClick={() => openDialog({ kind: "project-rename", project })}
-                  aria-label={`Gestionar ${project.name}`}
-                >
-                  •••
-                </button>
-              )}
-            </div>
           ))}
+
+          {(workspaceDestination === "chats" || workspaceDestination === "projects") && (
+            <>
+              <div className="nav-label-row">
+                <p className="nav-label">Proyectos</p>
+                <button
+                  className="icon-button"
+                  onClick={() => openDialog({ kind: "project-create" })}
+                  aria-label="Crear proyecto"
+                >
+                  ＋
+                </button>
+              </div>
+              <button
+                className={`project-link ${selectedProjectId === null ? "active" : ""}`}
+                onClick={() => setSelectedProjectId(null)}
+              >
+                <span>Todos los chats</span><small>{conversations.length}</small>
+              </button>
+              <button
+                className={`project-link ${selectedProjectId === "unassigned" ? "active" : ""}`}
+                onClick={() => setSelectedProjectId("unassigned")}
+              >
+                <span>Sin proyecto</span>
+                <small>{conversations.filter((item) => !item.projectId).length}</small>
+              </button>
+              {projects.map((project) => (
+                <div className="project-row" key={project.id}>
+                  <button
+                    className={`project-link ${selectedProjectId === project.id ? "active" : ""}`}
+                    onClick={() => setSelectedProjectId(project.id)}
+                  >
+                    <span>◇ {project.name}</span><small>{project.conversationCount}</small>
+                  </button>
+                  {selectedProjectId === project.id && (
+                    <button
+                      className="project-menu"
+                      onClick={() => openDialog({ kind: "project-rename", project })}
+                      aria-label={`Gestionar ${project.name}`}
+                    >
+                      •••
+                    </button>
+                  )}
+                </div>
+              ))}
+            </>
+          )}
 
           <p className="nav-label">
             {searchQuery.trim() ? "Resultados" : selectedProject?.name ?? "Recientes"}
@@ -3486,58 +3512,69 @@ export function App() {
                   ))}
               </select>
               <button
-                onClick={() =>
-                  openDialog({ kind: "conversation-rename", conversation: conversation.value })
-                }
+                className="context-inspector-toggle"
+                onClick={() => setContextInspectorOpen((open) => !open)}
+                aria-pressed={contextInspectorOpen}
               >
-                Renombrar
+                {contextInspectorOpen ? "Ocultar contexto" : "Contexto"}
               </button>
-              <button
-                className="export-action"
-                onClick={exportCurrentConversation}
-                disabled={Boolean(exportBusy) || Boolean(currentTurnBlocks)}
-                title="Guardar esta conversación como un archivo Markdown"
-              >
-                {exportBusy === "markdown" ? "Exportando…" : "Markdown"}
-              </button>
-              <button
-                className="export-action export-obsidian"
-                onClick={exportCurrentConversationToObsidian}
-                disabled={Boolean(exportBusy) || Boolean(currentTurnBlocks)}
-                title="Guardar esta conversación y sus adjuntos en una bóveda de Obsidian"
-              >
-                {exportBusy === "obsidian" ? "Preparando…" : "Obsidian"}
-              </button>
-              <button
-                onClick={() => void openSummaryPanel()}
-                disabled={Boolean(currentTurnBlocks)}
-              >
-                Resumen
-              </button>
-              <button
-                disabled={Boolean(currentTurnBlocks)}
-                onClick={() =>
-                  openDialog({ kind: "conversation-archive", conversation: conversation.value })
-                }
-              >
-                Archivar
-              </button>
-              <button
-                className="danger-text"
-                disabled={Boolean(currentTurnBlocks)}
-                onClick={() =>
-                  openDialog({ kind: "conversation-delete", conversation: conversation.value })
-                }
-              >
-                Eliminar
-              </button>
+              <details className="conversation-more">
+                <summary aria-label="Más acciones de conversación">Más</summary>
+                <div className="conversation-more-menu">
+                  <button
+                    onClick={() =>
+                      openDialog({ kind: "conversation-rename", conversation: conversation.value })
+                    }
+                  >
+                    Renombrar
+                  </button>
+                  <button
+                    className="export-action"
+                    onClick={exportCurrentConversation}
+                    disabled={Boolean(exportBusy) || Boolean(currentTurnBlocks)}
+                  >
+                    {exportBusy === "markdown" ? "Exportando…" : "Exportar Markdown"}
+                  </button>
+                  <button
+                    className="export-action export-obsidian"
+                    onClick={exportCurrentConversationToObsidian}
+                    disabled={Boolean(exportBusy) || Boolean(currentTurnBlocks)}
+                  >
+                    {exportBusy === "obsidian" ? "Preparando…" : "Exportar a Obsidian"}
+                  </button>
+                  <button onClick={() => void openSummaryPanel()} disabled={Boolean(currentTurnBlocks)}>
+                    Ver resumen
+                  </button>
+                  <button
+                    disabled={Boolean(currentTurnBlocks)}
+                    onClick={() =>
+                      openDialog({ kind: "conversation-archive", conversation: conversation.value })
+                    }
+                  >
+                    Archivar
+                  </button>
+                  <button
+                    className="danger-text"
+                    disabled={Boolean(currentTurnBlocks)}
+                    onClick={() =>
+                      openDialog({ kind: "conversation-delete", conversation: conversation.value })
+                    }
+                  >
+                    Eliminar
+                  </button>
+                </div>
+              </details>
             </div>
           ) : (
             <span className="version">v0.1.0</span>
           )}
         </header>
 
-        <main className="content" id="main-content" tabIndex={-1}>
+        <main
+          className={`content ${conversation?.state === "ready" ? "conversation-content" : "home-content"}`}
+          id="main-content"
+          tabIndex={-1}
+        >
           {exportNotice && <p className="export-notice">{exportNotice}</p>}
           {bootstrap.state === "ready" &&
             !recoveryNoticeDismissed &&
@@ -3570,7 +3607,8 @@ export function App() {
               </section>
             )}
           {conversation?.state === "ready" ? (
-            <section className="chat-surface">
+            <div className={`chat-workspace ${contextInspectorOpen ? "" : "inspector-collapsed"}`}>
+              <section className="chat-surface">
               <div
                 className="message-list"
                 aria-live="polite"
@@ -4632,13 +4670,135 @@ export function App() {
                 )}
                 {attachmentError && <p className="error">{attachmentError}</p>}
               </div>
-            </section>
+              </section>
+              {contextInspectorOpen && (
+                <aside className="context-inspector" aria-label="Contexto activo">
+                  <div className="context-inspector-heading">
+                    <div>
+                      <span className="kicker">Contexto activo</span>
+                      <h2>Qué verá el modelo</h2>
+                    </div>
+                    <button
+                      className="context-close"
+                      onClick={() => setContextInspectorOpen(false)}
+                      aria-label="Cerrar panel de contexto"
+                    >
+                      ×
+                    </button>
+                  </div>
+
+                  <details className="context-group" open>
+                    <summary>
+                      <span>Este turno</span>
+                      <small>{selectedAttachments.length}</small>
+                    </summary>
+                    <div className="context-group-body">
+                      {selectedAttachments.length === 0 ? (
+                        <p className="context-empty">Ningún archivo activo para el próximo mensaje.</p>
+                      ) : selectedAttachments.map((attachment) => (
+                        <article className="context-item" key={attachment.id}>
+                          <div>
+                            <strong>{attachment.displayName}</strong>
+                            <small>{attachmentStatusLabel(attachment.ingestionStatus)}</small>
+                          </div>
+                          <button
+                            onClick={() => setDraftAttachmentIds((ids) =>
+                              ids.filter((id) => id !== attachment.id)
+                            )}
+                            aria-label={`Desactivar ${attachment.displayName} para el próximo mensaje`}
+                          >
+                            ×
+                          </button>
+                        </article>
+                      ))}
+                    </div>
+                  </details>
+
+                  <details className="context-group" open>
+                    <summary>
+                      <span>Proyecto</span>
+                      <small>{conversation.value.projectId ? 1 : 0}</small>
+                    </summary>
+                    <div className="context-group-body">
+                      <article className="context-item context-item-static">
+                        <div>
+                          <strong>
+                            {projects.find((project) => project.id === conversation.value.projectId)?.name
+                              ?? "Sin proyecto"}
+                          </strong>
+                          <small>
+                            {conversation.value.projectId
+                              ? "Instrucciones y archivos compartidos del proyecto"
+                              : "Esta conversación no comparte contexto de proyecto"}
+                          </small>
+                        </div>
+                      </article>
+                    </div>
+                  </details>
+
+                  <details className="context-group" open>
+                    <summary>
+                      <span>Memoria</span>
+                      <small>{activeMemoryCount}</small>
+                    </summary>
+                    <div className="context-group-body">
+                      <article className="context-item context-item-static">
+                        <div>
+                          <strong>
+                            {activeMemoryCount > 0
+                              ? `${activeMemoryCount} recuerdo(s) disponible(s)`
+                              : "Sin recuerdos activos"}
+                          </strong>
+                          <small>
+                            {semanticMemoryEnabled && semanticMemoryReady
+                              ? "La búsqueda semántica está activa para este turno"
+                              : "Puedes activar la búsqueda de recuerdos al enviar"}
+                          </small>
+                        </div>
+                      </article>
+                    </div>
+                  </details>
+
+                  <section className="privacy-context">
+                    <span>Privacidad</span>
+                    <strong>
+                      {conversation.value.executionPreferences.dataClassification === "internal"
+                        ? "Uso personal"
+                        : conversation.value.executionPreferences.dataClassification === "public"
+                          ? "Contenido público"
+                          : conversation.value.executionPreferences.dataClassification === "confidential"
+                            ? "Confidencial"
+                            : "Solo en este equipo"}
+                    </strong>
+                    <small>
+                      {conversation.value.executionPreferences.dataClassification === "confidential" ||
+                      conversation.value.executionPreferences.dataClassification === "local_only"
+                        ? "Solo se usarán modelos locales."
+                        : "Puede usar proveedores locales o cloud según el enrutamiento."}
+                    </small>
+                  </section>
+
+                  <button
+                    className="manage-context-button"
+                    onClick={() => {
+                      const controls = document.querySelector<HTMLDetailsElement>(".execution-settings");
+                      if (controls) {
+                        controls.open = true;
+                        controls.scrollIntoView({ behavior: "smooth", block: "nearest" });
+                      }
+                    }}
+                  >
+                    Gestionar contexto
+                  </button>
+                </aside>
+              )}
+            </div>
           ) : conversation?.state === "loading" ? (
             <section className="hero-card"><p>Abriendo conversación…</p></section>
           ) : conversation?.state === "error" ? (
             <section className="hero-card"><p className="error">{conversation.message}</p></section>
           ) : (
-            <>
+            <div className={`home-workspace home-${workspaceDestination}`}>
               <section className="hero-card">
                 <div>
                   <span className="pill">Local-first</span>
@@ -4649,6 +4809,46 @@ export function App() {
                   </p>
                 </div>
                 <div className="orb" aria-hidden="true"><span /></div>
+              </section>
+
+              <section className="projects-card" aria-labelledby="projects-heading">
+                <div className="panel-heading">
+                  <div>
+                    <span className="kicker">Organización</span>
+                    <h3 id="projects-heading">Proyectos</h3>
+                  </div>
+                  <button className="primary" onClick={() => openDialog({ kind: "project-create" })}>
+                    Crear proyecto
+                  </button>
+                </div>
+                {projects.length === 0 ? (
+                  <p className="muted">Crea un proyecto para reunir chats, instrucciones y archivos relacionados.</p>
+                ) : (
+                  <div className="project-home-list">
+                    {projects.map((project) => (
+                      <article key={project.id}>
+                        <div>
+                          <strong>{project.name}</strong>
+                          <small>{project.conversationCount} conversación(es)</small>
+                        </div>
+                        <div className="task-actions">
+                          <button
+                            className="secondary"
+                            onClick={() => {
+                              setSelectedProjectId(project.id);
+                              setWorkspaceDestination("chats");
+                            }}
+                          >
+                            Ver chats
+                          </button>
+                          <button className="secondary" onClick={() => void openProjectKnowledge(project)}>
+                            Conocimiento
+                          </button>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                )}
               </section>
 
               <div className="grid">
@@ -6766,7 +6966,7 @@ export function App() {
                 )}
                 {auditEvents.state === "error" && <p className="error">{auditEvents.message}</p>}
               </section>
-            </>
+            </div>
           )}
         </main>
       </section>

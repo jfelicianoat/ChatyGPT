@@ -129,6 +129,32 @@ async function mountHome() {
   await screen.findByRole("heading", { name: "Credencial de Broker AI" });
 }
 
+describe("navegación principal simplificada", () => {
+  beforeEach(() => {
+    callLog.clear();
+    vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("cambia de área sin mezclar los paneles de cada destino", async () => {
+    await mountHome();
+
+    expect(screen.getByRole("button", { name: "Chats" }).getAttribute("aria-current"))
+      .toBe("page");
+    expect(document.querySelector(".home-chats")).not.toBeNull();
+
+    await userEvent.click(screen.getByRole("button", { name: "Proyectos" }));
+
+    expect(screen.getByRole("button", { name: "Proyectos" }).getAttribute("aria-current"))
+      .toBe("page");
+    expect(document.querySelector(".home-projects")).not.toBeNull();
+    expect(screen.getByRole("heading", { name: "Proyectos" })).toBeDefined();
+  });
+});
+
 describe("arranque de los paneles de seguridad", () => {
   beforeEach(() => {
     callLog.clear();
