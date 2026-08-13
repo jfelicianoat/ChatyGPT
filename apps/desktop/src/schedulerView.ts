@@ -113,7 +113,7 @@ export function pendingScheduledRunNotifications({
             run.status === "completed"
               ? "Tarea programada completada"
               : "Tarea programada finalizada",
-          body: `${task.name} · ${task.conversationTitle} · ${scheduledRunLabel(run.status)}`,
+          body: `${task.name} · ${task.conversationTitle ?? task.workflowName ?? "Sin destino"} · ${scheduledRunLabel(run.status)}`,
           tag: `chatygpt-${run.id}`
         });
       }

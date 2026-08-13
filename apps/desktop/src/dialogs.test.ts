@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { dialogCopy, type DialogState } from "./dialogs";
-import type { ConversationView, ProjectSummary } from "./domain";
+import type { ConversationView, CustomGptView, ProjectSummary } from "./domain";
 
 const project = {
   id: "project-1",
@@ -17,6 +17,12 @@ const conversation = {
   title: "Normativa europea"
 } as unknown as ConversationView;
 
+const customGpt = {
+  id: "gpt-1",
+  name: "Analista",
+  conversationStarters: ["Compara estas fuentes"]
+} as unknown as CustomGptView;
+
 describe("texto de las ventanas", () => {
   it("marca como destructiva solo la acción que lo es", () => {
     const destructive: DialogState[] = [
@@ -32,7 +38,8 @@ describe("texto de las ventanas", () => {
       { kind: "project-create" },
       { kind: "project-rename", project },
       { kind: "project-instructions", project },
-      { kind: "conversation-rename", conversation }
+      { kind: "conversation-rename", conversation },
+      { kind: "custom-gpt-test", customGpt }
     ];
     for (const dialog of safe) {
       expect(dialogCopy(dialog).destructive).toBeUndefined();
@@ -81,7 +88,8 @@ describe("texto de las ventanas", () => {
       { kind: "project-archive", project },
       { kind: "conversation-rename", conversation },
       { kind: "conversation-archive", conversation },
-      { kind: "conversation-delete", conversation }
+      { kind: "conversation-delete", conversation },
+      { kind: "custom-gpt-test", customGpt }
     ];
     for (const dialog of all) {
       const copy = dialogCopy(dialog);
@@ -95,5 +103,14 @@ describe("texto de las ventanas", () => {
     // El backend marca la conversación como eliminada; no borra registros.
     const copy = dialogCopy({ kind: "conversation-delete", conversation });
     expect(copy.description).toContain("no borra físicamente");
+  });
+
+  it("prepara una prueba real con el primer inicio sugerido", () => {
+    const copy = dialogCopy({ kind: "custom-gpt-test", customGpt });
+    expect(copy.title).toBe("Probar Analista");
+    expect(copy.initialValue).toBe("Compara estas fuentes");
+    expect(copy.multiline).toBe(true);
+    expect(copy.action).toBe("Crear chat y probar");
+    expect(copy.description).toContain("Recientes");
   });
 });

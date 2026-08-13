@@ -124,6 +124,7 @@ pub struct BrokerCapabilities {
 #[cfg(test)]
 mod tests {
     use super::{BrokerCapabilities, FileAccepted, TaskState, TaskStatus};
+    use serde_json::Value;
 
     #[test]
     fn contract_2_6_accepts_ingestion_states_with_nullable_execution_fields() {
@@ -196,7 +197,8 @@ mod tests {
             "file_id": "file-abc",
             "status": "received",
             "created": true,
-            "status_url": "/api/v1/files/file-abc"
+            "status_url": "/api/v1/files/file-abc",
+            "describe_images": false
         }))
         .expect("the abbreviated response published for clients must deserialize");
 
@@ -204,6 +206,7 @@ mod tests {
         assert!(accepted.filename.is_empty());
         assert_eq!(accepted.size_bytes, 0);
         assert!(accepted.sha256.is_empty());
+        assert_eq!(accepted.describe_images, Some(false));
     }
 
     #[test]
@@ -229,6 +232,45 @@ mod tests {
     }
 
     #[test]
+    fn contract_2_7_accepts_a_degraded_consensus_result() {
+        let state: TaskState = serde_json::from_value(serde_json::json!({
+            "task_id": "task-degraded-consensus",
+            "kind": "inference",
+            "status": "completed",
+            "request_id": "request-degraded-consensus",
+            "created_at": "2026-08-12T20:00:00Z",
+            "updated_at": "2026-08-12T20:00:10Z",
+            "execution_strategy": "mixture_of_agents",
+            "execution_preset": "slow",
+            "selection_mode": "auto",
+            "progress": {"phase": "completed", "invocations_completed": 4, "invocations_total": 4},
+            "result": {
+                "assistant_content": "La mejor propuesta disponible.",
+                "model_used": {"provider": "ollama", "deployment": "local", "model": "qwen"},
+                "consensus": {
+                    "synthesized": false,
+                    "warnings": ["No fue posible sintetizar con los árbitros disponibles"]
+                },
+                "arbiter_failures": [
+                    {"model": "arbiter-a", "code": "PROVIDER_UNAVAILABLE", "message": "offline"}
+                ]
+            },
+            "error": null
+        }))
+        .expect("degraded consensus is still a completed result");
+
+        assert!(state.status.is_terminal());
+        assert_eq!(
+            state
+                .result
+                .as_ref()
+                .and_then(|result| result.pointer("/consensus/synthesized"))
+                .and_then(Value::as_bool),
+            Some(false)
+        );
+    }
+
+    #[test]
     fn unknown_intermediate_task_states_remain_pollable() {
         let status: TaskStatus =
             serde_json::from_str("\"future_planning_stage\"").expect("unknown state should parse");
@@ -250,6 +292,8 @@ pub struct FileAccepted {
     pub sha256: String,
     pub created: bool,
     pub status_url: String,
+    #[serde(default)]
+    pub describe_images: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -272,4 +316,6 @@ pub struct FileState {
     #[serde(default)]
     pub updated_at: String,
     pub markdown_url: Option<String>,
+    #[serde(default)]
+    pub describe_images: Option<bool>,
 }

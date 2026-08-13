@@ -34,7 +34,11 @@ import type {
   ScheduledRunPageView,
   ScheduledTaskTemplateView,
   ScheduledTaskView,
-  WindowsStartupStatus
+  WindowsStartupStatus,
+  WorkflowDefinition,
+  WorkflowRunView,
+  WorkflowSummary,
+  WorkflowView
 } from "./domain";
 
 export const platform = {
@@ -98,11 +102,13 @@ export const platform = {
   },
   importCustomGptFile(
     customGptId: string,
-    sourcePath: string
+    sourcePath: string,
+    describeImages: boolean
   ): Promise<AttachmentView> {
     return invoke<AttachmentView>("import_custom_gpt_file", {
       customGptId,
-      sourcePath
+      sourcePath,
+      describeImages
     });
   },
   removeCustomGptFile(
@@ -394,26 +400,93 @@ export const platform = {
   listProjects(): Promise<ProjectSummary[]> {
     return invoke<ProjectSummary[]>("list_projects");
   },
+  createScheduledWorkflow(
+    name: string,
+    workflowId: string,
+    inputText: string,
+    dueAt: string,
+    timezone: string,
+    scheduleExpression: ScheduledTaskView["scheduleExpression"]
+  ): Promise<ScheduledTaskView> {
+    return invoke<ScheduledTaskView>("create_scheduled_workflow", {
+      name,
+      workflowId,
+      inputText,
+      dueAt,
+      timezone,
+      scheduleExpression,
+      confirmed: true
+    });
+  },
+  createWorkflow(name: string, projectId?: string): Promise<WorkflowView> {
+    return invoke<WorkflowView>("create_workflow", { name, projectId });
+  },
+  listWorkflows(): Promise<WorkflowSummary[]> {
+    return invoke<WorkflowSummary[]>("list_workflows");
+  },
+  getWorkflow(id: string): Promise<WorkflowView> {
+    return invoke<WorkflowView>("get_workflow", { id });
+  },
+  saveWorkflow(
+    id: string,
+    name: string,
+    description: string,
+    projectId: string | undefined,
+    definition: WorkflowDefinition
+  ): Promise<WorkflowView> {
+    return invoke<WorkflowView>("save_workflow", {
+      id,
+      name,
+      description: description.trim() || undefined,
+      projectId,
+      definition
+    });
+  },
+  publishWorkflow(id: string): Promise<WorkflowView> {
+    return invoke<WorkflowView>("publish_workflow", { id });
+  },
+  runWorkflow(id: string, inputText: string): Promise<WorkflowRunView> {
+    return invoke<WorkflowRunView>("run_workflow", { id, inputText });
+  },
+  getWorkflowRun(runId: string): Promise<WorkflowRunView> {
+    return invoke<WorkflowRunView>("get_workflow_run", { runId });
+  },
+  listWorkflowRuns(workflowId: string): Promise<WorkflowRunView[]> {
+    return invoke<WorkflowRunView[]>("list_workflow_runs", { workflowId });
+  },
+  retryWorkflowRun(runId: string): Promise<WorkflowRunView> {
+    return invoke<WorkflowRunView>("retry_workflow_run", { runId });
+  },
+  cancelWorkflowRun(runId: string): Promise<WorkflowRunView> {
+    return invoke<WorkflowRunView>("cancel_workflow_run", { runId });
+  },
+  decideWorkflowApproval(runId: string, nodeId: string, approved: boolean): Promise<WorkflowRunView> {
+    return invoke<WorkflowRunView>("decide_workflow_approval", { runId, nodeId, approved });
+  },
   listCustomGpts(): Promise<CustomGptView[]> {
     return invoke<CustomGptView[]>("list_custom_gpts");
   },
   createCustomGpt(
     name: string,
     description: string,
+    iconRef: CustomGptView["iconRef"],
     instructions: string,
     conversationStarters: string[],
     toolPermissions: CustomGptView["toolPermissions"],
     preferredModel: string | null,
-    defaultProjectId: string | null
+    defaultProjectId: string | null,
+    executionProfile: CustomGptView["executionProfile"]
   ): Promise<CustomGptView> {
     return invoke<CustomGptView>("create_custom_gpt", {
       name,
       description: description.trim() || undefined,
+      iconRef,
       instructions,
       conversationStarters,
       toolPermissions,
       preferredModel,
-      defaultProjectId
+      defaultProjectId,
+      executionProfile
     });
   },
   listCustomGptVersions(customGptId: string): Promise<CustomGptVersionView[]> {
@@ -442,21 +515,25 @@ export const platform = {
     customGptId: string,
     name: string,
     description: string,
+    iconRef: CustomGptView["iconRef"],
     instructions: string,
     conversationStarters: string[],
     toolPermissions: CustomGptView["toolPermissions"],
     preferredModel: string | null,
-    defaultProjectId: string | null
+    defaultProjectId: string | null,
+    executionProfile: CustomGptView["executionProfile"]
   ): Promise<CustomGptView> {
     return invoke<CustomGptView>("update_custom_gpt", {
       customGptId,
       name,
       description: description.trim() || undefined,
+      iconRef,
       instructions,
       conversationStarters,
       toolPermissions,
       preferredModel,
-      defaultProjectId
+      defaultProjectId,
+      executionProfile
     });
   },
   pickCustomGptImportPath(): Promise<string | null> {
@@ -600,8 +677,16 @@ export const platform = {
   pickAttachmentPaths(extensions: string[] = []): Promise<string[]> {
     return invoke<string[]>("pick_attachment_paths", { extensions });
   },
-  importAttachment(conversationId: string, sourcePath: string): Promise<AttachmentView> {
-    return invoke<AttachmentView>("import_attachment", { conversationId, sourcePath });
+  importAttachment(
+    conversationId: string,
+    sourcePath: string,
+    describeImages: boolean
+  ): Promise<AttachmentView> {
+    return invoke<AttachmentView>("import_attachment", {
+      conversationId,
+      sourcePath,
+      describeImages
+    });
   },
   importCapturedImage(
     conversationId: string,

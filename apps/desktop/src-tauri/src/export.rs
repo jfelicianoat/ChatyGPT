@@ -948,7 +948,7 @@ fn render_scheduled_calendar(
             "Próxima fecha guardada"
         };
         let description = format!(
-            "Conversación: {}\\nTipo: {}\\nAbre ChatyGPT para revisar la tarea.",
+            "Destino: {}\\nTipo: {}\\nAbre ChatyGPT para revisar la tarea.",
             ics_escape(&conversation_title),
             kind
         );
@@ -1115,7 +1115,7 @@ fn render_scheduled_history_text(
         };
         output.push_str(&format!(
             "Tarea: {}\n\
-             Conversación: {}\n\
+             Destino: {}\n\
              Estado: {} · intento {}\n\
              Programación: {} · {}\n\
              Fecha prevista: {}\n\

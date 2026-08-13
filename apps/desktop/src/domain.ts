@@ -28,6 +28,7 @@ export type BootstrapReport = {
   schemaVersion: number;
   recoveredTasks: number;
   recoveredAttachments: number;
+  recoveredWorkflows: number;
   recoveryItems: RecoveryItemView[];
 };
 
@@ -68,6 +69,7 @@ export type ScheduledRunView = {
   dueAt: string;
   status: "claimed" | "running" | "completed" | "failed" | "cancelled" | "skipped";
   brokerTaskId?: string;
+  workflowRunId?: string;
   attempt: number;
   result?: Record<string, unknown>;
   createdAt: string;
@@ -77,8 +79,12 @@ export type ScheduledRunView = {
 export type ScheduledTaskView = {
   id: string;
   name: string;
-  conversationId: string;
-  conversationTitle: string;
+  targetKind?: "conversation" | "workflow";
+  conversationId?: string;
+  conversationTitle?: string;
+  workflowId?: string;
+  workflowName?: string;
+  workflowVersionNo?: number;
   prompt: string;
   scheduleExpression: "once" | "daily" | "weekly";
   timezone: string;
@@ -161,8 +167,8 @@ export const scheduledCalendarOccurrences = (
           id: `${task.id}:${startsAt.toISOString()}`,
           taskId: task.id,
           taskName: task.name,
-          conversationId: task.conversationId,
-          conversationTitle: task.conversationTitle,
+          conversationId: task.conversationId ?? task.workflowId ?? task.id,
+          conversationTitle: task.conversationTitle ?? task.workflowName ?? task.name,
           startsAt: startsAt.toISOString(),
           scheduleExpression: task.scheduleExpression,
           timezone: task.timezone,
@@ -285,7 +291,7 @@ export const filterScheduledTasks = (
   if (!needle) return tasks;
   return tasks.filter((task) =>
     normalizeScheduledSearch(
-      `${task.name} ${task.conversationTitle} ${task.prompt}`
+      `${task.name} ${task.conversationTitle ?? ""} ${task.workflowName ?? ""} ${task.prompt}`
     ).includes(needle)
   );
 };
@@ -302,7 +308,7 @@ export const scheduledTaskDuplicateDraft = (
   task: ScheduledTaskView
 ): ScheduledTaskDuplicateDraft => ({
   name: `Copia de ${task.name}`.slice(0, 120),
-  conversationId: task.conversationId,
+  conversationId: task.conversationId ?? "",
   prompt: task.prompt,
   scheduleExpression: task.scheduleExpression,
   confirmed: false
@@ -335,8 +341,8 @@ export const scheduledNotifications = (
           id: run.id,
           taskId: task.id,
           taskName: task.name,
-          conversationId: task.conversationId,
-          conversationTitle: task.conversationTitle,
+          conversationId: task.conversationId ?? task.workflowId ?? task.id,
+          conversationTitle: task.conversationTitle ?? task.workflowName ?? task.name,
           status: run.status,
           attempt: run.attempt,
           updatedAt: run.updatedAt
@@ -402,6 +408,14 @@ export const scheduledRunDetail = (
       label: run.status === "failed" ? "Motivo del fallo" : "Resultado",
       text: detail.trim().slice(0, 4_000)
     };
+  }
+  if (result?.outputs && typeof result.outputs === "object") {
+    const outputs = Object.entries(result.outputs as Record<string, unknown>)
+      .filter((entry): entry is [string, string] => typeof entry[1] === "string")
+      .map(([label, value]) => `${label}: ${value.trim()}`)
+      .join("\n\n")
+      .trim();
+    if (outputs) return { label: "Resultado del flujo", text: outputs.slice(0, 4_000) };
   }
   if (run.status === "completed") {
     return {
@@ -469,8 +483,18 @@ export type AttachmentView = {
   semanticIndexedChunks: number;
   semanticIndexStatus: "pending" | "indexing" | "ready" | "partial" | "failed" | "unavailable";
   semanticIndexModel?: string;
+  describeImages?: boolean | null;
   updatedAt: string;
 };
+
+export const attachmentImagePolicyLabel = (
+  attachment: Pick<AttachmentView, "describeImages">
+): string | null =>
+  attachment.describeImages === true
+    ? "con imágenes"
+    : attachment.describeImages === false
+      ? "sin imágenes"
+      : null;
 
 export const attachmentSelectionOnConversationOpen = (
   attachments: Array<Pick<AttachmentView, "id">>
@@ -855,7 +879,10 @@ export const taskProgressSummary = (task: LocalTaskSnapshot): {
  */
 const TASK_FAILURE_TITLES: Record<string, string> = {
   CONTEXT_LIMIT_EXCEEDED: "El contenido no cabe en el modelo seleccionado",
-  RECOVERY_AMBIGUOUS_REMOTE_CALL: "No se sabe si la respuesta llegó a generarse"
+  RECOVERY_AMBIGUOUS_REMOTE_CALL: "No se sabe si la respuesta llegó a generarse",
+  PROMPT_ECHOED: "El modelo repitió la petición en vez de responder",
+  DEGENERATE_OUTPUT: "El modelo generó una respuesta repetitiva",
+  VRAM_MODEL_TOO_LARGE: "El modelo no cabe en la memoria configurada"
 };
 
 /** Qué hacer a continuación, cuando no es simplemente reintentar. */
@@ -864,7 +891,11 @@ const TASK_FAILURE_GUIDANCE: Record<string, string> = {
     "ChatyGPT se reinició mientras el modelo estaba respondiendo. El Broker no lo reintenta solo para no cobrar dos veces la misma inferencia. Revisa si la respuesta llegó antes de volver a enviarla.",
   MODEL_CAPABILITY_MISMATCH:
     "Elige otro modelo en las opciones de ejecución de la conversación.",
-  BUDGET_EXCEEDED: "Sube el presupuesto de la conversación y vuelve a enviarlo."
+  BUDGET_EXCEEDED: "Sube el presupuesto de la conversación y vuelve a enviarlo.",
+  PROMPT_ECHOED: "Prueba con otro modelo o permite que el Broker seleccione uno diferente.",
+  DEGENERATE_OUTPUT: "Prueba con otro modelo o reduce la longitud solicitada.",
+  VRAM_MODEL_TOO_LARGE:
+    "Elige un modelo más pequeño o permite proveedores cloud si la clasificación de los datos lo admite."
 };
 
 export const taskFailureSummary = (
@@ -1134,10 +1165,26 @@ export type ProjectSummary = {
   updatedAt: string;
 };
 
+export type CustomGptIcon = "spark" | "research" | "writing" | "code" | "data" | "teacher" | "briefcase";
+
+export const customGptIconOptions: Array<{ id: CustomGptIcon; glyph: string; label: string }> = [
+  { id: "spark", glyph: "✦", label: "General" },
+  { id: "research", glyph: "⌕", label: "Investigación" },
+  { id: "writing", glyph: "¶", label: "Escritura" },
+  { id: "code", glyph: "</>", label: "Código" },
+  { id: "data", glyph: "▦", label: "Datos" },
+  { id: "teacher", glyph: "A", label: "Tutor" },
+  { id: "briefcase", glyph: "◆", label: "Trabajo" }
+];
+
+export const customGptIconGlyph = (icon: string | null | undefined): string =>
+  customGptIconOptions.find((option) => option.id === icon)?.glyph ?? "✦";
+
 export type CustomGptView = {
   id: string;
   name: string;
   description?: string;
+  iconRef: CustomGptIcon;
   instructions: string;
   conversationStarters: string[];
   toolPermissions: {
@@ -1146,6 +1193,8 @@ export type CustomGptView = {
   };
   /** Modelo que el Broker intentará primero; null deja decidir al Broker. */
   preferredModel: string | null;
+  /** null conserva las opciones elegidas en cada chat. */
+  executionProfile: ConversationExecutionPreferences | null;
   /** Proyecto al que van los chats nuevos que eligen este GPT. */
   defaultProjectId: string | null;
   versionNo: number;
@@ -1157,10 +1206,12 @@ export type CustomGptView = {
 export type CustomGptPreview = {
   customGptId: string;
   name: string;
+  iconRef: CustomGptIcon;
   versionNo: number;
   /** Texto exacto que se antepone al mensaje en la petición real. */
   promptBlock: string;
   preferredModel: string | null;
+  executionProfile: ConversationExecutionPreferences | null;
   defaultProjectName: string | null;
   conversationStarters: string[];
   toolPermissions: CustomGptView["toolPermissions"];
@@ -1177,9 +1228,11 @@ export type CustomGptPreview = {
 export type CustomGptVersionView = {
   id: string;
   versionNo: number;
+  iconRef: CustomGptIcon;
   instructions: string;
   conversationStarters: string[];
   preferredModel: string | null;
+  executionProfile: ConversationExecutionPreferences | null;
   createdAt: string;
   active: boolean;
   toolPermissions: CustomGptView["toolPermissions"];
@@ -1296,8 +1349,94 @@ export type ConversationMessage = {
   usage?: Record<string, unknown>;
   fallbackUsed?: boolean;
   longContext?: Record<string, unknown>;
+  consensusSynthesized?: boolean;
+  consensusWarnings?: string[];
+  arbiterFailureCount?: number;
   sources: ConversationSource[];
   createdAt: string;
+};
+
+export type WorkflowNodeKind = "input" | "custom_gpt" | "prompt" | "approval" | "result";
+
+export type WorkflowNode = {
+  id: string;
+  kind: WorkflowNodeKind;
+  label: string;
+  x: number;
+  y: number;
+  customGptId?: string | null;
+  customGptVersionId?: string | null;
+  customGptName?: string | null;
+  customGptIconRef?: CustomGptIcon | null;
+  customGptInstructions?: string | null;
+  preferredModel?: string | null;
+  executionProfile?: ConversationExecutionPreferences | null;
+  /** Conocimiento del GPT seleccionado al publicar; una revocación posterior se respeta. */
+  customGptMemoryIds?: string[];
+  /** Archivos propios del GPT preparados al publicar. */
+  customGptAttachmentIds?: string[];
+  instruction?: string | null;
+  attachmentIds: string[];
+};
+
+export type WorkflowEdge = {
+  id: string;
+  source: string;
+  target: string;
+};
+
+export type WorkflowDefinition = {
+  nodes: WorkflowNode[];
+  edges: WorkflowEdge[];
+  /** Contexto autorizado del proyecto fijado en la versión publicada. */
+  projectContext?: {
+    projectId: string;
+    projectName: string;
+    instructions?: string | null;
+    memoryIds: string[];
+  } | null;
+};
+
+export type WorkflowSummary = {
+  id: string;
+  name: string;
+  description?: string | null;
+  projectId?: string | null;
+  publishedVersionNo?: number | null;
+  nodeCount: number;
+  updatedAt: string;
+};
+
+export type WorkflowView = WorkflowSummary & {
+  definition: WorkflowDefinition;
+};
+
+export type WorkflowNodeRunView = {
+  id: string;
+  nodeId: string;
+  nodeKind: WorkflowNodeKind;
+  nodeLabel: string;
+  status: "pending" | "running" | "waiting_approval" | "completed" | "failed" | "skipped" | "cancelled";
+  inputText?: string | null;
+  outputText?: string | null;
+  brokerTaskId?: string | null;
+  error?: Record<string, unknown> | null;
+  updatedAt: string;
+};
+
+export type WorkflowRunView = {
+  id: string;
+  workflowId: string;
+  workflowVersionId: string;
+  versionNo: number;
+  status: "queued" | "running" | "waiting_approval" | "completed" | "partial_failed" | "failed" | "cancelled";
+  inputText: string;
+  outputs: Record<string, string>;
+  error?: Record<string, unknown> | null;
+  nodeRuns: WorkflowNodeRunView[];
+  startedAt?: string | null;
+  completedAt?: string | null;
+  updatedAt: string;
 };
 
 export const brokerAttachmentExtensions = (broker?: BrokerDiagnostic): string[] => {

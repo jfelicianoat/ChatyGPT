@@ -10,6 +10,7 @@ mod scheduler_runtime;
 mod secrets;
 mod startup;
 mod task_runtime;
+mod workflow_runtime;
 
 use broker::{BrokerClient, BrokerDiagnostic};
 use db::{
@@ -18,6 +19,7 @@ use db::{
     ConversationView, CustomGptImportReport, CustomGptToolPermissions, CustomGptView, Database,
     LocalTaskSnapshot, MemoryOverview, MemorySearchView, ProjectKnowledgeOverview, ProjectSummary,
     RecoveryItemView, ScheduledRunPageView, ScheduledTaskTemplateView, ScheduledTaskView,
+    WorkflowDefinition, WorkflowRunView, WorkflowSummary, WorkflowView,
 };
 use error::AppError;
 use serde::{Deserialize, Serialize};
@@ -28,6 +30,7 @@ struct AppState {
     broker: BrokerClient,
     recovered_at_start: usize,
     recovered_attachments_at_start: usize,
+    recovered_workflows_at_start: usize,
     recovery_items_at_start: Vec<RecoveryItemView>,
     attachments_dir: std::path::PathBuf,
     data_dir: std::path::PathBuf,
@@ -43,6 +46,7 @@ struct BootstrapReport {
     schema_version: i64,
     recovered_tasks: usize,
     recovered_attachments: usize,
+    recovered_workflows: usize,
     recovery_items: Vec<RecoveryItemView>,
 }
 
@@ -126,6 +130,7 @@ fn bootstrap_app(state: State<'_, AppState>) -> Result<BootstrapReport, AppError
         schema_version: state.database.schema_version()?,
         recovered_tasks: state.recovered_at_start,
         recovered_attachments: state.recovered_attachments_at_start,
+        recovered_workflows: state.recovered_workflows_at_start,
         recovery_items: state.recovery_items_at_start.clone(),
     })
 }
@@ -352,6 +357,32 @@ fn create_scheduled_task(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
+fn create_scheduled_workflow(
+    name: String,
+    workflow_id: String,
+    input_text: String,
+    due_at: String,
+    timezone: String,
+    schedule_expression: String,
+    confirmed: bool,
+    state: State<'_, AppState>,
+) -> Result<ScheduledTaskView, AppError> {
+    let name = validated_text(&name, "el nombre", 120)?;
+    let input_text = validated_text(&input_text, "la entrada", 200_000)?;
+    let timezone = validated_text(&timezone, "la zona horaria", 100)?;
+    state.database.create_scheduled_workflow(
+        &name,
+        &workflow_id,
+        &input_text,
+        due_at.trim(),
+        &timezone,
+        schedule_expression.trim(),
+        confirmed,
+    )
+}
+
+#[tauri::command]
 fn set_scheduled_task_enabled(
     scheduled_task_id: String,
     enabled: bool,
@@ -411,28 +442,14 @@ async fn retry_scheduled_run(
     let claim = state
         .database
         .retry_failed_scheduled_run(&scheduled_run_id, confirmed)?;
-    match task_runtime::start_chat_turn(
-        state.database.clone(),
-        state.broker.clone(),
-        &claim.conversation_id,
-        &claim.prompt,
-        &[],
-        false,
-        false,
-        false,
-        false,
-    )
-    .await
+    if let Err(error) =
+        scheduler_runtime::dispatch_claim(state.database.clone(), state.broker.clone(), &claim)
+            .await
     {
-        Ok(task) => state
+        state
             .database
-            .start_scheduled_run(&claim.run_id, &task.id)?,
-        Err(error) => {
-            state
-                .database
-                .fail_scheduled_run(&claim.run_id, &error.to_string())?;
-            return Err(error);
-        }
+            .fail_scheduled_run(&claim.run_id, &error.to_string())?;
+        return Err(error);
     }
     state
         .database
@@ -451,28 +468,14 @@ async fn run_scheduled_task_now(
     let claim = state
         .database
         .claim_scheduled_task_now(&scheduled_task_id, confirmed)?;
-    match task_runtime::start_chat_turn(
-        state.database.clone(),
-        state.broker.clone(),
-        &claim.conversation_id,
-        &claim.prompt,
-        &[],
-        false,
-        false,
-        false,
-        false,
-    )
-    .await
+    if let Err(error) =
+        scheduler_runtime::dispatch_claim(state.database.clone(), state.broker.clone(), &claim)
+            .await
     {
-        Ok(task) => state
+        state
             .database
-            .start_scheduled_run(&claim.run_id, &task.id)?,
-        Err(error) => {
-            state
-                .database
-                .fail_scheduled_run(&claim.run_id, &error.to_string())?;
-            return Err(error);
-        }
+            .fail_scheduled_run(&claim.run_id, &error.to_string())?;
+        return Err(error);
     }
     state
         .database
@@ -491,20 +494,33 @@ async fn cancel_scheduled_run(
     let target = state
         .database
         .scheduled_cancellation_target(&scheduled_run_id, confirmed)?;
-    let cancelled = task_runtime::cancel_task(
-        state.database.clone(),
-        state.broker.clone(),
-        &target.broker_task_id,
-    )
-    .await?;
-    if cancelled.remote_status != "cancelled" {
+    let execution_id = if let Some(workflow_run_id) = target.workflow_run_id.as_deref() {
+        workflow_runtime::cancel(
+            state.database.clone(),
+            state.broker.clone(),
+            workflow_run_id,
+        )
+        .await?;
+        workflow_run_id
+    } else if let Some(broker_task_id) = target.broker_task_id.as_deref() {
+        let cancelled =
+            task_runtime::cancel_task(state.database.clone(), state.broker.clone(), broker_task_id)
+                .await?;
+        if cancelled.remote_status != "cancelled" {
+            return Err(AppError::Conflict(
+                "el Broker no confirmó la cancelación porque la ejecución cambió de estado"
+                    .to_owned(),
+            ));
+        }
+        broker_task_id
+    } else {
         return Err(AppError::Conflict(
-            "el Broker no confirmó la cancelación porque la ejecución cambió de estado".to_owned(),
+            "la ejecución no tiene una tarea que se pueda cancelar".to_owned(),
         ));
-    }
+    };
     state
         .database
-        .finish_scheduled_cancellation(&scheduled_run_id, &target.broker_task_id)?;
+        .finish_scheduled_cancellation(&scheduled_run_id, execution_id)?;
     state
         .database
         .list_scheduled_tasks()?
@@ -628,6 +644,118 @@ fn list_projects(state: State<'_, AppState>) -> Result<Vec<ProjectSummary>, AppE
 }
 
 #[tauri::command]
+fn create_workflow(
+    name: String,
+    project_id: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<WorkflowView, AppError> {
+    state.database.create_workflow(&name, project_id.as_deref())
+}
+
+#[tauri::command]
+fn list_workflows(state: State<'_, AppState>) -> Result<Vec<WorkflowSummary>, AppError> {
+    state.database.list_workflows()
+}
+
+#[tauri::command]
+fn get_workflow(id: String, state: State<'_, AppState>) -> Result<WorkflowView, AppError> {
+    state.database.workflow_view(&id)
+}
+
+#[tauri::command]
+fn save_workflow(
+    id: String,
+    name: String,
+    description: Option<String>,
+    project_id: Option<String>,
+    definition: WorkflowDefinition,
+    state: State<'_, AppState>,
+) -> Result<WorkflowView, AppError> {
+    workflow_runtime::validate_definition(&definition)?;
+    state.database.update_workflow(
+        &id,
+        &name,
+        description.as_deref(),
+        project_id.as_deref(),
+        &definition,
+    )
+}
+
+#[tauri::command]
+fn publish_workflow(id: String, state: State<'_, AppState>) -> Result<WorkflowView, AppError> {
+    let workflow = state.database.workflow_view(&id)?;
+    workflow_runtime::validate_definition(&workflow.definition)?;
+    for node in &workflow.definition.nodes {
+        state
+            .database
+            .ready_workflow_attachments(&id, &node.attachment_ids)?;
+    }
+    state.database.publish_workflow(&id)
+}
+
+#[tauri::command]
+fn run_workflow(
+    id: String,
+    input_text: String,
+    state: State<'_, AppState>,
+) -> Result<WorkflowRunView, AppError> {
+    workflow_runtime::start(
+        state.database.clone(),
+        state.broker.clone(),
+        &id,
+        &input_text,
+    )
+}
+
+#[tauri::command]
+fn get_workflow_run(
+    run_id: String,
+    state: State<'_, AppState>,
+) -> Result<WorkflowRunView, AppError> {
+    state.database.workflow_run(&run_id)
+}
+
+#[tauri::command]
+fn list_workflow_runs(
+    workflow_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<WorkflowRunView>, AppError> {
+    state.database.list_workflow_runs(&workflow_id)
+}
+
+#[tauri::command]
+fn retry_workflow_run(
+    run_id: String,
+    state: State<'_, AppState>,
+) -> Result<WorkflowRunView, AppError> {
+    workflow_runtime::retry(state.database.clone(), state.broker.clone(), &run_id)
+}
+
+#[tauri::command]
+async fn cancel_workflow_run(
+    run_id: String,
+    state: State<'_, AppState>,
+) -> Result<WorkflowRunView, AppError> {
+    workflow_runtime::cancel(state.database.clone(), state.broker.clone(), &run_id).await
+}
+
+#[tauri::command]
+fn decide_workflow_approval(
+    run_id: String,
+    node_id: String,
+    approved: bool,
+    state: State<'_, AppState>,
+) -> Result<WorkflowRunView, AppError> {
+    workflow_runtime::decide_approval(
+        state.database.clone(),
+        state.broker.clone(),
+        &run_id,
+        &node_id,
+        approved,
+    )
+}
+
+#[tauri::command]
 fn list_custom_gpts(state: State<'_, AppState>) -> Result<Vec<CustomGptView>, AppError> {
     state.database.list_custom_gpts()
 }
@@ -637,21 +765,25 @@ fn list_custom_gpts(state: State<'_, AppState>) -> Result<Vec<CustomGptView>, Ap
 fn create_custom_gpt(
     name: String,
     description: Option<String>,
+    icon_ref: Option<String>,
     instructions: String,
     conversation_starters: Vec<String>,
     tool_permissions: CustomGptToolPermissions,
     preferred_model: Option<String>,
     default_project_id: Option<String>,
+    execution_profile: Option<db::ConversationExecutionPreferences>,
     state: State<'_, AppState>,
 ) -> Result<CustomGptView, AppError> {
-    state.database.create_custom_gpt_with_starters(
+    state.database.create_custom_gpt_with_icon(
         &name,
         description.as_deref(),
+        icon_ref.as_deref(),
         &instructions,
         &conversation_starters,
         &tool_permissions,
         preferred_model.as_deref(),
         default_project_id.as_deref(),
+        execution_profile.as_ref(),
     )
 }
 
@@ -661,22 +793,26 @@ fn update_custom_gpt(
     custom_gpt_id: String,
     name: String,
     description: Option<String>,
+    icon_ref: Option<String>,
     instructions: String,
     conversation_starters: Vec<String>,
     tool_permissions: CustomGptToolPermissions,
     preferred_model: Option<String>,
     default_project_id: Option<String>,
+    execution_profile: Option<db::ConversationExecutionPreferences>,
     state: State<'_, AppState>,
 ) -> Result<CustomGptView, AppError> {
-    state.database.update_custom_gpt_with_starters(
+    state.database.update_custom_gpt_with_icon(
         &custom_gpt_id,
         &name,
         description.as_deref(),
+        icon_ref.as_deref(),
         &instructions,
         &conversation_starters,
         &tool_permissions,
         preferred_model.as_deref(),
         default_project_id.as_deref(),
+        execution_profile.as_ref(),
     )
 }
 
@@ -706,11 +842,13 @@ fn restore_custom_gpt_version(
 struct CustomGptPreview {
     custom_gpt_id: String,
     name: String,
+    icon_ref: String,
     version_no: i64,
     /// Texto exacto que se antepone al mensaje, generado por el mismo código
     /// que construye la petición real.
     prompt_block: String,
     preferred_model: Option<String>,
+    execution_profile: Option<db::ConversationExecutionPreferences>,
     default_project_name: Option<String>,
     conversation_starters: Vec<String>,
     tool_permissions: CustomGptToolPermissions,
@@ -805,9 +943,11 @@ fn preview_custom_gpt(
     Ok(CustomGptPreview {
         custom_gpt_id: context.custom_gpt_id.clone(),
         name: context.name.clone(),
+        icon_ref: context.icon_ref.clone(),
         version_no: context.version_no,
         prompt_block: task_runtime::custom_gpt_prompt_block(&context)?,
         preferred_model: view.preferred_model,
+        execution_profile: view.execution_profile,
         default_project_name,
         conversation_starters: view.conversation_starters,
         tool_permissions: view.tool_permissions,
@@ -1063,6 +1203,7 @@ fn list_custom_gpt_files(
 async fn import_custom_gpt_file(
     custom_gpt_id: String,
     source_path: String,
+    describe_images: bool,
     state: State<'_, AppState>,
 ) -> Result<AttachmentView, AppError> {
     attachment_runtime::import_custom_gpt_attachment(
@@ -1071,6 +1212,7 @@ async fn import_custom_gpt_file(
         state.attachments_dir.clone(),
         custom_gpt_id,
         source_path,
+        describe_images,
     )
     .await
 }
@@ -1918,6 +2060,7 @@ async fn export_conversation_to_obsidian(
 async fn import_attachment(
     conversation_id: String,
     source_path: String,
+    describe_images: bool,
     state: State<'_, AppState>,
 ) -> Result<AttachmentView, AppError> {
     attachment_runtime::import_attachment(
@@ -1926,6 +2069,7 @@ async fn import_attachment(
         state.attachments_dir.clone(),
         conversation_id,
         source_path,
+        describe_images,
     )
     .await
 }
@@ -2066,6 +2210,8 @@ pub fn run() {
                 task_runtime::recover_at_start(database.clone(), broker.clone())?;
             let recovered_attachments_at_start =
                 attachment_runtime::recover_at_start(database.clone(), broker.clone())?;
+            let recovered_workflows_at_start =
+                workflow_runtime::recover_at_start(database.clone(), broker.clone())?;
             logging::info(
                 "app.started",
                 Some(&boot),
@@ -2079,6 +2225,10 @@ pub fn run() {
                         "recovered_attachments",
                         logging::count(recovered_attachments_at_start as i64),
                     ),
+                    (
+                        "recovered_workflows",
+                        logging::count(recovered_workflows_at_start as i64),
+                    ),
                 ],
             );
             scheduler_runtime::start(database.clone(), broker.clone());
@@ -2088,6 +2238,7 @@ pub fn run() {
                 broker,
                 recovered_at_start,
                 recovered_attachments_at_start,
+                recovered_workflows_at_start,
                 recovery_items_at_start,
                 attachments_dir,
                 data_dir,
@@ -2114,6 +2265,7 @@ pub fn run() {
             create_scheduled_task_template,
             delete_scheduled_task_template,
             create_scheduled_task,
+            create_scheduled_workflow,
             set_scheduled_task_enabled,
             update_scheduled_task,
             delete_scheduled_task,
@@ -2140,6 +2292,17 @@ pub fn run() {
             resolve_tool_calls,
             create_project,
             list_projects,
+            create_workflow,
+            list_workflows,
+            get_workflow,
+            save_workflow,
+            publish_workflow,
+            run_workflow,
+            get_workflow_run,
+            list_workflow_runs,
+            retry_workflow_run,
+            cancel_workflow_run,
+            decide_workflow_approval,
             list_custom_gpts,
             create_custom_gpt,
             update_custom_gpt,

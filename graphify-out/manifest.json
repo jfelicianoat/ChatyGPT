@@ -40,24 +40,24 @@
     "semantic_hash": "db7639d6df3d17a904ecf10b4e80754e"
   },
   "apps/desktop/src-tauri/src/attachment_runtime.rs": {
-    "mtime": 1785882115.255108,
-    "ast_hash": "2c45d1e3a0c588a11f71f2bfab2c62de",
-    "semantic_hash": "2c45d1e3a0c588a11f71f2bfab2c62de"
+    "mtime": 1786481999.146714,
+    "ast_hash": "6c2ec532484e6d547c70233787e99ea5",
+    "semantic_hash": "6c2ec532484e6d547c70233787e99ea5"
   },
   "apps/desktop/src-tauri/src/broker/contracts.rs": {
-    "mtime": 1786397798.9375696,
-    "ast_hash": "3219b79d12d5bee5707bc5bb4fdaac12",
-    "semantic_hash": "3219b79d12d5bee5707bc5bb4fdaac12"
+    "mtime": 1786482168.4887693,
+    "ast_hash": "6c324044e97fafd4897834f49ce4e238",
+    "semantic_hash": "6c324044e97fafd4897834f49ce4e238"
   },
   "apps/desktop/src-tauri/src/broker/mod.rs": {
-    "mtime": 1786398568.724937,
-    "ast_hash": "4d850fa7cf3117c062c590092c916436",
-    "semantic_hash": "4d850fa7cf3117c062c590092c916436"
+    "mtime": 1786549514.0471613,
+    "ast_hash": "cd3916c857b9e76348ecf055714236a0",
+    "semantic_hash": "cd3916c857b9e76348ecf055714236a0"
   },
   "apps/desktop/src-tauri/src/db/mod.rs": {
-    "mtime": 1786398066.3202145,
-    "ast_hash": "a54db0ee92afdb65adf060074f07389d",
-    "semantic_hash": "a54db0ee92afdb65adf060074f07389d"
+    "mtime": 1786561904.321369,
+    "ast_hash": "05d863615a605d12ba5afd5f54402167",
+    "semantic_hash": "05d863615a605d12ba5afd5f54402167"
   },
   "apps/desktop/src-tauri/src/error.rs": {
     "mtime": 1784567157.0295084,
@@ -65,14 +65,14 @@
     "semantic_hash": "a9a3d15cefabe504d09fa4325a645e06"
   },
   "apps/desktop/src-tauri/src/export.rs": {
-    "mtime": 1785592307.1020129,
-    "ast_hash": "88608a88d2f4594dcb07f3096fd3ed24",
-    "semantic_hash": "88608a88d2f4594dcb07f3096fd3ed24"
+    "mtime": 1786555233.49087,
+    "ast_hash": "bd6f5124c967bc3a6006edadf3fc5344",
+    "semantic_hash": "bd6f5124c967bc3a6006edadf3fc5344"
   },
   "apps/desktop/src-tauri/src/lib.rs": {
-    "mtime": 1786398607.5303767,
-    "ast_hash": "ff4de027e144ae0376ebdc86ec774403",
-    "semantic_hash": "ff4de027e144ae0376ebdc86ec774403"
+    "mtime": 1786560700.8094158,
+    "ast_hash": "15e0c24c3d1452d6b0f426045c3c2afe",
+    "semantic_hash": "15e0c24c3d1452d6b0f426045c3c2afe"
   },
   "apps/desktop/src-tauri/src/main.rs": {
     "mtime": 1784564153.2854273,
@@ -80,29 +80,29 @@
     "semantic_hash": "1c6efb6a0ff217c4e3f6887c02b1fe64"
   },
   "apps/desktop/src-tauri/src/task_runtime.rs": {
-    "mtime": 1786398014.233272,
-    "ast_hash": "db491f510e68f8bf37b57401ec6c92f8",
-    "semantic_hash": "db491f510e68f8bf37b57401ec6c92f8"
+    "mtime": 1786560684.3050287,
+    "ast_hash": "2a75941d5af0212c4f4e74abcac81a57",
+    "semantic_hash": "2a75941d5af0212c4f4e74abcac81a57"
   },
   "apps/desktop/src-tauri/tauri.conf.json": {
-    "mtime": 1784485875.617072,
-    "ast_hash": "7748ceb0e39583617ab2a6f9ddd07a31",
-    "semantic_hash": "7748ceb0e39583617ab2a6f9ddd07a31"
+    "mtime": 1786461889.9937477,
+    "ast_hash": "8b0963e1cca76a0c84e1057c669b3dcb",
+    "semantic_hash": "8b0963e1cca76a0c84e1057c669b3dcb"
   },
   "apps/desktop/src/App.tsx": {
-    "mtime": 1786398244.0382524,
-    "ast_hash": "7fc7667c2780bdf3f221531ed86e0cb7",
-    "semantic_hash": "7fc7667c2780bdf3f221531ed86e0cb7"
+    "mtime": 1786564839.4391985,
+    "ast_hash": "7c1360cefed4bfc9392dda6df12e406d",
+    "semantic_hash": ""
   },
   "apps/desktop/src/domain.test.ts": {
-    "mtime": 1786398591.8584988,
-    "ast_hash": "662145203fb07f24c24e15a3bdae92a2",
-    "semantic_hash": "662145203fb07f24c24e15a3bdae92a2"
+    "mtime": 1786561483.428604,
+    "ast_hash": "1cc1fb54be92d6175d6288ab1e4a3330",
+    "semantic_hash": "1cc1fb54be92d6175d6288ab1e4a3330"
   },
   "apps/desktop/src/domain.ts": {
-    "mtime": 1786398243.117889,
-    "ast_hash": "a2c7b79439c71cdfe7ce84752a154e0a",
-    "semantic_hash": "a2c7b79439c71cdfe7ce84752a154e0a"
+    "mtime": 1786561353.1248116,
+    "ast_hash": "0b1eae35a2740d2d93da3774d8908af5",
+    "semantic_hash": "0b1eae35a2740d2d93da3774d8908af5"
   },
   "apps/desktop/src/env.d.ts": {
     "mtime": 1784485755.2759523,
@@ -115,9 +115,9 @@
     "semantic_hash": "cdf0de72c40954490e49cb9a0bf6a79c"
   },
   "apps/desktop/src/platform.ts": {
-    "mtime": 1786398114.143928,
-    "ast_hash": "2971b76183ab264dd7ee97efbf7e45ac",
-    "semantic_hash": "2971b76183ab264dd7ee97efbf7e45ac"
+    "mtime": 1786560742.3454564,
+    "ast_hash": "fefa3555a47f6a5e8d7c1a871b5525a1",
+    "semantic_hash": "fefa3555a47f6a5e8d7c1a871b5525a1"
   },
   "contracts/broker/2.5/single-task.request.json": {
     "mtime": 1784486039.301579,
@@ -180,8 +180,8 @@
     "semantic_hash": "5d571ddf40721ea34fc45f416b56106f"
   },
   "README.md": {
-    "mtime": 1785537105.4313216,
-    "ast_hash": "12db9db70f9debd03b066d45ea6a96f4",
+    "mtime": 1786565464.925044,
+    "ast_hash": "43b72b0f34dd25f0ff058bd21932dae7",
     "semantic_hash": ""
   },
   "apps/desktop/index.html": {
@@ -195,8 +195,8 @@
     "semantic_hash": "45edd92bbdecac33e72f49f2fc3cc7f4"
   },
   "docs/ARCHITECTURE.md": {
-    "mtime": 1785537107.6921837,
-    "ast_hash": "201682c7d198bb53a8b527aea60466f7",
+    "mtime": 1786047698.3109577,
+    "ast_hash": "7a1c1da2a4d6bf7084691e587971e695",
     "semantic_hash": ""
   },
   "docs/PHASE_0_VERIFICATION.md": {
@@ -210,8 +210,8 @@
     "semantic_hash": ""
   },
   "docs/PHASE_2_VERIFICATION.md": {
-    "mtime": 1785359530.6800554,
-    "ast_hash": "8e050d5d28684e2d40e7b742c2c5bb6a",
+    "mtime": 1786560284.6182444,
+    "ast_hash": "7f2ec5c19324e291e5e0810c00b01dba",
     "semantic_hash": ""
   },
   "pnpm-workspace.yaml": {
@@ -370,9 +370,9 @@
     "semantic_hash": "9148f52beff9639cddffd80dbfe072d2"
   },
   "apps/desktop/src-tauri/src/scheduler_runtime.rs": {
-    "mtime": 1785442719.371665,
-    "ast_hash": "e42567d59a2d49fde5fb5d7c41349945",
-    "semantic_hash": "e42567d59a2d49fde5fb5d7c41349945"
+    "mtime": 1786557195.60264,
+    "ast_hash": "730416f449e4ce16f4a8c9c288c9b0bc",
+    "semantic_hash": "730416f449e4ce16f4a8c9c288c9b0bc"
   },
   "apps/desktop/src-tauri/src/startup.rs": {
     "mtime": 1785594597.7038164,
@@ -420,13 +420,13 @@
     "semantic_hash": "cded1c355898fc3cd7747278bf450f40"
   },
   "docs/PHASE_3_VERIFICATION.md": {
-    "mtime": 1785429540.4390047,
-    "ast_hash": "02a94a9bb3a590fb12006d473b5f5f1e",
+    "mtime": 1786565463.7384791,
+    "ast_hash": "20bd9a9d248eba8102b45b9d9238bf39",
     "semantic_hash": ""
   },
   "docs/PHASE_4_VERIFICATION.md": {
-    "mtime": 1785537109.986224,
-    "ast_hash": "0d0b40ea6e69f22d8f9c9b0aa925d359",
+    "mtime": 1786051676.954072,
+    "ast_hash": "4aff24948737d407e096aa3ea1c94089",
     "semantic_hash": ""
   },
   "graphify-out/memory/query_20260728_204156_cuando_lanzo_una_petici_n__la_ventana_donde_aparec.md": {
@@ -675,9 +675,9 @@
     "semantic_hash": "6843abbbe97b9efa3028f1a1fde8a1b1"
   },
   "apps/desktop/src/App.confirmations.test.tsx": {
-    "mtime": 1785933465.2278838,
-    "ast_hash": "b78de655351df0b659875c818911f843",
-    "semantic_hash": "b78de655351df0b659875c818911f843"
+    "mtime": 1786564889.3129065,
+    "ast_hash": "a04b0393363e367d49c236f9b00daba9",
+    "semantic_hash": ""
   },
   "apps/desktop/src/composer.test.ts": {
     "mtime": 1786398507.0216577,
@@ -690,14 +690,14 @@
     "semantic_hash": "99ae1792a7c643e0033e0bd1932c5bcd"
   },
   "apps/desktop/src/dialogs.test.ts": {
-    "mtime": 1785947601.9583511,
-    "ast_hash": "9cbf57f01675422f21d86824b8aff69b",
-    "semantic_hash": "9cbf57f01675422f21d86824b8aff69b"
+    "mtime": 1786564888.2021139,
+    "ast_hash": "13142e507912b9acf5714a1e7174b97a",
+    "semantic_hash": ""
   },
   "apps/desktop/src/dialogs.ts": {
-    "mtime": 1785947533.4688475,
-    "ast_hash": "3174c8a3119b71579a13b904f4f9cb3f",
-    "semantic_hash": "3174c8a3119b71579a13b904f4f9cb3f"
+    "mtime": 1786564838.2552576,
+    "ast_hash": "d8fbf089cf012cc729f78a1dadeb47c0",
+    "semantic_hash": ""
   },
   "apps/desktop/src/errors.test.ts": {
     "mtime": 1785947633.420894,
@@ -735,9 +735,9 @@
     "semantic_hash": "fd99f6727edc49832ddc6a1b2a418722"
   },
   "apps/desktop/src/schedulerView.ts": {
-    "mtime": 1785949605.965338,
-    "ast_hash": "8292402821f8cc811e01b006fb71bad7",
-    "semantic_hash": "8292402821f8cc811e01b006fb71bad7"
+    "mtime": 1786555405.2227638,
+    "ast_hash": "06fc829ad65e5d220e7dd1b1bbe51744",
+    "semantic_hash": "06fc829ad65e5d220e7dd1b1bbe51744"
   },
   "apps/desktop/src/unwrapFencedDocument.test.ts": {
     "mtime": 1786052579.8533468,
@@ -758,5 +758,125 @@
     "mtime": 1785904737.282341,
     "ast_hash": "8cfba8771ae13f16a687d6d44211eda9",
     "semantic_hash": "8cfba8771ae13f16a687d6d44211eda9"
+  },
+  "apps/desktop/src-tauri/migrations/0019_attachment_image_policy.sql": {
+    "mtime": 1786481804.061612,
+    "ast_hash": "67572ac5e27602a55d5768406def6983",
+    "semantic_hash": "67572ac5e27602a55d5768406def6983"
+  },
+  "apps/desktop/src-tauri/migrations/0020_workflows.sql": {
+    "mtime": 1786550795.574334,
+    "ast_hash": "1e5e22a1bf32d2e34a5767a426112c10",
+    "semantic_hash": "1e5e22a1bf32d2e34a5767a426112c10"
+  },
+  "apps/desktop/src-tauri/migrations/0021_scheduled_workflows.sql": {
+    "mtime": 1786553862.6331282,
+    "ast_hash": "a067c26f61bc617d61f2d71050034f48",
+    "semantic_hash": "a067c26f61bc617d61f2d71050034f48"
+  },
+  "apps/desktop/src-tauri/src/workflow_runtime.rs": {
+    "mtime": 1786561351.9309392,
+    "ast_hash": "b9e394738aae4ef00148e68114cd4d81",
+    "semantic_hash": "b9e394738aae4ef00148e68114cd4d81"
+  },
+  "apps/desktop/src/WorkflowStudio.test.tsx": {
+    "mtime": 1786561899.5903032,
+    "ast_hash": "064151d08684f03f9741c8cf6a49f2f9",
+    "semantic_hash": "064151d08684f03f9741c8cf6a49f2f9"
+  },
+  "apps/desktop/src/WorkflowStudio.tsx": {
+    "mtime": 1786561378.9359338,
+    "ast_hash": "54e295c9c5b4e6d3c777db2fce652a1a",
+    "semantic_hash": "54e295c9c5b4e6d3c777db2fce652a1a"
+  },
+  "apps/desktop/src/ingestionPreferences.test.ts": {
+    "mtime": 1786481709.7219026,
+    "ast_hash": "ac3d759fecdd9d95e577ffb96ab13c01",
+    "semantic_hash": "ac3d759fecdd9d95e577ffb96ab13c01"
+  },
+  "apps/desktop/src/ingestionPreferences.ts": {
+    "mtime": 1786481691.137637,
+    "ast_hash": "53b0c78d855de2b9cf64dae0385b81ce",
+    "semantic_hash": "53b0c78d855de2b9cf64dae0385b81ce"
+  },
+  "scripts/Needs-ChatyGPTBuild.ps1": {
+    "mtime": 1786461386.5091608,
+    "ast_hash": "a19087796278fc8fc87a6eaa327a2b2b",
+    "semantic_hash": "a19087796278fc8fc87a6eaa327a2b2b"
+  },
+  "apps/desktop/src/workflowFailure.test.ts": {
+    "mtime": 1786556580.069888,
+    "ast_hash": "8be7ca160e0fb58be3138e47e7ebaa92",
+    "semantic_hash": "8be7ca160e0fb58be3138e47e7ebaa92"
+  },
+  "apps/desktop/src/workflowFailure.ts": {
+    "mtime": 1786556705.6626651,
+    "ast_hash": "5941530d50fca1d56dffa878c736d96a",
+    "semantic_hash": "5941530d50fca1d56dffa878c736d96a"
+  },
+  ".github/workflows/ci.yml": {
+    "mtime": 1786047625.7973907,
+    "ast_hash": "868fed82edf039d225f9146a7ba72e62",
+    "semantic_hash": ""
+  },
+  "design-qa.md": {
+    "mtime": 1786459506.6724708,
+    "ast_hash": "96e150057ad93d118dc6c438790d62d7",
+    "semantic_hash": ""
+  },
+  "docs/PHASE_0_HARDENING.md": {
+    "mtime": 1786047706.57255,
+    "ast_hash": "f0e11b3ff9eb28de4789fa8f5c8bfc73",
+    "semantic_hash": ""
+  },
+  "docs/PHASE_3_COMPLETION.md": {
+    "mtime": 1786565462.6047702,
+    "ast_hash": "d4f6eb7cd508d64471bc96b46c64ab96",
+    "semantic_hash": ""
+  },
+  "graphify-out/memory/query_20260731_223637_ok__sigue_con_el_desarrollo.md": {
+    "mtime": 1785537397.5637798,
+    "ast_hash": "619051516c58259af2f8ee15f429e45d",
+    "semantic_hash": ""
+  },
+  "graphify-out/memory/query_20260801_064358_analiza_la_auditoria_adjunta_del_estado_de_chatygp.md": {
+    "mtime": 1785566638.9368048,
+    "ast_hash": "ef2323375360ad7f6eb7ec5e2eb93a0f",
+    "semantic_hash": ""
+  },
+  "graphify-out/memory/query_20260810_215140_qu\u00e9_componentes_deben_adaptarse_al_contrato_2_7_d.md": {
+    "mtime": 1786398700.0472627,
+    "ast_hash": "828fc78b2e84e8cec194f3a1942ae967",
+    "semantic_hash": ""
+  },
+  "graphify-out/memory/query_20260811_140650_premortem_de_usabilidad_de_chatygpt.md": {
+    "mtime": 1786457210.1562915,
+    "ast_hash": "f8142a4cb993b60e69301cc0e0b66775",
+    "semantic_hash": ""
+  },
+  "graphify-out/memory/query_20260812_163053_el_flujo_que_he_creado_no_me_est\u00e1_funcionando__ave.md": {
+    "mtime": 1786552253.1420345,
+    "ast_hash": "627a6d08fc9b0b91dea7550ee0d6a309",
+    "semantic_hash": ""
+  },
+  "graphify-out/memory/query_20260812_165146_c\u00f3mo_integrar_aprobaciones_humanas_duraderas_en_lo.md": {
+    "mtime": 1786553506.6456945,
+    "ast_hash": "f7378f7ade8caedc4050fba4e8ef7dc2",
+    "semantic_hash": ""
+  },
+  "graphify-out/memory/query_20260812_165555_el_flujo_que_he_creado_no_me_est\u00e1_funcionando__ave.md": {
+    "mtime": 1786553755.6909063,
+    "ast_hash": "22e181e095febb8c66544190b095d9f7",
+    "semantic_hash": ""
+  },
+  "tests/requirements.txt": {
+    "mtime": 1786047611.1190846,
+    "ast_hash": "31d3ba9d3cf1e5224b8e2e64ddd9b330",
+    "semantic_hash": ""
+  },
+  "apps/desktop/src/stylesContrast.test.js": {
+    "mtime": 1786566428.32923,
+    "ast_hash": "d579a7c394dfdaa67a50bdd4abb4e1eb",
+    "semantic_hash": ""
   }
 }

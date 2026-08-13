@@ -19,7 +19,9 @@ el primer workflow de investigación incluyen:
 - materialización idempotente del resultado remoto como mensaje asistente;
 - creación, renombrado, archivado y eliminación lógica de conversaciones;
 - proyectos locales con asociación reversible de conversaciones;
-- catálogo local de GPTs personales con nombre, descripción e instrucciones;
+- catálogo local de GPTs personales con nombre, descripción, instrucciones e
+  icono reconocible; el icono se versiona, se conserva al duplicar o transportar
+  el GPT y también queda fijado en cada versión publicada de un flujo;
 - versiones inmutables: cada edición crea una revisión numerada y conserva las anteriores;
 - historial de versiones consultable y restauración de una revisión anterior, que
   crea una versión nueva sin borrar ninguna ni alterar las respuestas ya emitidas;
@@ -27,8 +29,14 @@ el primer workflow de investigación incluyen:
 - vista previa que muestra el bloque exacto que recibiría el modelo, los permisos
   vigentes y qué conocimiento o archivos no se usarían todavía, sin enviar nada
   a Broker AI ni generar coste;
+- prueba directa desde cada ficha: crea un chat normal `Prueba · nombre`, envía
+  una pregunta real y conserva allí la respuesta, el contexto y cualquier fallo;
 - modelo preferido por GPT, enviado como preferencia con reserva automática, y
   proyecto predeterminado que solo alcanza a los chats aún sin clasificar;
+- perfil de ejecución opcional y versionado por GPT: privacidad, estrategia,
+  profundidad, coste máximo, tratamiento de contexto largo y prioridad; cuando
+  no se configura, el GPT hereda las opciones del chat, y los flujos publicados
+  congelan el perfil exacto junto con la versión del GPT;
 - selección reversible de un GPT personal por conversación;
 - captura por valor de la versión activa al enviar, incluso antes de una búsqueda
   semántica, con sus instrucciones visibles en el contexto exacto de la respuesta;
@@ -65,6 +73,14 @@ el primer workflow de investigación incluyen:
 - hasta 20 archivos de conocimiento privados por GPT, ingeridos e indexados por
   la ruta documental común y resueltos dinámicamente al enviar, sin crear enlaces
   residuales en la conversación al cambiar o retirar el GPT;
+- los nodos de GPT personal de un flujo fijan al publicar qué conocimiento y
+  archivos propios estaban autorizados; la ejecución los incorpora junto con el
+  contexto del proyecto, respeta inmediatamente cualquier retirada posterior y
+  muestra sus cantidades en el inspector antes de publicar;
+- los flujos asociados a un proyecto aplican también sus instrucciones
+  persistentes y recuerdos activos a cada nodo de modelo; la versión publicada
+  conserva las referencias autorizadas, pero una edición, desactivación o
+  retirada revoca el contexto antiguo hasta volver a publicar;
 - instrucciones persistentes por proyecto, aplicadas a todos sus chats y
   conservadas como fuente visible en el contexto exacto de cada respuesta;
 - vista unificada del conocimiento de cada proyecto con instrucciones, archivos

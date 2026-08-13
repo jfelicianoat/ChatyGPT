@@ -11,7 +11,9 @@ use serde_json::Value;
 use std::collections::HashMap;
 use url::Url;
 
-pub use contracts::{BrokerCapabilities, FileAccepted, FileState, TaskAccepted, TaskState};
+pub use contracts::{
+    BrokerCapabilities, FileAccepted, FileState, TaskAccepted, TaskState, TaskStatus,
+};
 
 use crate::error::AppError;
 use crate::logging;
@@ -293,6 +295,7 @@ impl BrokerClient {
         filename: &str,
         media_type: Option<&str>,
         size_bytes: u64,
+        describe_images: Option<bool>,
     ) -> Result<FileAccepted, AppError> {
         let path = path.to_path_buf();
         let filename = filename.to_owned();
@@ -309,7 +312,10 @@ impl BrokerClient {
                     .mime_str(&media_type)
                     .map_err(|error| AppError::BrokerContract(error.to_string()))?;
             }
-            let form = reqwest::blocking::multipart::Form::new().part("file", part);
+            let mut form = reqwest::blocking::multipart::Form::new().part("file", part);
+            if let Some(describe_images) = describe_images {
+                form = form.text("describe_images", describe_images.to_string());
+            }
             let client = reqwest::blocking::Client::builder()
                 .connect_timeout(std::time::Duration::from_secs(3))
                 .timeout(std::time::Duration::from_secs(600))
@@ -823,6 +829,7 @@ mod tests {
             "informe.pdf",
             Some("application/pdf"),
             contenido.len() as u64,
+            Some(false),
         ))
         .expect("la subida debe aceptarse");
         assert_eq!(accepted.file_id, "file-1");
@@ -833,6 +840,8 @@ mod tests {
         assert!(upload.raw_body.contains("informe.pdf"));
         assert!(upload.raw_body.contains("contenido del informe"));
         assert!(upload.raw_body.contains("application/pdf"));
+        assert!(upload.raw_body.contains("describe_images"));
+        assert!(upload.raw_body.contains("false"));
         assert!(upload
             .headers
             .get("content-type")
@@ -860,7 +869,7 @@ mod tests {
         ));
         std::fs::write(&path, b"da igual").expect("el archivo de prueba debe escribirse");
 
-        let error = block_on(client_for(&simulated).upload_file(&path, "nota.txt", None, 8))
+        let error = block_on(client_for(&simulated).upload_file(&path, "nota.txt", None, 8, None))
             .expect_err("un 422 al subir debe fallar");
         match error {
             AppError::BrokerResponse { status, .. } => assert_eq!(status, 422),

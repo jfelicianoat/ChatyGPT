@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf, MAIN_SEPARATOR};
 
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use url::Url;
 use uuid::Uuid;
@@ -42,9 +42,14 @@ const PERFORMANCE_SAMPLES_MIGRATION: &str =
     include_str!("../../migrations/0017_performance_samples.sql");
 const SEMANTIC_RESEARCH_WORKFLOW_MIGRATION: &str =
     include_str!("../../migrations/0018_semantic_research_workflow.sql");
+const ATTACHMENT_IMAGE_POLICY_MIGRATION: &str =
+    include_str!("../../migrations/0019_attachment_image_policy.sql");
+const WORKFLOWS_MIGRATION: &str = include_str!("../../migrations/0020_workflows.sql");
+const SCHEDULED_WORKFLOWS_MIGRATION: &str =
+    include_str!("../../migrations/0021_scheduled_workflows.sql");
 const RECOVER_NON_TERMINAL_TASKS: &str =
     include_str!("../../queries/recover_non_terminal_tasks.sql");
-pub const SCHEMA_VERSION: i64 = 18;
+pub const SCHEMA_VERSION: i64 = 21;
 
 #[derive(Clone)]
 pub struct Database {
@@ -82,6 +87,7 @@ pub struct ScheduledRunView {
     pub due_at: String,
     pub status: String,
     pub broker_task_id: Option<String>,
+    pub workflow_run_id: Option<String>,
     pub attempt: i64,
     pub result: Option<Value>,
     pub created_at: String,
@@ -93,8 +99,12 @@ pub struct ScheduledRunView {
 pub struct ScheduledTaskView {
     pub id: String,
     pub name: String,
-    pub conversation_id: String,
-    pub conversation_title: String,
+    pub target_kind: String,
+    pub conversation_id: Option<String>,
+    pub conversation_title: Option<String>,
+    pub workflow_id: Option<String>,
+    pub workflow_name: Option<String>,
+    pub workflow_version_no: Option<i64>,
     pub prompt: String,
     pub schedule_expression: String,
     pub timezone: String,
@@ -147,14 +157,18 @@ pub struct ScheduledHistoryExportRow {
 pub struct ScheduledClaim {
     pub run_id: String,
     pub scheduled_task_id: String,
-    pub conversation_id: String,
+    pub target_kind: String,
+    pub conversation_id: Option<String>,
+    pub workflow_id: Option<String>,
+    pub workflow_version_id: Option<String>,
     pub prompt: String,
 }
 
 #[derive(Debug, Clone)]
 pub struct ScheduledCancellationTarget {
     pub scheduled_task_id: String,
-    pub broker_task_id: String,
+    pub broker_task_id: Option<String>,
+    pub workflow_run_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -400,10 +414,40 @@ pub struct ProjectSummary {
 #[serde(rename_all = "camelCase")]
 struct CustomGptConfiguration {
     schema_version: i64,
+    #[serde(default = "default_custom_gpt_icon")]
+    icon_ref: String,
     instructions: String,
     conversation_starters: Vec<String>,
     preferred_model: Option<String>,
     tools_enabled: bool,
+    /// `None` mantiene el comportamiento histórico: manda la configuración del chat.
+    #[serde(default)]
+    execution_profile: Option<ConversationExecutionPreferences>,
+}
+
+const CUSTOM_GPT_ICONS: &[&str] = &[
+    "spark",
+    "research",
+    "writing",
+    "code",
+    "data",
+    "teacher",
+    "briefcase",
+];
+
+fn default_custom_gpt_icon() -> String {
+    "spark".to_owned()
+}
+
+fn validated_custom_gpt_icon(icon_ref: Option<&str>) -> Result<String, AppError> {
+    let icon_ref = icon_ref.unwrap_or("spark").trim();
+    if CUSTOM_GPT_ICONS.contains(&icon_ref) {
+        Ok(icon_ref.to_owned())
+    } else {
+        Err(AppError::Validation(
+            "elige uno de los iconos disponibles para el GPT".to_owned(),
+        ))
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -412,11 +456,14 @@ pub struct CustomGptView {
     pub id: String,
     pub name: String,
     pub description: Option<String>,
+    pub icon_ref: String,
     pub instructions: String,
     pub conversation_starters: Vec<String>,
     pub tool_permissions: CustomGptToolPermissions,
     /// Modelo que el Broker debe intentar primero; `None` deja decidir al Broker.
     pub preferred_model: Option<String>,
+    /// Perfil versionado. `None` significa que hereda los ajustes del chat.
+    pub execution_profile: Option<ConversationExecutionPreferences>,
     /// Proyecto al que van los chats nuevos que eligen este GPT.
     pub default_project_id: Option<String>,
     pub version_no: i64,
@@ -430,9 +477,11 @@ pub struct CustomGptView {
 pub struct CustomGptVersionView {
     pub id: String,
     pub version_no: i64,
+    pub icon_ref: String,
     pub instructions: String,
     pub conversation_starters: Vec<String>,
     pub preferred_model: Option<String>,
+    pub execution_profile: Option<ConversationExecutionPreferences>,
     pub created_at: String,
     /// Verdadero solo para la versión que se usaría ahora mismo.
     pub active: bool,
@@ -473,6 +522,8 @@ struct PortableCustomGpt {
     schema_version: i64,
     name: String,
     description: Option<String>,
+    #[serde(default = "default_custom_gpt_icon")]
+    icon_ref: String,
     instructions: String,
     #[serde(default)]
     conversation_starters: Vec<String>,
@@ -510,12 +561,17 @@ pub struct CustomGptContext {
     pub custom_gpt_id: String,
     pub version_id: String,
     pub name: String,
+    #[serde(default = "default_custom_gpt_icon")]
+    pub icon_ref: String,
     pub version_no: i64,
     pub instructions: String,
     pub tool_permissions: CustomGptToolPermissions,
     /// Se congela con la versión: cambiar el GPT no altera respuestas ya pedidas.
     #[serde(default)]
     pub preferred_model: Option<String>,
+    /// También se congela con la versión para que una tarea sea reproducible.
+    #[serde(default)]
+    pub execution_profile: Option<ConversationExecutionPreferences>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -951,6 +1007,9 @@ pub struct ConversationMessage {
     pub usage: Option<Value>,
     pub fallback_used: Option<bool>,
     pub long_context: Option<Value>,
+    pub consensus_synthesized: Option<bool>,
+    pub consensus_warnings: Vec<String>,
+    pub arbiter_failure_count: i64,
     pub sources: Vec<ConversationSource>,
     pub created_at: String,
 }
@@ -1035,6 +1094,7 @@ pub struct AttachmentView {
     pub semantic_indexed_chunks: i64,
     pub semantic_index_status: String,
     pub semantic_index_model: Option<String>,
+    pub describe_images: Option<bool>,
     pub updated_at: String,
 }
 
@@ -1048,6 +1108,7 @@ pub struct AttachmentRecord {
     pub sha256: String,
     pub broker_file_id: Option<String>,
     pub ingestion_status: String,
+    pub describe_images: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -1074,6 +1135,133 @@ pub struct AttachmentChunkEmbeddingInput {
 pub struct ContextSourceFile {
     pub local_path: String,
     pub display_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowDefinition {
+    pub nodes: Vec<WorkflowNode>,
+    pub edges: Vec<WorkflowEdge>,
+    /// Contexto del proyecto fijado al publicar. Las referencias se vuelven a
+    /// autorizar al ejecutar para que una retirada posterior sea efectiva.
+    #[serde(default)]
+    pub project_context: Option<WorkflowProjectContext>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowProjectContext {
+    pub project_id: String,
+    pub project_name: String,
+    #[serde(default)]
+    pub instructions: Option<String>,
+    #[serde(default)]
+    pub memory_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowNode {
+    pub id: String,
+    pub kind: String,
+    pub label: String,
+    pub x: f64,
+    pub y: f64,
+    #[serde(default)]
+    pub custom_gpt_id: Option<String>,
+    #[serde(default)]
+    pub custom_gpt_version_id: Option<String>,
+    #[serde(default)]
+    pub custom_gpt_name: Option<String>,
+    #[serde(default)]
+    pub custom_gpt_icon_ref: Option<String>,
+    #[serde(default)]
+    pub custom_gpt_instructions: Option<String>,
+    #[serde(default)]
+    pub preferred_model: Option<String>,
+    #[serde(default)]
+    pub execution_profile: Option<ConversationExecutionPreferences>,
+    /// Identificadores del conocimiento textual activo al publicar.
+    /// Se resuelven de nuevo al ejecutar para respetar una revocación posterior.
+    #[serde(default)]
+    pub custom_gpt_memory_ids: Vec<String>,
+    /// Archivos propios del GPT que estaban preparados al publicar.
+    /// La pertenencia al GPT se vuelve a comprobar antes de cada uso.
+    #[serde(default)]
+    pub custom_gpt_attachment_ids: Vec<String>,
+    #[serde(default)]
+    pub instruction: Option<String>,
+    #[serde(default)]
+    pub attachment_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowEdge {
+    pub id: String,
+    pub source: String,
+    pub target: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowSummary {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub project_id: Option<String>,
+    pub published_version_no: Option<i64>,
+    pub node_count: i64,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowView {
+    #[serde(flatten)]
+    pub summary: WorkflowSummary,
+    pub definition: WorkflowDefinition,
+}
+
+#[derive(Debug, Clone)]
+pub struct WorkflowExecutionRecord {
+    pub run_id: String,
+    pub workflow_id: String,
+    pub version_id: String,
+    pub definition: WorkflowDefinition,
+    pub input_text: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowNodeRunView {
+    pub id: String,
+    pub node_id: String,
+    pub node_kind: String,
+    pub node_label: String,
+    pub status: String,
+    pub input_text: Option<String>,
+    pub output_text: Option<String>,
+    pub broker_task_id: Option<String>,
+    pub error: Option<Value>,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowRunView {
+    pub id: String,
+    pub workflow_id: String,
+    pub workflow_version_id: String,
+    pub version_no: i64,
+    pub status: String,
+    pub input_text: String,
+    pub outputs: Value,
+    pub error: Option<Value>,
+    pub node_runs: Vec<WorkflowNodeRunView>,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+    pub updated_at: String,
 }
 
 impl Database {
@@ -1214,9 +1402,26 @@ impl Database {
             transaction.commit()?;
         }
         let current: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if current < SCHEMA_VERSION {
+        if current < 18 {
             let transaction = connection.transaction()?;
             transaction.execute_batch(SEMANTIC_RESEARCH_WORKFLOW_MIGRATION)?;
+            transaction.pragma_update(None, "user_version", 18)?;
+            transaction.commit()?;
+        }
+        let current: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        if current < 19 {
+            let transaction = connection.transaction()?;
+            transaction.execute_batch(ATTACHMENT_IMAGE_POLICY_MIGRATION)?;
+            transaction.pragma_update(None, "user_version", 19)?;
+            transaction.commit()?;
+        }
+        let current: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        if current < SCHEMA_VERSION {
+            let transaction = connection.transaction()?;
+            if current < 20 {
+                transaction.execute_batch(WORKFLOWS_MIGRATION)?;
+            }
+            transaction.execute_batch(SCHEDULED_WORKFLOWS_MIGRATION)?;
             transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             transaction.commit()?;
         }
@@ -1604,6 +1809,902 @@ impl Database {
         Ok(projects)
     }
 
+    pub fn create_workflow(
+        &self,
+        name: &str,
+        project_id: Option<&str>,
+    ) -> Result<WorkflowView, AppError> {
+        let name = name.trim();
+        if name.is_empty() || name.chars().count() > 120 {
+            return Err(AppError::Validation(
+                "el nombre del flujo debe tener entre 1 y 120 caracteres".to_owned(),
+            ));
+        }
+        let connection = self.connect()?;
+        if let Some(project_id) = project_id {
+            let exists: bool = connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM projects WHERE id = ?1 AND archived_at IS NULL)",
+                params![project_id],
+                |row| row.get(0),
+            )?;
+            if !exists {
+                return Err(AppError::NotFound(format!("proyecto {project_id}")));
+            }
+        }
+        let id = format!("workflow_{}", Uuid::new_v4().simple());
+        let input_id = format!("node_{}", Uuid::new_v4().simple());
+        let result_id = format!("node_{}", Uuid::new_v4().simple());
+        let definition = WorkflowDefinition {
+            nodes: vec![
+                WorkflowNode {
+                    id: input_id.clone(),
+                    kind: "input".to_owned(),
+                    label: "Entrada".to_owned(),
+                    x: 70.0,
+                    y: 170.0,
+                    custom_gpt_id: None,
+                    custom_gpt_version_id: None,
+                    custom_gpt_name: None,
+                    custom_gpt_icon_ref: None,
+                    custom_gpt_instructions: None,
+                    preferred_model: None,
+                    execution_profile: None,
+                    custom_gpt_memory_ids: Vec::new(),
+                    custom_gpt_attachment_ids: Vec::new(),
+                    instruction: None,
+                    attachment_ids: Vec::new(),
+                },
+                WorkflowNode {
+                    id: result_id.clone(),
+                    kind: "result".to_owned(),
+                    label: "Resultado".to_owned(),
+                    x: 650.0,
+                    y: 170.0,
+                    custom_gpt_id: None,
+                    custom_gpt_version_id: None,
+                    custom_gpt_name: None,
+                    custom_gpt_icon_ref: None,
+                    custom_gpt_instructions: None,
+                    preferred_model: None,
+                    execution_profile: None,
+                    custom_gpt_memory_ids: Vec::new(),
+                    custom_gpt_attachment_ids: Vec::new(),
+                    instruction: None,
+                    attachment_ids: Vec::new(),
+                },
+            ],
+            edges: vec![WorkflowEdge {
+                id: format!("edge_{}", Uuid::new_v4().simple()),
+                source: input_id.clone(),
+                target: result_id,
+            }],
+            project_context: None,
+        };
+        let definition_json = serde_json::to_string(&definition)
+            .map_err(|error| AppError::Validation(error.to_string()))?;
+        connection.execute(
+            "INSERT INTO workflows(id, name, project_id, draft_definition_json)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![id, name, project_id, definition_json],
+        )?;
+        self.workflow_view(&id)
+    }
+
+    pub fn list_workflows(&self) -> Result<Vec<WorkflowSummary>, AppError> {
+        let connection = self.connect()?;
+        let mut statement = connection.prepare(
+            "SELECT workflow.id, workflow.name, workflow.description, workflow.project_id,
+                    version.version_no,
+                    json_array_length(json_extract(workflow.draft_definition_json, '$.nodes')),
+                    workflow.updated_at
+             FROM workflows workflow
+             LEFT JOIN workflow_versions version ON version.id = workflow.published_version_id
+             WHERE workflow.archived_at IS NULL
+             ORDER BY workflow.updated_at DESC, workflow.name COLLATE NOCASE",
+        )?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok(WorkflowSummary {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    description: row.get(2)?,
+                    project_id: row.get(3)?,
+                    published_version_no: row.get(4)?,
+                    node_count: row.get(5)?,
+                    updated_at: row.get(6)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    pub fn workflow_view(&self, id: &str) -> Result<WorkflowView, AppError> {
+        let connection = self.connect()?;
+        connection
+            .query_row(
+                "SELECT workflow.id, workflow.name, workflow.description, workflow.project_id,
+                        version.version_no, workflow.draft_definition_json, workflow.updated_at
+                 FROM workflows workflow
+                 LEFT JOIN workflow_versions version ON version.id = workflow.published_version_id
+                 WHERE workflow.id = ?1 AND workflow.archived_at IS NULL",
+                params![id],
+                |row| {
+                    let definition_json: String = row.get(5)?;
+                    let definition: WorkflowDefinition = serde_json::from_str(&definition_json)
+                        .map_err(|error| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                5,
+                                rusqlite::types::Type::Text,
+                                Box::new(error),
+                            )
+                        })?;
+                    Ok(WorkflowView {
+                        summary: WorkflowSummary {
+                            id: row.get(0)?,
+                            name: row.get(1)?,
+                            description: row.get(2)?,
+                            project_id: row.get(3)?,
+                            published_version_no: row.get(4)?,
+                            node_count: definition.nodes.len() as i64,
+                            updated_at: row.get(6)?,
+                        },
+                        definition,
+                    })
+                },
+            )
+            .optional()?
+            .ok_or_else(|| AppError::NotFound(format!("flujo {id}")))
+    }
+
+    pub fn update_workflow(
+        &self,
+        id: &str,
+        name: &str,
+        description: Option<&str>,
+        project_id: Option<&str>,
+        definition: &WorkflowDefinition,
+    ) -> Result<WorkflowView, AppError> {
+        let name = name.trim();
+        if name.is_empty() || name.chars().count() > 120 {
+            return Err(AppError::Validation(
+                "el nombre del flujo debe tener entre 1 y 120 caracteres".to_owned(),
+            ));
+        }
+        let definition_json = serde_json::to_string(definition)
+            .map_err(|error| AppError::Validation(error.to_string()))?;
+        let connection = self.connect()?;
+        let changed = connection.execute(
+            "UPDATE workflows
+             SET name = ?2, description = ?3, project_id = ?4,
+                 draft_definition_json = ?5, updated_at = datetime('now')
+             WHERE id = ?1 AND archived_at IS NULL",
+            params![id, name, description, project_id, definition_json],
+        )?;
+        if changed == 0 {
+            return Err(AppError::NotFound(format!("flujo {id}")));
+        }
+        self.workflow_view(id)
+    }
+
+    pub fn publish_workflow(&self, id: &str) -> Result<WorkflowView, AppError> {
+        let connection = self.connect()?;
+        let transaction = connection.unchecked_transaction()?;
+        let (draft_definition_json, project_id): (String, Option<String>) = transaction
+            .query_row(
+                "SELECT draft_definition_json, project_id FROM workflows
+                 WHERE id = ?1 AND archived_at IS NULL",
+                params![id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?
+            .ok_or_else(|| AppError::NotFound(format!("flujo {id}")))?;
+        let mut definition: WorkflowDefinition = serde_json::from_str(&draft_definition_json)
+            .map_err(|error| AppError::Validation(error.to_string()))?;
+        definition.project_context = if let Some(project_id) = project_id {
+            let project = self.project_summary(&project_id)?;
+            let memory = self.memory_overview()?;
+            let mut used_characters = 0_usize;
+            let memory_ids = if memory.enabled {
+                memory
+                    .items
+                    .into_iter()
+                    .filter(|item| item.enabled && item.project_id.as_deref() == Some(&project_id))
+                    .filter(|item| {
+                        used_characters += item.content.chars().count();
+                        used_characters <= 8_000
+                    })
+                    .take(20)
+                    .map(|item| item.id)
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            Some(WorkflowProjectContext {
+                project_id,
+                project_name: project.name,
+                instructions: project.instructions,
+                memory_ids,
+            })
+        } else {
+            None
+        };
+        for node in &mut definition.nodes {
+            if node.kind == "custom_gpt" {
+                let custom_gpt_id = node.custom_gpt_id.as_deref().ok_or_else(|| {
+                    AppError::Validation(format!(
+                        "el nodo «{}» no tiene un GPT seleccionado",
+                        node.label
+                    ))
+                })?;
+                let context = self.custom_gpt_context(custom_gpt_id)?;
+                node.custom_gpt_version_id = Some(context.version_id);
+                node.custom_gpt_name = Some(context.name);
+                node.custom_gpt_icon_ref = Some(context.icon_ref);
+                node.custom_gpt_instructions = Some(context.instructions);
+                node.preferred_model = context.preferred_model;
+                node.execution_profile = context.execution_profile;
+                let mut used_characters = 0_usize;
+                node.custom_gpt_memory_ids = self
+                    .custom_gpt_knowledge(custom_gpt_id)?
+                    .into_iter()
+                    .filter(|item| item.enabled)
+                    .filter(|item| {
+                        used_characters += item.content.chars().count();
+                        used_characters <= 8_000
+                    })
+                    .take(20)
+                    .map(|item| item.id)
+                    .collect();
+                node.custom_gpt_attachment_ids = self
+                    .list_custom_gpt_files(custom_gpt_id)?
+                    .into_iter()
+                    .filter(|file| {
+                        file.ingestion_status == "ready" && file.broker_file_id.is_some()
+                    })
+                    .map(|file| file.id)
+                    .collect();
+                let total_files = node
+                    .attachment_ids
+                    .iter()
+                    .chain(node.custom_gpt_attachment_ids.iter())
+                    .collect::<HashSet<_>>()
+                    .len();
+                if total_files > 20 {
+                    return Err(AppError::Validation(format!(
+                        "el nodo «{}» supera el límite de 20 archivos al sumar los del proyecto y los del GPT",
+                        node.label
+                    )));
+                }
+            }
+        }
+        let definition_json = serde_json::to_string(&definition)
+            .map_err(|error| AppError::Validation(error.to_string()))?;
+        let version_no: i64 = transaction.query_row(
+            "SELECT COALESCE(MAX(version_no), 0) + 1 FROM workflow_versions WHERE workflow_id = ?1",
+            params![id],
+            |row| row.get(0),
+        )?;
+        let version_id = format!("workflow_version_{}", Uuid::new_v4().simple());
+        transaction.execute(
+            "INSERT INTO workflow_versions(id, workflow_id, version_no, definition_json)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![version_id, id, version_no, definition_json],
+        )?;
+        transaction.execute(
+            "UPDATE workflows SET published_version_id = ?2, updated_at = datetime('now')
+             WHERE id = ?1",
+            params![id, version_id],
+        )?;
+        transaction.commit()?;
+        self.workflow_view(id)
+    }
+
+    pub fn create_workflow_run(
+        &self,
+        workflow_id: &str,
+        input_text: &str,
+    ) -> Result<WorkflowExecutionRecord, AppError> {
+        self.create_workflow_run_for_version(workflow_id, None, input_text)
+    }
+
+    pub fn create_workflow_run_from_version(
+        &self,
+        workflow_id: &str,
+        workflow_version_id: &str,
+        input_text: &str,
+    ) -> Result<WorkflowExecutionRecord, AppError> {
+        self.create_workflow_run_for_version(workflow_id, Some(workflow_version_id), input_text)
+    }
+
+    fn create_workflow_run_for_version(
+        &self,
+        workflow_id: &str,
+        workflow_version_id: Option<&str>,
+        input_text: &str,
+    ) -> Result<WorkflowExecutionRecord, AppError> {
+        let connection = self.connect()?;
+        let transaction = connection.unchecked_transaction()?;
+        let (version_id, definition_json): (String, String) = transaction
+            .query_row(
+                "SELECT version.id, version.definition_json
+                 FROM workflows workflow
+                 JOIN workflow_versions version ON version.workflow_id = workflow.id
+                 WHERE workflow.id = ?1 AND workflow.archived_at IS NULL
+                   AND version.id = COALESCE(?2, workflow.published_version_id)",
+                params![workflow_id, workflow_version_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?
+            .ok_or_else(|| AppError::Conflict("publica el flujo antes de ejecutarlo".to_owned()))?;
+        let definition: WorkflowDefinition = serde_json::from_str(&definition_json)
+            .map_err(|error| AppError::Validation(error.to_string()))?;
+        let run_id = format!("workflow_run_{}", Uuid::new_v4().simple());
+        transaction.execute(
+            "INSERT INTO workflow_runs(
+                id, workflow_id, workflow_version_id, status, input_text, started_at
+             ) VALUES (?1, ?2, ?3, 'queued', ?4, datetime('now'))",
+            params![run_id, workflow_id, version_id, input_text],
+        )?;
+        for node in &definition.nodes {
+            transaction.execute(
+                "INSERT INTO workflow_node_runs(id, run_id, node_id, node_kind, node_label)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    format!("workflow_node_run_{}", Uuid::new_v4().simple()),
+                    run_id,
+                    node.id,
+                    node.kind,
+                    node.label
+                ],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(WorkflowExecutionRecord {
+            run_id,
+            workflow_id: workflow_id.to_owned(),
+            version_id,
+            definition,
+            input_text: input_text.to_owned(),
+        })
+    }
+
+    pub fn workflow_execution_record(
+        &self,
+        run_id: &str,
+    ) -> Result<WorkflowExecutionRecord, AppError> {
+        let connection = self.connect()?;
+        connection
+            .query_row(
+                "SELECT run.id, run.workflow_id, run.workflow_version_id,
+                        version.definition_json, run.input_text
+                 FROM workflow_runs run
+                 JOIN workflow_versions version ON version.id = run.workflow_version_id
+                 WHERE run.id = ?1",
+                params![run_id],
+                |row| {
+                    let definition_json: String = row.get(3)?;
+                    let definition = serde_json::from_str(&definition_json).map_err(|error| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            3,
+                            rusqlite::types::Type::Text,
+                            Box::new(error),
+                        )
+                    })?;
+                    Ok(WorkflowExecutionRecord {
+                        run_id: row.get(0)?,
+                        workflow_id: row.get(1)?,
+                        version_id: row.get(2)?,
+                        definition,
+                        input_text: row.get(4)?,
+                    })
+                },
+            )
+            .optional()?
+            .ok_or_else(|| AppError::NotFound(format!("ejecución de flujo {run_id}")))
+    }
+
+    pub fn retry_workflow_run(
+        &self,
+        previous_run_id: &str,
+    ) -> Result<WorkflowExecutionRecord, AppError> {
+        let connection = self.connect()?;
+        let transaction = connection.unchecked_transaction()?;
+        let (workflow_id, version_id, input_text, definition_json): (
+            String,
+            String,
+            String,
+            String,
+        ) = transaction
+            .query_row(
+                "SELECT run.workflow_id, run.workflow_version_id, run.input_text,
+                            version.definition_json
+                     FROM workflow_runs run
+                     JOIN workflow_versions version ON version.id = run.workflow_version_id
+                     WHERE run.id = ?1 AND run.status IN ('failed', 'partial_failed')",
+                params![previous_run_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()?
+            .ok_or_else(|| {
+                AppError::Conflict("solo se pueden reintentar ejecuciones fallidas".to_owned())
+            })?;
+        let definition: WorkflowDefinition = serde_json::from_str(&definition_json)
+            .map_err(|error| AppError::Validation(error.to_string()))?;
+        let run_id = format!("workflow_run_{}", Uuid::new_v4().simple());
+        transaction.execute(
+            "INSERT INTO workflow_runs(
+                id, workflow_id, workflow_version_id, status, input_text, started_at
+             ) VALUES (?1, ?2, ?3, 'queued', ?4, datetime('now'))",
+            params![run_id, workflow_id, version_id, input_text],
+        )?;
+        for node in &definition.nodes {
+            let reusable: Option<(String, String)> = if node.kind == "result" {
+                None
+            } else {
+                transaction
+                    .query_row(
+                        "SELECT input_text, output_text FROM workflow_node_runs
+                         WHERE run_id = ?1 AND node_id = ?2 AND status = 'completed'
+                           AND input_text IS NOT NULL AND output_text IS NOT NULL",
+                        params![previous_run_id, node.id],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .optional()?
+            };
+            let (status, previous_input, previous_output) = reusable
+                .map(|(input, output)| ("completed", Some(input), Some(output)))
+                .unwrap_or(("pending", None, None));
+            transaction.execute(
+                "INSERT INTO workflow_node_runs(
+                    id, run_id, node_id, node_kind, node_label, status,
+                    input_text, output_text, completed_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
+                           CASE WHEN ?6 = 'completed' THEN datetime('now') END)",
+                params![
+                    format!("workflow_node_run_{}", Uuid::new_v4().simple()),
+                    run_id,
+                    node.id,
+                    node.kind,
+                    node.label,
+                    status,
+                    previous_input,
+                    previous_output
+                ],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(WorkflowExecutionRecord {
+            run_id,
+            workflow_id,
+            version_id,
+            definition,
+            input_text,
+        })
+    }
+
+    pub fn workflow_run(&self, run_id: &str) -> Result<WorkflowRunView, AppError> {
+        let connection = self.connect()?;
+        let mut run = connection
+            .query_row(
+                "SELECT run.id, run.workflow_id, run.workflow_version_id, version.version_no,
+                        run.status, run.input_text, run.output_json, run.error_json,
+                        run.started_at, run.completed_at, run.updated_at
+                 FROM workflow_runs run
+                 JOIN workflow_versions version ON version.id = run.workflow_version_id
+                 WHERE run.id = ?1",
+                params![run_id],
+                |row| {
+                    let output_json: Option<String> = row.get(6)?;
+                    let error_json: Option<String> = row.get(7)?;
+                    Ok(WorkflowRunView {
+                        id: row.get(0)?,
+                        workflow_id: row.get(1)?,
+                        workflow_version_id: row.get(2)?,
+                        version_no: row.get(3)?,
+                        status: row.get(4)?,
+                        input_text: row.get(5)?,
+                        outputs: output_json
+                            .and_then(|value| serde_json::from_str(&value).ok())
+                            .unwrap_or_else(|| Value::Object(Default::default())),
+                        error: error_json.and_then(|value| serde_json::from_str(&value).ok()),
+                        node_runs: Vec::new(),
+                        started_at: row.get(8)?,
+                        completed_at: row.get(9)?,
+                        updated_at: row.get(10)?,
+                    })
+                },
+            )
+            .optional()?
+            .ok_or_else(|| AppError::NotFound(format!("ejecución de flujo {run_id}")))?;
+        let mut statement = connection.prepare(
+            "SELECT id, node_id, node_kind, node_label, status, input_text, output_text,
+                    broker_task_id, error_json, updated_at
+             FROM workflow_node_runs WHERE run_id = ?1 ORDER BY rowid",
+        )?;
+        run.node_runs = statement
+            .query_map(params![run_id], |row| {
+                let error_json: Option<String> = row.get(8)?;
+                Ok(WorkflowNodeRunView {
+                    id: row.get(0)?,
+                    node_id: row.get(1)?,
+                    node_kind: row.get(2)?,
+                    node_label: row.get(3)?,
+                    status: row.get(4)?,
+                    input_text: row.get(5)?,
+                    output_text: row.get(6)?,
+                    broker_task_id: row.get(7)?,
+                    error: error_json.and_then(|value| serde_json::from_str(&value).ok()),
+                    updated_at: row.get(9)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(run)
+    }
+
+    pub fn list_workflow_runs(&self, workflow_id: &str) -> Result<Vec<WorkflowRunView>, AppError> {
+        let connection = self.connect()?;
+        let mut statement = connection.prepare(
+            "SELECT id FROM workflow_runs WHERE workflow_id = ?1 ORDER BY created_at DESC LIMIT 25",
+        )?;
+        let ids = statement
+            .query_map(params![workflow_id], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        ids.into_iter().map(|id| self.workflow_run(&id)).collect()
+    }
+
+    pub fn update_workflow_run_status(
+        &self,
+        run_id: &str,
+        status: &str,
+        outputs: Option<&Value>,
+        error: Option<&Value>,
+    ) -> Result<(), AppError> {
+        let connection = self.connect()?;
+        let terminal = matches!(
+            status,
+            "completed" | "partial_failed" | "failed" | "cancelled"
+        );
+        connection.execute(
+            "UPDATE workflow_runs
+             SET status = ?2, output_json = COALESCE(?3, output_json),
+                 error_json = ?4,
+                 started_at = COALESCE(started_at, datetime('now')),
+                 completed_at = CASE WHEN ?5 THEN datetime('now') ELSE completed_at END,
+                 updated_at = datetime('now')
+             WHERE id = ?1",
+            params![
+                run_id,
+                status,
+                outputs.map(Value::to_string),
+                error.map(Value::to_string),
+                terminal
+            ],
+        )?;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_workflow_node_run(
+        &self,
+        run_id: &str,
+        node_id: &str,
+        status: &str,
+        input_text: Option<&str>,
+        output_text: Option<&str>,
+        broker_task_id: Option<&str>,
+        error: Option<&Value>,
+    ) -> Result<(), AppError> {
+        let connection = self.connect()?;
+        let terminal = matches!(status, "completed" | "failed" | "skipped" | "cancelled");
+        connection.execute(
+            "UPDATE workflow_node_runs
+             SET status = ?3, input_text = COALESCE(?4, input_text),
+                 output_text = COALESCE(?5, output_text),
+                 broker_task_id = COALESCE(?6, broker_task_id), error_json = ?7,
+                 started_at = CASE WHEN ?3 = 'running' THEN COALESCE(started_at, datetime('now')) ELSE started_at END,
+                 completed_at = CASE WHEN ?8 THEN datetime('now') ELSE completed_at END,
+                 updated_at = datetime('now')
+             WHERE run_id = ?1 AND node_id = ?2",
+            params![
+                run_id,
+                node_id,
+                status,
+                input_text,
+                output_text,
+                broker_task_id,
+                error.map(Value::to_string),
+                terminal
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn workflow_run_cancelled(&self, run_id: &str) -> Result<bool, AppError> {
+        Ok(self.connect()?.query_row(
+            "SELECT status = 'cancelled' FROM workflow_runs WHERE id = ?1",
+            params![run_id],
+            |row| row.get(0),
+        )?)
+    }
+
+    pub fn decide_workflow_approval(
+        &self,
+        run_id: &str,
+        node_id: &str,
+        approved: bool,
+    ) -> Result<WorkflowExecutionRecord, AppError> {
+        let connection = self.connect()?;
+        let transaction = connection.unchecked_transaction()?;
+        let changed = if approved {
+            transaction.execute(
+                "UPDATE workflow_node_runs
+                 SET status = 'completed', output_text = input_text, error_json = NULL,
+                     completed_at = datetime('now'), updated_at = datetime('now')
+                 WHERE run_id = ?1 AND node_id = ?2 AND node_kind = 'approval'
+                   AND status = 'waiting_approval'",
+                params![run_id, node_id],
+            )?
+        } else {
+            transaction.execute(
+                "UPDATE workflow_node_runs
+                 SET status = 'failed', error_json = ?3,
+                     completed_at = datetime('now'), updated_at = datetime('now')
+                 WHERE run_id = ?1 AND node_id = ?2 AND node_kind = 'approval'
+                   AND status = 'waiting_approval'",
+                params![
+                    run_id,
+                    node_id,
+                    json!({"message": "La persona responsable rechazó esta rama"}).to_string()
+                ],
+            )?
+        };
+        if changed == 0 {
+            return Err(AppError::Conflict(
+                "esta aprobación ya fue resuelta o no está pendiente".to_owned(),
+            ));
+        }
+        transaction.execute(
+            "UPDATE workflow_runs SET status = 'queued', error_json = NULL,
+                    updated_at = datetime('now')
+             WHERE id = ?1 AND status = 'waiting_approval'",
+            params![run_id],
+        )?;
+        transaction.commit()?;
+        self.workflow_execution_record(run_id)
+    }
+
+    pub fn cancel_workflow_run_locally(&self, run_id: &str) -> Result<Vec<String>, AppError> {
+        let connection = self.connect()?;
+        let transaction = connection.unchecked_transaction()?;
+        transaction.execute(
+            "UPDATE workflow_runs SET status = 'cancelled', completed_at = datetime('now'),
+                    updated_at = datetime('now')
+             WHERE id = ?1 AND status IN ('queued', 'running', 'waiting_approval')",
+            params![run_id],
+        )?;
+        transaction.execute(
+            "UPDATE workflow_node_runs SET status = 'cancelled', completed_at = datetime('now'),
+                    updated_at = datetime('now')
+             WHERE run_id = ?1 AND status IN ('pending', 'running', 'waiting_approval')",
+            params![run_id],
+        )?;
+        let mut statement = transaction.prepare(
+            "SELECT broker_task_id FROM workflow_node_runs
+             WHERE run_id = ?1 AND broker_task_id IS NOT NULL",
+        )?;
+        let task_ids = statement
+            .query_map(params![run_id], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(statement);
+        transaction.commit()?;
+        Ok(task_ids)
+    }
+
+    pub fn recoverable_workflow_run_ids(&self) -> Result<Vec<String>, AppError> {
+        let connection = self.connect()?;
+        let mut statement = connection.prepare(
+            "SELECT id FROM workflow_runs WHERE status IN ('queued', 'running') ORDER BY created_at",
+        )?;
+        let ids = statement
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(ids)
+    }
+
+    pub fn ready_workflow_attachments(
+        &self,
+        workflow_id: &str,
+        attachment_ids: &[String],
+    ) -> Result<Vec<AttachmentRecord>, AppError> {
+        if attachment_ids.len() > 20 {
+            return Err(AppError::Validation(
+                "cada nodo admite como máximo 20 archivos".to_owned(),
+            ));
+        }
+        let connection = self.connect()?;
+        let project_id: Option<String> = connection
+            .query_row(
+                "SELECT project_id FROM workflows WHERE id = ?1 AND archived_at IS NULL",
+                params![workflow_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| AppError::NotFound(format!("flujo {workflow_id}")))?;
+        if !attachment_ids.is_empty() && project_id.is_none() {
+            return Err(AppError::Conflict(
+                "asocia el flujo a un proyecto para asignarle archivos".to_owned(),
+            ));
+        }
+        let mut records = Vec::with_capacity(attachment_ids.len());
+        for attachment_id in attachment_ids {
+            let allowed: bool = connection.query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM project_files
+                    WHERE project_id = ?1 AND attachment_id = ?2
+                 )",
+                params![project_id, attachment_id],
+                |row| row.get(0),
+            )?;
+            if !allowed {
+                return Err(AppError::Conflict(format!(
+                    "el archivo {attachment_id} no pertenece al proyecto del flujo"
+                )));
+            }
+            let record = self.attachment_record(attachment_id)?;
+            if record.ingestion_status != "ready" || record.broker_file_id.is_none() {
+                return Err(AppError::Conflict(format!(
+                    "el archivo {} todavía no está preparado",
+                    record.display_name
+                )));
+            }
+            records.push(record);
+        }
+        Ok(records)
+    }
+
+    /// Resuelve únicamente los archivos que siguen perteneciendo al GPT.
+    ///
+    /// La versión publicada conserva los identificadores que estaban activos,
+    /// pero retirar después un archivo es una revocación efectiva: no se envía
+    /// gracias a una copia histórica ni queda pegado al flujo.
+    pub fn ready_custom_gpt_attachments_for_workflow(
+        &self,
+        custom_gpt_id: &str,
+        attachment_ids: &[String],
+    ) -> Result<Vec<AttachmentRecord>, AppError> {
+        if attachment_ids.len() > 20 {
+            return Err(AppError::Validation(
+                "cada GPT de un flujo admite como máximo 20 archivos propios".to_owned(),
+            ));
+        }
+        let connection = self.connect()?;
+        let mut records = Vec::with_capacity(attachment_ids.len());
+        for attachment_id in attachment_ids {
+            let still_linked: bool = connection.query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM custom_gpt_files
+                    WHERE custom_gpt_id = ?1 AND attachment_id = ?2
+                 )",
+                params![custom_gpt_id, attachment_id],
+                |row| row.get(0),
+            )?;
+            if !still_linked {
+                continue;
+            }
+            let record = self.attachment_record(attachment_id)?;
+            if record.ingestion_status != "ready" || record.broker_file_id.is_none() {
+                return Err(AppError::Conflict(format!(
+                    "el archivo {} del GPT todavía no está preparado",
+                    record.display_name
+                )));
+            }
+            records.push(record);
+        }
+        Ok(records)
+    }
+
+    /// Recupera el conocimiento que estaba seleccionado al publicar y que aún
+    /// continúa habilitado. El orden congelado se conserva y los elementos
+    /// revocados simplemente dejan de formar parte del contexto.
+    pub fn custom_gpt_memories_for_workflow(
+        &self,
+        custom_gpt_id: &str,
+        memory_ids: &[String],
+    ) -> Result<Vec<MemoryItemView>, AppError> {
+        if memory_ids.len() > 20 {
+            return Err(AppError::Validation(
+                "cada GPT de un flujo admite como máximo 20 elementos de conocimiento".to_owned(),
+            ));
+        }
+        let available = self
+            .custom_gpt_knowledge(custom_gpt_id)?
+            .into_iter()
+            .filter(|item| item.enabled)
+            .map(|item| (item.id.clone(), item))
+            .collect::<HashMap<_, _>>();
+        let mut used_characters = 0_usize;
+        Ok(memory_ids
+            .iter()
+            .filter_map(|id| available.get(id))
+            .filter(|item| {
+                used_characters += item.content.chars().count();
+                used_characters <= 8_000
+            })
+            .cloned()
+            .collect())
+    }
+
+    /// Devuelve las instrucciones solo mientras el proyecto siga activo y el
+    /// texto publicado continúe siendo el autorizado actualmente. Editarlas o
+    /// retirarlas revoca versiones antiguas hasta que el flujo se publique otra vez.
+    pub fn project_instruction_for_workflow(
+        &self,
+        context: &WorkflowProjectContext,
+    ) -> Result<Option<ProjectInstructionContext>, AppError> {
+        let current = self
+            .connect()?
+            .query_row(
+                "SELECT name, instructions FROM projects
+                 WHERE id = ?1 AND archived_at IS NULL",
+                params![context.project_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+            )
+            .optional()?;
+        let Some((project_name, instructions)) = current else {
+            return Ok(None);
+        };
+        let current = instructions.filter(|value| !value.trim().is_empty());
+        if current != context.instructions {
+            return Ok(None);
+        }
+        Ok(current.map(|instructions| ProjectInstructionContext {
+            project_id: context.project_id.clone(),
+            project_name,
+            instructions,
+        }))
+    }
+
+    /// Resuelve los recuerdos del proyecto que estaban autorizados al publicar
+    /// y que continúan activos. La memoria global apagada también los revoca.
+    pub fn project_memories_for_workflow(
+        &self,
+        context: &WorkflowProjectContext,
+    ) -> Result<Vec<MemoryItemView>, AppError> {
+        if context.memory_ids.len() > 20 {
+            return Err(AppError::Validation(
+                "cada flujo admite como máximo 20 recuerdos del proyecto".to_owned(),
+            ));
+        }
+        let active: bool = self.connect()?.query_row(
+            "SELECT EXISTS(SELECT 1 FROM projects WHERE id = ?1 AND archived_at IS NULL)",
+            params![context.project_id],
+            |row| row.get(0),
+        )?;
+        let overview = self.memory_overview()?;
+        if !active || !overview.enabled {
+            return Ok(Vec::new());
+        }
+        let available = overview
+            .items
+            .into_iter()
+            .filter(|item| {
+                item.enabled && item.project_id.as_deref() == Some(context.project_id.as_str())
+            })
+            .map(|item| (item.id.clone(), item))
+            .collect::<HashMap<_, _>>();
+        let mut used_characters = 0_usize;
+        Ok(context
+            .memory_ids
+            .iter()
+            .filter_map(|id| available.get(id))
+            .filter(|item| {
+                used_characters += item.content.chars().count();
+                used_characters <= 8_000
+            })
+            .cloned()
+            .collect())
+    }
+
     #[cfg(test)]
     pub fn create_custom_gpt(
         &self,
@@ -1619,6 +2720,7 @@ impl Database {
             &CustomGptToolPermissions::default(),
             None,
             None,
+            None,
         )
     }
 
@@ -1632,21 +2734,54 @@ impl Database {
         tool_permissions: &CustomGptToolPermissions,
         preferred_model: Option<&str>,
         default_project_id: Option<&str>,
+        execution_profile: Option<&ConversationExecutionPreferences>,
+    ) -> Result<CustomGptView, AppError> {
+        self.create_custom_gpt_with_icon(
+            name,
+            description,
+            None,
+            instructions,
+            conversation_starters,
+            tool_permissions,
+            preferred_model,
+            default_project_id,
+            execution_profile,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_custom_gpt_with_icon(
+        &self,
+        name: &str,
+        description: Option<&str>,
+        icon_ref: Option<&str>,
+        instructions: &str,
+        conversation_starters: &[String],
+        tool_permissions: &CustomGptToolPermissions,
+        preferred_model: Option<&str>,
+        default_project_id: Option<&str>,
+        execution_profile: Option<&ConversationExecutionPreferences>,
     ) -> Result<CustomGptView, AppError> {
         let (name, description, instructions) =
             validated_custom_gpt_fields(name, description, instructions)?;
+        let icon_ref = validated_custom_gpt_icon(icon_ref)?;
         let conversation_starters = validated_conversation_starters(conversation_starters)?;
         let tool_permissions = validated_custom_gpt_tool_permissions(tool_permissions)?;
         let preferred_model = validated_preferred_model(preferred_model)?;
+        if let Some(profile) = execution_profile {
+            validate_execution_preferences(profile)?;
+        }
         let custom_gpt_id = format!("gpt_{}", Uuid::new_v4().simple());
         let version_id = format!("gpt_version_{}", Uuid::new_v4().simple());
         let configuration = CustomGptConfiguration {
-            schema_version: 1,
+            schema_version: 2,
+            icon_ref,
             instructions,
             conversation_starters,
             preferred_model,
             tools_enabled: tool_permissions.requires_confirmation("run_code")
                 || tool_permissions.requires_confirmation("rename_conversation"),
+            execution_profile: execution_profile.cloned(),
         };
         let configuration_json = serde_json::to_string(&configuration)
             .map_err(|error| AppError::Validation(error.to_string()))?;
@@ -1719,6 +2854,7 @@ impl Database {
             &current.tool_permissions,
             current.preferred_model.as_deref(),
             current.default_project_id.as_deref(),
+            current.execution_profile.as_ref(),
         )
     }
 
@@ -1733,20 +2869,56 @@ impl Database {
         tool_permissions: &CustomGptToolPermissions,
         preferred_model: Option<&str>,
         default_project_id: Option<&str>,
+        execution_profile: Option<&ConversationExecutionPreferences>,
+    ) -> Result<CustomGptView, AppError> {
+        let icon_ref = self.custom_gpt_view(custom_gpt_id)?.icon_ref;
+        self.update_custom_gpt_with_icon(
+            custom_gpt_id,
+            name,
+            description,
+            Some(&icon_ref),
+            instructions,
+            conversation_starters,
+            tool_permissions,
+            preferred_model,
+            default_project_id,
+            execution_profile,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_custom_gpt_with_icon(
+        &self,
+        custom_gpt_id: &str,
+        name: &str,
+        description: Option<&str>,
+        icon_ref: Option<&str>,
+        instructions: &str,
+        conversation_starters: &[String],
+        tool_permissions: &CustomGptToolPermissions,
+        preferred_model: Option<&str>,
+        default_project_id: Option<&str>,
+        execution_profile: Option<&ConversationExecutionPreferences>,
     ) -> Result<CustomGptView, AppError> {
         let (name, description, instructions) =
             validated_custom_gpt_fields(name, description, instructions)?;
+        let icon_ref = validated_custom_gpt_icon(icon_ref)?;
         let conversation_starters = validated_conversation_starters(conversation_starters)?;
         let tool_permissions = validated_custom_gpt_tool_permissions(tool_permissions)?;
         let preferred_model = validated_preferred_model(preferred_model)?;
+        if let Some(profile) = execution_profile {
+            validate_execution_preferences(profile)?;
+        }
         let version_id = format!("gpt_version_{}", Uuid::new_v4().simple());
         let configuration = CustomGptConfiguration {
-            schema_version: 1,
+            schema_version: 2,
+            icon_ref,
             instructions,
             conversation_starters,
             preferred_model,
             tools_enabled: tool_permissions.requires_confirmation("run_code")
                 || tool_permissions.requires_confirmation("rename_conversation"),
+            execution_profile: execution_profile.cloned(),
         };
         let configuration_json = serde_json::to_string(&configuration)
             .map_err(|error| AppError::Validation(error.to_string()))?;
@@ -1876,6 +3048,7 @@ impl Database {
                         id,
                         name,
                         description,
+                        icon_ref: configuration.icon_ref,
                         instructions: configuration.instructions,
                         conversation_starters: configuration.conversation_starters,
                         tool_permissions: CustomGptToolPermissions {
@@ -1883,6 +3056,7 @@ impl Database {
                             rename_conversation,
                         },
                         preferred_model: configuration.preferred_model,
+                        execution_profile: configuration.execution_profile,
                         default_project_id,
                         version_no,
                         created_at,
@@ -1914,9 +3088,10 @@ impl Database {
                 format!("{base}{suffix}")
             }
         };
-        let duplicate = self.create_custom_gpt_with_starters(
+        let duplicate = self.create_custom_gpt_with_icon(
             &proposed,
             source.description.as_deref(),
+            Some(&source.icon_ref),
             &source.instructions,
             &source.conversation_starters,
             // Permisos denegados por defecto, como en la importación.
@@ -1924,6 +3099,7 @@ impl Database {
             // El modelo y el proyecto sí se heredan: son preferencias, no accesos.
             source.preferred_model.as_deref(),
             source.default_project_id.as_deref(),
+            source.execution_profile.as_ref(),
         )?;
         self.connect()?.execute(
             "INSERT INTO audit_events(event_type, actor, payload_json)
@@ -1981,9 +3157,11 @@ impl Database {
                 Ok(CustomGptVersionView {
                     id: row.get(0)?,
                     version_no: row.get(1)?,
+                    icon_ref: configuration.icon_ref,
                     instructions: configuration.instructions,
                     conversation_starters: configuration.conversation_starters,
                     preferred_model: configuration.preferred_model,
+                    execution_profile: configuration.execution_profile,
                     created_at: row.get(3)?,
                     active: row.get(4)?,
                     tool_permissions: CustomGptToolPermissions {
@@ -2134,6 +3312,7 @@ impl Database {
             schema_version: if include_knowledge { 2 } else { 1 },
             name: view.name,
             description: view.description,
+            icon_ref: view.icon_ref,
             instructions: view.instructions,
             conversation_starters: view.conversation_starters,
             knowledge: included,
@@ -2222,14 +3401,16 @@ impl Database {
                 normalized_knowledge.push((item.category.clone(), content.to_owned()));
             }
         }
-        let imported = self.create_custom_gpt_with_starters(
+        let imported = self.create_custom_gpt_with_icon(
             &portable.name,
             portable.description.as_deref(),
+            Some(&portable.icon_ref),
             &portable.instructions,
             &portable.conversation_starters,
             &CustomGptToolPermissions::default(),
             // Un paquete importado no impone modelo ni proyecto: ambos son
             // decisiones locales de quien lo recibe.
+            None,
             None,
             None,
         )?;
@@ -2284,10 +3465,12 @@ impl Database {
             custom_gpt_id: view.id,
             version_id,
             name: view.name,
+            icon_ref: view.icon_ref,
             version_no: view.version_no,
             instructions: view.instructions,
             tool_permissions: view.tool_permissions,
             preferred_model: view.preferred_model,
+            execution_profile: view.execution_profile,
         })
     }
 
@@ -2352,6 +3535,7 @@ impl Database {
                     custom_gpt_id,
                     version_id,
                     name,
+                    icon_ref: configuration.icon_ref,
                     version_no,
                     instructions: configuration.instructions,
                     tool_permissions: CustomGptToolPermissions {
@@ -2359,6 +3543,7 @@ impl Database {
                         rename_conversation,
                     },
                     preferred_model: configuration.preferred_model,
+                    execution_profile: configuration.execution_profile,
                 })
             },
         )
@@ -3319,6 +4504,12 @@ impl Database {
         if sources.iter().any(|source| source.kind == "custom_gpt") {
             strategy.push_str(" + GPT personal");
         }
+        if sources.iter().any(|source| {
+            source.kind == "attachment_chunk"
+                && source.reason.contains("Vista global del documento")
+        }) {
+            strategy.push_str(" · Vista global del documento");
+        }
         Ok(ContextSnapshotView {
             strategy,
             estimated_tokens,
@@ -4156,6 +5347,27 @@ impl Database {
         size_bytes: i64,
         sha256: &str,
     ) -> Result<AttachmentView, AppError> {
+        self.register_attachment_with_image_policy(
+            conversation_id,
+            local_path,
+            display_name,
+            media_type,
+            size_bytes,
+            sha256,
+            None,
+        )
+    }
+
+    pub fn register_attachment_with_image_policy(
+        &self,
+        conversation_id: &str,
+        local_path: &str,
+        display_name: &str,
+        media_type: Option<&str>,
+        size_bytes: i64,
+        sha256: &str,
+        describe_images: Option<bool>,
+    ) -> Result<AttachmentView, AppError> {
         let connection = self.connect()?;
         let transaction = connection.unchecked_transaction()?;
         let active: bool = transaction.query_row(
@@ -4171,27 +5383,49 @@ impl Database {
                 "conversación activa {conversation_id}"
             )));
         }
-        let existing: Option<String> = transaction
-            .query_row(
-                "SELECT id FROM attachments WHERE sha256 = ?1",
-                params![sha256],
-                |row| row.get(0),
-            )
-            .optional()?;
+        let existing: Option<String> = match describe_images {
+            Some(true) => transaction
+                .query_row(
+                    "SELECT id FROM attachments
+                     WHERE sha256 = ?1 AND describe_images = 1
+                     ORDER BY created_at, id LIMIT 1",
+                    params![sha256],
+                    |row| row.get(0),
+                )
+                .optional()?,
+            Some(false) => transaction
+                .query_row(
+                    "SELECT id FROM attachments WHERE sha256 = ?1
+                     ORDER BY CASE WHEN describe_images = 0 THEN 0 ELSE 1 END, created_at, id
+                     LIMIT 1",
+                    params![sha256],
+                    |row| row.get(0),
+                )
+                .optional()?,
+            None => transaction
+                .query_row(
+                    "SELECT id FROM attachments WHERE sha256 = ?1
+                     ORDER BY created_at, id LIMIT 1",
+                    params![sha256],
+                    |row| row.get(0),
+                )
+                .optional()?,
+        };
         let reused_attachment = existing.is_some();
         let attachment_id =
             existing.unwrap_or_else(|| format!("attachment_{}", Uuid::new_v4().simple()));
         transaction.execute(
             "INSERT OR IGNORE INTO attachments(
-                id, local_path, display_name, media_type, size_bytes, sha256
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                id, local_path, display_name, media_type, size_bytes, sha256, describe_images
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 attachment_id,
                 local_path,
                 display_name,
                 media_type,
                 size_bytes,
-                sha256
+                sha256,
+                describe_images
             ],
         )?;
         if reused_attachment {
@@ -4255,6 +5489,27 @@ impl Database {
         size_bytes: i64,
         sha256: &str,
     ) -> Result<AttachmentView, AppError> {
+        self.register_custom_gpt_attachment_with_image_policy(
+            custom_gpt_id,
+            local_path,
+            display_name,
+            media_type,
+            size_bytes,
+            sha256,
+            None,
+        )
+    }
+
+    pub fn register_custom_gpt_attachment_with_image_policy(
+        &self,
+        custom_gpt_id: &str,
+        local_path: &str,
+        display_name: &str,
+        media_type: Option<&str>,
+        size_bytes: i64,
+        sha256: &str,
+        describe_images: Option<bool>,
+    ) -> Result<AttachmentView, AppError> {
         let connection = self.connect()?;
         let transaction = connection.unchecked_transaction()?;
         let active: bool = transaction.query_row(
@@ -4277,27 +5532,49 @@ impl Database {
                 "cada GPT personal admite hasta 20 archivos de conocimiento".to_owned(),
             ));
         }
-        let existing: Option<String> = transaction
-            .query_row(
-                "SELECT id FROM attachments WHERE sha256 = ?1",
-                params![sha256],
-                |row| row.get(0),
-            )
-            .optional()?;
+        let existing: Option<String> = match describe_images {
+            Some(true) => transaction
+                .query_row(
+                    "SELECT id FROM attachments
+                     WHERE sha256 = ?1 AND describe_images = 1
+                     ORDER BY created_at, id LIMIT 1",
+                    params![sha256],
+                    |row| row.get(0),
+                )
+                .optional()?,
+            Some(false) => transaction
+                .query_row(
+                    "SELECT id FROM attachments WHERE sha256 = ?1
+                     ORDER BY CASE WHEN describe_images = 0 THEN 0 ELSE 1 END, created_at, id
+                     LIMIT 1",
+                    params![sha256],
+                    |row| row.get(0),
+                )
+                .optional()?,
+            None => transaction
+                .query_row(
+                    "SELECT id FROM attachments WHERE sha256 = ?1
+                     ORDER BY created_at, id LIMIT 1",
+                    params![sha256],
+                    |row| row.get(0),
+                )
+                .optional()?,
+        };
         let reused_attachment = existing.is_some();
         let attachment_id =
             existing.unwrap_or_else(|| format!("attachment_{}", Uuid::new_v4().simple()));
         transaction.execute(
             "INSERT OR IGNORE INTO attachments(
-                id, local_path, display_name, media_type, size_bytes, sha256
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                id, local_path, display_name, media_type, size_bytes, sha256, describe_images
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 attachment_id,
                 local_path,
                 display_name,
                 media_type,
                 size_bytes,
-                sha256
+                sha256,
+                describe_images
             ],
         )?;
         if reused_attachment {
@@ -4489,7 +5766,7 @@ impl Database {
                      WHERE chunk.attachment_id = a.id
                      ORDER BY embedding.created_at DESC, embedding.rowid DESC
                      LIMIT 1),
-                    a.updated_at
+                    a.describe_images, a.updated_at
              FROM conversation_attachments ca
              JOIN attachments a ON a.id = ca.attachment_id
              WHERE ca.conversation_id = ?1
@@ -4657,7 +5934,7 @@ impl Database {
         let connection = self.connect()?;
         let mut statement = connection.prepare(
             "SELECT a.id, a.local_path, a.display_name, a.media_type, a.size_bytes,
-                    a.sha256, a.broker_file_id, a.ingestion_status
+                    a.sha256, a.broker_file_id, a.ingestion_status, a.describe_images
              FROM conversation_attachments ca
              JOIN attachments a ON a.id = ca.attachment_id
              WHERE ca.conversation_id = ?1
@@ -4674,6 +5951,7 @@ impl Database {
                     sha256: row.get(5)?,
                     broker_file_id: row.get(6)?,
                     ingestion_status: row.get(7)?,
+                    describe_images: row.get(8)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -4741,7 +6019,8 @@ impl Database {
             semantic_indexed_chunks,
             semantic_index_status: semantic_index_status.to_owned(),
             semantic_index_model: row.get(15)?,
-            updated_at: row.get(16)?,
+            describe_images: row.get(16)?,
+            updated_at: row.get(17)?,
         })
     }
 
@@ -4790,7 +6069,7 @@ impl Database {
                          WHERE chunk.attachment_id = attachments.id
                          ORDER BY embedding.created_at DESC, embedding.rowid DESC
                          LIMIT 1),
-                        updated_at
+                        describe_images, updated_at
                  FROM attachments WHERE id = ?1",
                 params![id],
                 Self::map_attachment_view,
@@ -4804,7 +6083,7 @@ impl Database {
         connection
             .query_row(
                 "SELECT id, local_path, display_name, media_type, size_bytes, sha256,
-                        broker_file_id, ingestion_status
+                        broker_file_id, ingestion_status, describe_images
                  FROM attachments WHERE id = ?1",
                 params![id],
                 |row| {
@@ -4817,11 +6096,30 @@ impl Database {
                         sha256: row.get(5)?,
                         broker_file_id: row.get(6)?,
                         ingestion_status: row.get(7)?,
+                        describe_images: row.get(8)?,
                     })
                 },
             )
             .optional()?
             .ok_or_else(|| AppError::NotFound(format!("adjunto {id}")))
+    }
+
+    pub fn set_attachment_describe_images(
+        &self,
+        id: &str,
+        describe_images: bool,
+    ) -> Result<(), AppError> {
+        let connection = self.connect()?;
+        let changed = connection.execute(
+            "UPDATE attachments
+             SET describe_images = ?2, updated_at = datetime('now')
+             WHERE id = ?1",
+            params![id, describe_images],
+        )?;
+        if changed == 0 {
+            return Err(AppError::NotFound(format!("adjunto {id}")));
+        }
+        Ok(())
     }
 
     pub fn recoverable_attachments(&self) -> Result<Vec<AttachmentRecord>, AppError> {
@@ -5400,6 +6698,9 @@ impl Database {
                     },
                 });
             }
+        }
+        if is_global_document_request(query) {
+            return select_global_document_chunks(candidates, maximum_chunks, character_budget);
         }
         let has_relevant = candidates.iter().any(|candidate| {
             candidate.score > 0.0
@@ -6662,7 +7963,10 @@ impl Database {
                     END,
                     json_extract(bt.result_json, '$.usage'),
                     json_extract(bt.result_json, '$.fallback_used'),
-                    json_extract(bt.result_json, '$.long_context')
+                    json_extract(bt.result_json, '$.long_context'),
+                    json_extract(bt.result_json, '$.consensus.synthesized'),
+                    json_extract(bt.result_json, '$.consensus.warnings'),
+                    json_extract(bt.result_json, '$.arbiter_failures')
              FROM messages m
              LEFT JOIN message_parts mp ON mp.message_id = m.id AND mp.ordinal = 0
              LEFT JOIN broker_tasks bt ON bt.id = m.broker_task_id
@@ -6678,6 +7982,20 @@ impl Database {
                 let usage_json: Option<String> = row.get(14)?;
                 let fallback_used: Option<i64> = row.get(15)?;
                 let long_context_json: Option<String> = row.get(16)?;
+                let consensus_synthesized: Option<i64> = row.get(17)?;
+                let consensus_warnings_json: Option<String> = row.get(18)?;
+                let arbiter_failures_json: Option<String> = row.get(19)?;
+                let consensus_warnings = consensus_warnings_json
+                    .and_then(|value| serde_json::from_str::<Value>(&value).ok())
+                    .and_then(|value| value.as_array().cloned())
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter_map(|warning| warning.as_str().map(str::to_owned))
+                    .collect::<Vec<_>>();
+                let arbiter_failure_count = arbiter_failures_json
+                    .and_then(|value| serde_json::from_str::<Value>(&value).ok())
+                    .and_then(|value| value.as_array().map(|failures| failures.len() as i64))
+                    .unwrap_or(0);
                 Ok(ConversationMessage {
                     id: row.get(0)?,
                     role: row.get(1)?,
@@ -6701,6 +8019,9 @@ impl Database {
                     fallback_used: fallback_used.map(|value| value != 0),
                     long_context: long_context_json
                         .and_then(|value| serde_json::from_str(&value).ok()),
+                    consensus_synthesized: consensus_synthesized.map(|value| value != 0),
+                    consensus_warnings,
+                    arbiter_failure_count,
                     sources: Vec::new(),
                     created_at: row.get(9)?,
                 })
@@ -8002,7 +9323,7 @@ impl Database {
                  FROM broker_tasks WHERE id = ?1",
                 params![id],
                 |row| {
-                    let result_json: Option<String> = row.get(5)?;
+                    let result_json: Option<String> = row.get(6)?;
                     let error_json: Option<String> = row.get(6)?;
                     let progress_json: String = row.get(8)?;
                     let progress_value: Value =
@@ -8428,15 +9749,29 @@ impl Database {
         let connection = self.connect()?;
         let mut statement = connection.prepare(
             "SELECT st.id, st.name,
+                    COALESCE(json_extract(st.payload_json, '$.target_kind'), 'conversation'),
                     json_extract(st.payload_json, '$.conversation_id'),
                     c.title,
+                    json_extract(st.payload_json, '$.workflow_id'),
+                    w.name,
+                    version.version_no,
                     json_extract(st.payload_json, '$.prompt'),
                     st.schedule_expression, st.timezone, st.enabled,
                     st.confirmed_at, st.next_run_at, st.created_at, st.updated_at
              FROM scheduled_tasks st
-             JOIN conversations c
+             LEFT JOIN conversations c
                ON c.id = json_extract(st.payload_json, '$.conversation_id')
-             WHERE c.deleted_at IS NULL
+             LEFT JOIN workflows w
+               ON w.id = json_extract(st.payload_json, '$.workflow_id')
+             LEFT JOIN workflow_versions version
+               ON version.id = json_extract(st.payload_json, '$.workflow_version_id')
+             WHERE (
+                    COALESCE(json_extract(st.payload_json, '$.target_kind'), 'conversation') = 'conversation'
+                    AND c.id IS NOT NULL AND c.deleted_at IS NULL
+               ) OR (
+                    json_extract(st.payload_json, '$.target_kind') = 'workflow'
+                    AND w.id IS NOT NULL AND w.archived_at IS NULL
+               )
              ORDER BY st.created_at DESC",
         )?;
         let mut tasks = statement
@@ -8444,23 +9779,28 @@ impl Database {
                 Ok(ScheduledTaskView {
                     id: row.get(0)?,
                     name: row.get(1)?,
-                    conversation_id: row.get(2)?,
-                    conversation_title: row.get(3)?,
-                    prompt: row.get(4)?,
-                    schedule_expression: row.get(5)?,
-                    timezone: row.get(6)?,
-                    enabled: row.get::<_, i64>(7)? != 0,
-                    confirmed_at: row.get(8)?,
-                    next_run_at: row.get(9)?,
-                    created_at: row.get(10)?,
-                    updated_at: row.get(11)?,
+                    target_kind: row.get(2)?,
+                    conversation_id: row.get(3)?,
+                    conversation_title: row.get(4)?,
+                    workflow_id: row.get(5)?,
+                    workflow_name: row.get(6)?,
+                    workflow_version_no: row.get(7)?,
+                    prompt: row.get(8)?,
+                    schedule_expression: row.get(9)?,
+                    timezone: row.get(10)?,
+                    enabled: row.get::<_, i64>(11)? != 0,
+                    confirmed_at: row.get(12)?,
+                    next_run_at: row.get(13)?,
+                    created_at: row.get(14)?,
+                    updated_at: row.get(15)?,
                     runs: Vec::new(),
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
         for task in &mut tasks {
             let mut runs = connection.prepare(
-                "SELECT id, due_at, status, broker_task_id, attempt, result_json,
+                "SELECT id, due_at, status, broker_task_id, workflow_run_id,
+                        attempt, result_json,
                         created_at, updated_at
                  FROM scheduled_runs
                  WHERE scheduled_task_id = ?1
@@ -8469,16 +9809,17 @@ impl Database {
             )?;
             task.runs = runs
                 .query_map(params![task.id], |row| {
-                    let result_json: Option<String> = row.get(5)?;
+                    let result_json: Option<String> = row.get(6)?;
                     Ok(ScheduledRunView {
                         id: row.get(0)?,
                         due_at: row.get(1)?,
                         status: row.get(2)?,
                         broker_task_id: row.get(3)?,
-                        attempt: row.get(4)?,
+                        workflow_run_id: row.get(4)?,
+                        attempt: row.get(5)?,
                         result: result_json.and_then(|value| serde_json::from_str(&value).ok()),
-                        created_at: row.get(6)?,
-                        updated_at: row.get(7)?,
+                        created_at: row.get(7)?,
+                        updated_at: row.get(8)?,
                     })
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
@@ -8506,17 +9847,26 @@ impl Database {
         }
         let connection = self.connect()?;
         let mut statement = connection.prepare(
-            "SELECT task.name, conversation.title,
+            "SELECT task.name, COALESCE(conversation.title, workflow.name),
                     json_extract(task.payload_json, '$.prompt'),
                     task.schedule_expression, task.timezone,
                     run.id, run.due_at, run.status, run.attempt, run.result_json,
                     run.created_at, run.updated_at
              FROM scheduled_runs run
              JOIN scheduled_tasks task ON task.id = run.scheduled_task_id
-             JOIN conversations conversation
+             LEFT JOIN conversations conversation
                ON conversation.id = json_extract(task.payload_json, '$.conversation_id')
-             WHERE conversation.deleted_at IS NULL
-               AND (
+             LEFT JOIN workflows workflow
+               ON workflow.id = json_extract(task.payload_json, '$.workflow_id')
+             WHERE (
+                    (
+                        COALESCE(json_extract(task.payload_json, '$.target_kind'), 'conversation') = 'conversation'
+                        AND conversation.id IS NOT NULL AND conversation.deleted_at IS NULL
+                    ) OR (
+                        json_extract(task.payload_json, '$.target_kind') = 'workflow'
+                        AND workflow.id IS NOT NULL AND workflow.archived_at IS NULL
+                    )
+               ) AND (
                     ?1 = 'all'
                     OR (?1 = 'active' AND run.status IN ('claimed', 'running'))
                     OR run.status = ?1
@@ -8621,7 +9971,8 @@ impl Database {
         let offset = (page - 1) * page_size;
         let direction = if sort == "oldest" { "ASC" } else { "DESC" };
         let query = format!(
-            "SELECT id, due_at, status, broker_task_id, attempt, result_json,
+            "SELECT id, due_at, status, broker_task_id, workflow_run_id,
+                    attempt, result_json,
                     created_at, updated_at
              FROM scheduled_runs
              WHERE {filters}
@@ -8639,16 +9990,17 @@ impl Database {
                     offset
                 ],
                 |row| {
-                    let result_json: Option<String> = row.get(5)?;
+                    let result_json: Option<String> = row.get(6)?;
                     Ok(ScheduledRunView {
                         id: row.get(0)?,
                         due_at: row.get(1)?,
                         status: row.get(2)?,
                         broker_task_id: row.get(3)?,
-                        attempt: row.get(4)?,
+                        workflow_run_id: row.get(4)?,
+                        attempt: row.get(5)?,
                         result: result_json.and_then(|value| serde_json::from_str(&value).ok()),
-                        created_at: row.get(6)?,
-                        updated_at: row.get(7)?,
+                        created_at: row.get(7)?,
+                        updated_at: row.get(8)?,
                     })
                 },
             )?
@@ -8927,6 +10279,95 @@ impl Database {
             .ok_or_else(|| AppError::NotFound("tarea programada recién creada".to_owned()))
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_scheduled_workflow(
+        &self,
+        name: &str,
+        workflow_id: &str,
+        input_text: &str,
+        due_at: &str,
+        timezone: &str,
+        schedule_expression: &str,
+        confirmed: bool,
+    ) -> Result<ScheduledTaskView, AppError> {
+        if !confirmed {
+            return Err(AppError::Validation(
+                "activar un flujo programado requiere confirmación explícita".to_owned(),
+            ));
+        }
+        if !matches!(schedule_expression, "once" | "daily" | "weekly") {
+            return Err(AppError::Validation(
+                "la recurrencia programada no es válida".to_owned(),
+            ));
+        }
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let workflow_version_id = transaction
+            .query_row(
+                "SELECT published_version_id FROM workflows
+             WHERE id = ?1 AND archived_at IS NULL AND published_version_id IS NOT NULL",
+                params![workflow_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .ok_or_else(|| {
+                AppError::Conflict("publica el flujo antes de programarlo".to_owned())
+            })?;
+        let valid_due_at: bool = transaction.query_row(
+            "SELECT datetime(?1) IS NOT NULL AND datetime(?1) > datetime('now')",
+            params![due_at],
+            |row| row.get(0),
+        )?;
+        if !valid_due_at {
+            return Err(AppError::Validation(
+                "la fecha programada debe estar en el futuro".to_owned(),
+            ));
+        }
+        let id = format!("scheduled_{}", Uuid::new_v4().simple());
+        let payload = serde_json::json!({
+            "target_kind": "workflow",
+            "workflow_id": workflow_id,
+            "workflow_version_id": workflow_version_id,
+            "prompt": input_text
+        });
+        transaction.execute(
+            "INSERT INTO scheduled_tasks(
+                id, name, schedule_expression, timezone, payload_json,
+                enabled, confirmed_at, next_run_at, created_at, updated_at
+             ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, 1,
+                strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?6,
+                strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             )",
+            params![
+                id,
+                name,
+                schedule_expression,
+                timezone,
+                payload.to_string(),
+                due_at
+            ],
+        )?;
+        transaction.execute(
+            "INSERT INTO audit_events(event_type, actor, payload_json)
+             VALUES ('scheduled_workflow.created', 'user', ?1)",
+            params![serde_json::json!({
+                "scheduled_task_id": id,
+                "workflow_id": workflow_id,
+                "due_at": due_at,
+                "timezone": timezone,
+                "schedule_expression": schedule_expression
+            })
+            .to_string()],
+        )?;
+        transaction.commit()?;
+        self.list_scheduled_tasks()?
+            .into_iter()
+            .find(|task| task.id == id)
+            .ok_or_else(|| AppError::NotFound("flujo programado recién creado".to_owned()))
+    }
+
     pub fn set_scheduled_task_enabled(
         &self,
         id: &str,
@@ -9008,6 +10449,7 @@ impl Database {
                  confirmed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
                  updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
              WHERE id = ?1
+               AND COALESCE(json_extract(payload_json, '$.target_kind'), 'conversation') = 'conversation'
                AND EXISTS(
                     SELECT 1 FROM conversations
                     WHERE id = ?7 AND archived_at IS NULL AND deleted_at IS NULL
@@ -9083,7 +10525,10 @@ impl Database {
         let candidate = transaction
             .query_row(
                 "SELECT id, next_run_at, schedule_expression,
+                        COALESCE(json_extract(payload_json, '$.target_kind'), 'conversation'),
                         json_extract(payload_json, '$.conversation_id'),
+                        json_extract(payload_json, '$.workflow_id'),
+                        json_extract(payload_json, '$.workflow_version_id'),
                         json_extract(payload_json, '$.prompt')
                  FROM scheduled_tasks
                  WHERE enabled = 1
@@ -9099,13 +10544,24 @@ impl Database {
                         row.get::<_, String>(1)?,
                         row.get::<_, String>(2)?,
                         row.get::<_, String>(3)?,
-                        row.get::<_, String>(4)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, Option<String>>(6)?,
+                        row.get::<_, String>(7)?,
                     ))
                 },
             )
             .optional()?;
-        let Some((scheduled_task_id, due_at, schedule_expression, conversation_id, prompt)) =
-            candidate
+        let Some((
+            scheduled_task_id,
+            due_at,
+            schedule_expression,
+            target_kind,
+            conversation_id,
+            workflow_id,
+            workflow_version_id,
+            prompt,
+        )) = candidate
         else {
             return Ok(None);
         };
@@ -9164,7 +10620,10 @@ impl Database {
         Ok(Some(ScheduledClaim {
             run_id,
             scheduled_task_id,
+            target_kind,
             conversation_id,
+            workflow_id,
+            workflow_version_id,
             prompt,
         }))
     }
@@ -9184,7 +10643,10 @@ impl Database {
         let source = transaction
             .query_row(
                 "SELECT source.scheduled_task_id,
+                        COALESCE(json_extract(task.payload_json, '$.target_kind'), 'conversation'),
                         json_extract(task.payload_json, '$.conversation_id'),
+                        json_extract(task.payload_json, '$.workflow_id'),
+                        json_extract(task.payload_json, '$.workflow_version_id'),
                         json_extract(task.payload_json, '$.prompt'),
                         COALESCE((
                             SELECT MAX(attempt) FROM scheduled_runs
@@ -9192,12 +10654,27 @@ impl Database {
                         ), 0)
                  FROM scheduled_runs source
                  JOIN scheduled_tasks task ON task.id = source.scheduled_task_id
-                 JOIN conversations conversation
-                   ON conversation.id = json_extract(task.payload_json, '$.conversation_id')
                  WHERE source.id = ?1
                    AND source.status = 'failed'
-                   AND conversation.archived_at IS NULL
-                   AND conversation.deleted_at IS NULL
+                   AND (
+                       (
+                           COALESCE(json_extract(task.payload_json, '$.target_kind'), 'conversation') = 'conversation'
+                           AND EXISTS(
+                               SELECT 1 FROM conversations conversation
+                               WHERE conversation.id = json_extract(task.payload_json, '$.conversation_id')
+                                 AND conversation.archived_at IS NULL
+                                 AND conversation.deleted_at IS NULL
+                           )
+                       ) OR (
+                           json_extract(task.payload_json, '$.target_kind') = 'workflow'
+                           AND EXISTS(
+                               SELECT 1 FROM workflows workflow
+                               WHERE workflow.id = json_extract(task.payload_json, '$.workflow_id')
+                                 AND workflow.archived_at IS NULL
+                                 AND workflow.published_version_id IS NOT NULL
+                           )
+                       )
+                   )
                    AND NOT EXISTS(
                        SELECT 1 FROM scheduled_runs active
                        WHERE active.scheduled_task_id = source.scheduled_task_id
@@ -9208,13 +10685,25 @@ impl Database {
                     Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, i64>(3)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, i64>(6)?,
                     ))
                 },
             )
             .optional()?;
-        let Some((scheduled_task_id, conversation_id, prompt, maximum_attempt)) = source else {
+        let Some((
+            scheduled_task_id,
+            target_kind,
+            conversation_id,
+            workflow_id,
+            workflow_version_id,
+            prompt,
+            maximum_attempt,
+        )) = source
+        else {
             return Err(AppError::Conflict(
                 "esta ejecución ya no admite reintento o existe otra en curso".to_owned(),
             ));
@@ -9251,7 +10740,10 @@ impl Database {
         Ok(ScheduledClaim {
             run_id: retry_run_id,
             scheduled_task_id,
+            target_kind,
             conversation_id,
+            workflow_id,
+            workflow_version_id,
             prompt,
         })
     }
@@ -9270,24 +10762,51 @@ impl Database {
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let source = transaction
             .query_row(
-                "SELECT json_extract(task.payload_json, '$.conversation_id'),
+                "SELECT COALESCE(json_extract(task.payload_json, '$.target_kind'), 'conversation'),
+                        json_extract(task.payload_json, '$.conversation_id'),
+                        json_extract(task.payload_json, '$.workflow_id'),
+                        json_extract(task.payload_json, '$.workflow_version_id'),
                         json_extract(task.payload_json, '$.prompt')
                  FROM scheduled_tasks task
-                 JOIN conversations conversation
-                   ON conversation.id = json_extract(task.payload_json, '$.conversation_id')
                  WHERE task.id = ?1
-                   AND conversation.archived_at IS NULL
-                   AND conversation.deleted_at IS NULL
+                   AND (
+                       (
+                           COALESCE(json_extract(task.payload_json, '$.target_kind'), 'conversation') = 'conversation'
+                           AND EXISTS(
+                               SELECT 1 FROM conversations conversation
+                               WHERE conversation.id = json_extract(task.payload_json, '$.conversation_id')
+                                 AND conversation.archived_at IS NULL
+                                 AND conversation.deleted_at IS NULL
+                           )
+                       ) OR (
+                           json_extract(task.payload_json, '$.target_kind') = 'workflow'
+                           AND EXISTS(
+                               SELECT 1 FROM workflows workflow
+                               WHERE workflow.id = json_extract(task.payload_json, '$.workflow_id')
+                                 AND workflow.archived_at IS NULL
+                                 AND workflow.published_version_id IS NOT NULL
+                           )
+                       )
+                   )
                    AND NOT EXISTS(
                        SELECT 1 FROM scheduled_runs active
                        WHERE active.scheduled_task_id = task.id
                          AND active.status IN ('claimed', 'running')
                    )",
                 params![scheduled_task_id],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, String>(4)?,
+                    ))
+                },
             )
             .optional()?;
-        let Some((conversation_id, prompt)) = source else {
+        let Some((target_kind, conversation_id, workflow_id, workflow_version_id, prompt)) = source
+        else {
             return Err(AppError::Conflict(
                 "la programación ya tiene una ejecución en curso o su conversación no está disponible"
                     .to_owned(),
@@ -9319,7 +10838,10 @@ impl Database {
         Ok(ScheduledClaim {
             run_id: manual_run_id,
             scheduled_task_id: scheduled_task_id.to_owned(),
+            target_kind,
             conversation_id,
+            workflow_id,
+            workflow_version_id,
             prompt,
         })
     }
@@ -9332,6 +10854,21 @@ impl Database {
                  updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
              WHERE id = ?1 AND status = 'claimed'",
             params![run_id, broker_task_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn start_scheduled_workflow_run(
+        &self,
+        run_id: &str,
+        workflow_run_id: &str,
+    ) -> Result<(), AppError> {
+        self.connect()?.execute(
+            "UPDATE scheduled_runs
+             SET status = 'running', workflow_run_id = ?2,
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE id = ?1 AND status = 'claimed'",
+            params![run_id, workflow_run_id],
         )?;
         Ok(())
     }
@@ -9363,16 +10900,17 @@ impl Database {
         }
         self.connect()?
             .query_row(
-                "SELECT scheduled_task_id, broker_task_id
+                "SELECT scheduled_task_id, broker_task_id, workflow_run_id
                  FROM scheduled_runs
                  WHERE id = ?1
                    AND status = 'running'
-                   AND broker_task_id IS NOT NULL",
+                   AND (broker_task_id IS NOT NULL OR workflow_run_id IS NOT NULL)",
                 params![run_id],
                 |row| {
                     Ok(ScheduledCancellationTarget {
                         scheduled_task_id: row.get(0)?,
                         broker_task_id: row.get(1)?,
+                        workflow_run_id: row.get(2)?,
                     })
                 },
             )
@@ -9387,7 +10925,7 @@ impl Database {
     pub fn finish_scheduled_cancellation(
         &self,
         run_id: &str,
-        broker_task_id: &str,
+        execution_id: &str,
     ) -> Result<(), AppError> {
         let mut connection = self.connect()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -9396,9 +10934,9 @@ impl Database {
              SET status = 'cancelled',
                  updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
              WHERE id = ?1
-               AND broker_task_id = ?2
+               AND (broker_task_id = ?2 OR workflow_run_id = ?2)
                AND status IN ('running', 'cancelled')",
-            params![run_id, broker_task_id],
+            params![run_id, execution_id],
         )?;
         if changed == 0 {
             return Err(AppError::Conflict(
@@ -9425,7 +10963,7 @@ impl Database {
 
     pub fn reconcile_scheduled_runs(&self) -> Result<usize, AppError> {
         let connection = self.connect()?;
-        Ok(connection.execute(
+        let broker_runs = connection.execute(
             "UPDATE scheduled_runs
              SET status = (
                     SELECT CASE bt.remote_status
@@ -9448,7 +10986,41 @@ impl Database {
                       AND bt.remote_status IN ('completed', 'failed', 'cancelled')
                )",
             [],
-        )?)
+        )?;
+        let workflow_runs = connection.execute(
+            "UPDATE scheduled_runs
+             SET status = (
+                    SELECT CASE workflow.status
+                        WHEN 'completed' THEN 'completed'
+                        WHEN 'cancelled' THEN 'cancelled'
+                        ELSE 'failed'
+                    END
+                    FROM workflow_runs workflow
+                    WHERE workflow.id = scheduled_runs.workflow_run_id
+                 ),
+                 result_json = (
+                    SELECT json_object(
+                        'workflow_run_id', workflow.id,
+                        'outputs', json(COALESCE(workflow.output_json, '{}')),
+                        'error', CASE
+                            WHEN workflow.error_json IS NULL THEN NULL
+                            ELSE json(workflow.error_json)
+                        END
+                    )
+                    FROM workflow_runs workflow
+                    WHERE workflow.id = scheduled_runs.workflow_run_id
+                 ),
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE status = 'running'
+               AND workflow_run_id IS NOT NULL
+               AND EXISTS(
+                    SELECT 1 FROM workflow_runs workflow
+                    WHERE workflow.id = scheduled_runs.workflow_run_id
+                      AND workflow.status IN ('completed', 'partial_failed', 'failed', 'cancelled')
+               )",
+            [],
+        )?;
+        Ok(broker_runs + workflow_runs)
     }
 
     pub fn path(&self) -> &Path {
@@ -9585,12 +11157,211 @@ fn lexical_terms(text: &str) -> HashSet<String> {
         .collect()
 }
 
+fn normalized_document_query(text: &str) -> String {
+    text.to_lowercase()
+        .chars()
+        .map(|character| match character {
+            'á' | 'à' | 'ä' | 'â' => 'a',
+            'é' | 'è' | 'ë' | 'ê' => 'e',
+            'í' | 'ì' | 'ï' | 'î' => 'i',
+            'ó' | 'ò' | 'ö' | 'ô' => 'o',
+            'ú' | 'ù' | 'ü' | 'û' => 'u',
+            'ñ' => 'n',
+            other if other.is_alphanumeric() => other,
+            _ => ' ',
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn is_global_document_request(query: &str) -> bool {
+    let query = normalized_document_query(query);
+    let explicit_global_request = [
+        "de que va",
+        "de que trata",
+        "resumen del libro",
+        "resumen del documento",
+        "resume el libro",
+        "resume este libro",
+        "resume el documento",
+        "resume este documento",
+        "hazme un resumen",
+        "vision general",
+        "idea principal",
+        "ideas principales",
+        "estructura del libro",
+        "estructura del documento",
+        "cuantos capitulos",
+        "cuantos temas",
+        "what is the book about",
+        "what is this book about",
+        "what is the document about",
+        "summarize the book",
+        "summarize this book",
+        "summarize the document",
+        "document overview",
+    ]
+    .iter()
+    .any(|phrase| query.contains(phrase));
+    if explicit_global_request {
+        return true;
+    }
+
+    let asks_for_summary = query.contains("resumen") || query.contains("summary");
+    let narrows_to_part = [
+        "capitulo",
+        "seccion",
+        "apartado",
+        "pagina",
+        "fragmento",
+        "chapter",
+        "section",
+        "page",
+    ]
+    .iter()
+    .any(|term| query.contains(term));
+    asks_for_summary && !narrows_to_part
+}
+
+fn global_chunk_role(chunk: &SelectedAttachmentChunk) -> (&'static str, i32) {
+    let text = normalized_document_query(&chunk.text);
+    if text.contains("table of contents")
+        || text.contains("indice general")
+        || text.contains("indice de contenidos")
+        || text.contains("contenido") && text.contains("capitulo")
+    {
+        ("Vista global del documento · índice", 1_000)
+    } else if text.contains("abstract") || text.contains("sinopsis") || text.contains("resumen") {
+        ("Vista global del documento · resumen editorial", 980)
+    } else if text.contains("preface")
+        || text.contains("foreword")
+        || text.contains("prefacio")
+        || text.contains("prologo")
+    {
+        ("Vista global del documento · prefacio", 960)
+    } else if text.contains("introduction") || text.contains("introduccion") {
+        ("Vista global del documento · introducción", 940)
+    } else if text.contains("conclusion")
+        || text.contains("conclusiones")
+        || text.contains("epilogue")
+        || text.contains("epilogo")
+    {
+        ("Vista global del documento · conclusiones", 920)
+    } else if chunk.ordinal == 0 {
+        ("Vista global del documento · cabecera", 900)
+    } else if chunk.ordinal <= 2 {
+        (
+            "Vista global del documento · apertura",
+            850 - chunk.ordinal as i32,
+        )
+    } else {
+        ("Vista global del documento · muestra representativa", 100)
+    }
+}
+
+fn select_global_document_chunks(
+    candidates: Vec<SelectedAttachmentChunk>,
+    maximum_chunks: usize,
+    character_budget: usize,
+) -> Result<Vec<SelectedAttachmentChunk>, AppError> {
+    let mut attachment_order = Vec::new();
+    let mut grouped: HashMap<String, Vec<SelectedAttachmentChunk>> = HashMap::new();
+    for candidate in candidates {
+        if !grouped.contains_key(&candidate.attachment_id) {
+            attachment_order.push(candidate.attachment_id.clone());
+        }
+        grouped
+            .entry(candidate.attachment_id.clone())
+            .or_default()
+            .push(candidate);
+    }
+
+    let mut ranked_groups = Vec::new();
+    for attachment_id in attachment_order {
+        let group = grouped.remove(&attachment_id).unwrap_or_default();
+        let group_len = group.len();
+        let mut structural = group
+            .iter()
+            .filter(|chunk| global_chunk_role(chunk).1 > 100)
+            .cloned()
+            .collect::<Vec<_>>();
+        structural.sort_by(|left, right| {
+            let (_, left_priority) = global_chunk_role(left);
+            let (_, right_priority) = global_chunk_role(right);
+            right_priority
+                .cmp(&left_priority)
+                .then_with(|| left.ordinal.cmp(&right.ordinal))
+        });
+
+        // If the converter did not preserve recognizable headings, add samples
+        // from the beginning, middle and end instead of pretending that cosine
+        // similarity can answer a question about the whole document.
+        let mut ranked = structural;
+        let mut included = ranked
+            .iter()
+            .map(|chunk| chunk.id.clone())
+            .collect::<HashSet<_>>();
+        for ordinal in [
+            0,
+            group_len / 3,
+            group_len.saturating_mul(2) / 3,
+            group_len.saturating_sub(1),
+        ] {
+            if let Some(sample) = group.iter().find(|chunk| chunk.ordinal == ordinal as i64) {
+                if included.insert(sample.id.clone()) {
+                    ranked.push(sample.clone());
+                }
+            }
+        }
+        let mut remaining = group
+            .into_iter()
+            .filter(|chunk| included.insert(chunk.id.clone()))
+            .collect::<Vec<_>>();
+        remaining.sort_by_key(|chunk| chunk.ordinal);
+        ranked.extend(remaining);
+        ranked_groups.push(ranked);
+    }
+
+    let mut selected = Vec::new();
+    let mut used_characters = 0_usize;
+    let mut next_indexes = vec![0_usize; ranked_groups.len()];
+    while selected.len() < maximum_chunks {
+        let mut progressed = false;
+        for (group_index, group) in ranked_groups.iter().enumerate() {
+            while let Some(candidate) = group.get(next_indexes[group_index]) {
+                next_indexes[group_index] += 1;
+                let candidate_characters = candidate.text.chars().count();
+                if used_characters.saturating_add(candidate_characters) > character_budget {
+                    continue;
+                }
+                let mut candidate = candidate.clone();
+                let (reason, priority) = global_chunk_role(&candidate);
+                candidate.reason = reason.to_owned();
+                candidate.score = f64::from(priority) / 1_000.0;
+                used_characters += candidate_characters;
+                selected.push(candidate);
+                progressed = true;
+                break;
+            }
+            if selected.len() == maximum_chunks {
+                break;
+            }
+        }
+        if !progressed {
+            break;
+        }
+    }
+    Ok(selected)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         markdown_web_sources, validated_preferred_model, ContextMessage,
         ConversationExecutionPreferences, CustomGptToolPermissions, Database, ToolOutcomeRecord,
-        INITIAL_MIGRATION, SCHEMA_VERSION,
+        WorkflowEdge, WorkflowNode, INITIAL_MIGRATION, SCHEMA_VERSION,
     };
     use crate::broker::TaskState;
     use crate::error::AppError;
@@ -10163,6 +11934,94 @@ mod tests {
     }
 
     #[test]
+    fn custom_gpt_execution_profile_is_optional_versioned_and_restorable() {
+        let database = test_database();
+        let profile = ConversationExecutionPreferences {
+            data_classification: "confidential".to_owned(),
+            strategy: "mixture_of_agents".to_owned(),
+            preset: "slow".to_owned(),
+            max_cost_usd: 0.75,
+            long_context: "fail".to_owned(),
+            priority: 50,
+        };
+        let created = database
+            .create_custom_gpt_with_starters(
+                "Analista versionado",
+                None,
+                "Contrasta varias perspectivas.",
+                &[],
+                &CustomGptToolPermissions::default(),
+                None,
+                None,
+                Some(&profile),
+            )
+            .expect("profile should be accepted");
+        let created_profile = created
+            .execution_profile
+            .as_ref()
+            .expect("the active version should expose its profile");
+        assert_eq!(created_profile.strategy, "mixture_of_agents");
+        assert_eq!(created_profile.preset, "slow");
+        assert_eq!(created_profile.data_classification, "confidential");
+
+        let inherited = database
+            .update_custom_gpt_with_starters(
+                &created.id,
+                "Analista versionado",
+                None,
+                "Ahora hereda los ajustes del chat.",
+                &[],
+                &CustomGptToolPermissions::default(),
+                None,
+                None,
+                None,
+            )
+            .expect("profile can be disabled in a new version");
+        assert!(inherited.execution_profile.is_none());
+
+        let history = database
+            .list_custom_gpt_versions(&created.id)
+            .expect("history should preserve both profiles");
+        assert!(history[0].execution_profile.is_none());
+        assert_eq!(
+            history[1]
+                .execution_profile
+                .as_ref()
+                .map(|value| value.max_cost_usd),
+            Some(0.75)
+        );
+        let restored = database
+            .restore_custom_gpt_version(&created.id, &history[1].id, true)
+            .expect("old profile should restore as a new version");
+        assert_eq!(
+            restored
+                .execution_profile
+                .as_ref()
+                .map(|value| value.priority),
+            Some(50)
+        );
+
+        let invalid = ConversationExecutionPreferences {
+            priority: 1001,
+            ..ConversationExecutionPreferences::default()
+        };
+        assert!(matches!(
+            database.create_custom_gpt_with_starters(
+                "Perfil inválido",
+                None,
+                "No debe guardarse.",
+                &[],
+                &CustomGptToolPermissions::default(),
+                None,
+                None,
+                Some(&invalid),
+            ),
+            Err(AppError::Validation(_))
+        ));
+        cleanup(&database);
+    }
+
+    #[test]
     fn custom_gpt_starters_and_portable_json_round_trip_safely() {
         let database = test_database();
         let permissions = CustomGptToolPermissions {
@@ -10181,6 +12040,7 @@ mod tests {
                 ],
                 &permissions,
                 Some("qwen2.5:14b"),
+                None,
                 None,
             )
             .expect("custom GPT with starters should be created");
@@ -10232,6 +12092,7 @@ mod tests {
                 &vec!["Inicio".to_owned(); 7],
                 &CustomGptToolPermissions::default(),
                 None,
+                None,
                 None
             ),
             Err(AppError::Validation(_))
@@ -10254,6 +12115,7 @@ mod tests {
                 },
                 Some("qwen2.5:14b"),
                 None,
+                None,
             )
             .expect("el GPT debe crearse");
         assert_eq!(created.preferred_model.as_deref(), Some("qwen2.5:14b"));
@@ -10266,6 +12128,7 @@ mod tests {
                 "Versión dos de las instrucciones.",
                 &[],
                 &CustomGptToolPermissions::default(),
+                None,
                 None,
                 None,
             )
@@ -10331,6 +12194,7 @@ mod tests {
                 },
                 Some("qwen2.5:14b"),
                 None,
+                None,
             )
             .expect("el GPT origen debe crearse");
         database
@@ -10369,6 +12233,90 @@ mod tests {
             .custom_gpt_knowledge(&source.id)
             .expect("el conocimiento original debe seguir ahí");
         assert_eq!(originals.len(), 1);
+        cleanup(&database);
+    }
+
+    #[test]
+    fn custom_gpt_icon_is_validated_versioned_portable_and_duplicated() {
+        let database = test_database();
+        let created = database
+            .create_custom_gpt_with_icon(
+                "Research helper",
+                None,
+                Some("research"),
+                "Investigate carefully.",
+                &[],
+                &CustomGptToolPermissions::default(),
+                None,
+                None,
+                None,
+            )
+            .expect("a catalog icon should be accepted");
+        assert_eq!(created.icon_ref, "research");
+
+        let updated = database
+            .update_custom_gpt_with_icon(
+                &created.id,
+                &created.name,
+                None,
+                Some("code"),
+                "Build and verify the solution.",
+                &[],
+                &CustomGptToolPermissions::default(),
+                None,
+                None,
+                None,
+            )
+            .expect("changing the icon should create a version");
+        assert_eq!(updated.icon_ref, "code");
+        assert_eq!(updated.version_no, 2);
+
+        let history = database
+            .list_custom_gpt_versions(&created.id)
+            .expect("icon history should load");
+        assert_eq!(history[0].icon_ref, "code");
+        assert_eq!(history[1].icon_ref, "research");
+
+        let exported = database
+            .export_custom_gpt_json(&created.id)
+            .expect("icon should export");
+        let portable: Value = serde_json::from_str(&exported).expect("export should be JSON");
+        assert_eq!(portable["iconRef"], "code");
+        let imported = database
+            .import_custom_gpt_json(&exported)
+            .expect("icon should import");
+        assert_eq!(imported.icon_ref, "code");
+
+        let duplicate = database
+            .duplicate_custom_gpt(&created.id, Some("Research helper copy"))
+            .expect("duplicate should retain presentation");
+        assert_eq!(duplicate.icon_ref, "code");
+
+        let restored = database
+            .restore_custom_gpt_version(&created.id, &history[1].id, true)
+            .expect("restoring should retain the historical icon");
+        assert_eq!(restored.icon_ref, "research");
+
+        assert!(matches!(
+            database.create_custom_gpt_with_icon(
+                "Invalid icon",
+                None,
+                Some("../../icon.png"),
+                "Do not save this.",
+                &[],
+                &CustomGptToolPermissions::default(),
+                None,
+                None,
+                None,
+            ),
+            Err(AppError::Validation(_))
+        ));
+        assert!(matches!(
+            database.import_custom_gpt_json(
+                r#"{"schemaVersion":1,"name":"Invalid icon","iconRef":"../../icon.png","instructions":"Do not save this."}"#
+            ),
+            Err(AppError::Validation(_))
+        ));
         cleanup(&database);
     }
 
@@ -11038,6 +12986,328 @@ mod tests {
     }
 
     #[test]
+    fn workflow_publication_freezes_gpt_version_and_creates_durable_node_runs() {
+        let database = test_database();
+        let project = database
+            .create_project("Proyecto de revisión", None)
+            .expect("project should be created");
+        database
+            .update_project_instructions(
+                &project.id,
+                Some("Distingue siempre los hechos de las hipótesis."),
+            )
+            .expect("project instructions should persist");
+        database
+            .set_memory_enabled(true)
+            .expect("memory should be enabled");
+        let (project_memory_id, _) = database
+            .create_memory_item(
+                "La revisión se entrega en español.",
+                "instruction",
+                "normal",
+                Some(&project.id),
+            )
+            .expect("project memory should be created");
+        let gpt = database
+            .create_custom_gpt("Revisor", None, "Revisa el texto con rigor.")
+            .expect("custom GPT should be created");
+        let (memory_id, _) = database
+            .create_custom_gpt_memory_item(
+                &gpt.id,
+                "Solo responde con evidencia verificable.",
+                "instruction",
+                "sensitive",
+            )
+            .expect("custom GPT knowledge should be created");
+        let gpt_file = database
+            .register_custom_gpt_attachment(
+                &gpt.id,
+                "C:/managed/guide.pdf",
+                "guide.pdf",
+                Some("application/pdf"),
+                42,
+                "workflow-gpt-file",
+            )
+            .expect("custom GPT file should register");
+        database
+            .update_attachment_ingestion(
+                &gpt_file.id,
+                "ready",
+                Some("broker-gpt-file"),
+                Some("document"),
+                Some("test"),
+                Some(&serde_json::json!({})),
+                None,
+            )
+            .expect("custom GPT file should become ready");
+        let mut workflow = database
+            .create_workflow("Revisión en cadena", Some(&project.id))
+            .expect("workflow should be created");
+        let input_id = workflow.definition.nodes[0].id.clone();
+        let result_id = workflow.definition.nodes[1].id.clone();
+        let gpt_node_id = "node-reviewer".to_owned();
+        workflow.definition.nodes.push(WorkflowNode {
+            id: gpt_node_id.clone(),
+            kind: "custom_gpt".to_owned(),
+            label: "Revisor".to_owned(),
+            x: 350.0,
+            y: 170.0,
+            custom_gpt_id: Some(gpt.id.clone()),
+            custom_gpt_version_id: None,
+            custom_gpt_name: None,
+            custom_gpt_icon_ref: None,
+            custom_gpt_instructions: None,
+            preferred_model: None,
+            execution_profile: None,
+            custom_gpt_memory_ids: Vec::new(),
+            custom_gpt_attachment_ids: Vec::new(),
+            instruction: None,
+            attachment_ids: Vec::new(),
+        });
+        workflow.definition.edges = vec![
+            WorkflowEdge {
+                id: "edge-in".to_owned(),
+                source: input_id.clone(),
+                target: gpt_node_id.clone(),
+            },
+            WorkflowEdge {
+                id: "edge-out".to_owned(),
+                source: gpt_node_id.clone(),
+                target: result_id,
+            },
+        ];
+        database
+            .update_workflow(
+                &workflow.summary.id,
+                &workflow.summary.name,
+                None,
+                Some(&project.id),
+                &workflow.definition,
+            )
+            .expect("draft should save");
+        let published = database
+            .publish_workflow(&workflow.summary.id)
+            .expect("workflow should publish");
+        assert_eq!(published.summary.published_version_no, Some(1));
+
+        let record = database
+            .create_workflow_run(&workflow.summary.id, "Texto para revisar")
+            .expect("durable run should be created");
+        let frozen_gpt = record
+            .definition
+            .nodes
+            .iter()
+            .find(|node| node.kind == "custom_gpt")
+            .expect("published GPT node should exist");
+        let frozen_project = record
+            .definition
+            .project_context
+            .as_ref()
+            .expect("published project context should exist");
+        assert_eq!(frozen_project.project_id, project.id);
+        assert_eq!(
+            frozen_project.instructions.as_deref(),
+            Some("Distingue siempre los hechos de las hipótesis.")
+        );
+        assert_eq!(frozen_project.memory_ids, vec![project_memory_id.clone()]);
+        assert!(database
+            .project_instruction_for_workflow(frozen_project)
+            .expect("project instruction should resolve")
+            .is_some());
+        assert_eq!(
+            database
+                .project_memories_for_workflow(frozen_project)
+                .expect("project memories should resolve")
+                .len(),
+            1
+        );
+        assert!(frozen_gpt.custom_gpt_version_id.is_some());
+        assert_eq!(frozen_gpt.custom_gpt_icon_ref.as_deref(), Some("spark"));
+        assert_eq!(
+            frozen_gpt.custom_gpt_instructions.as_deref(),
+            Some("Revisa el texto con rigor.")
+        );
+        assert_eq!(frozen_gpt.custom_gpt_memory_ids, vec![memory_id.clone()]);
+        assert_eq!(
+            frozen_gpt.custom_gpt_attachment_ids,
+            vec![gpt_file.id.clone()]
+        );
+        assert_eq!(
+            database
+                .custom_gpt_memories_for_workflow(&gpt.id, &frozen_gpt.custom_gpt_memory_ids)
+                .expect("published knowledge should resolve")
+                .len(),
+            1
+        );
+        assert_eq!(
+            database
+                .ready_custom_gpt_attachments_for_workflow(
+                    &gpt.id,
+                    &frozen_gpt.custom_gpt_attachment_ids,
+                )
+                .expect("published files should resolve")
+                .len(),
+            1
+        );
+        let run = database
+            .workflow_run(&record.run_id)
+            .expect("run should load");
+        assert_eq!(run.node_runs.len(), 3);
+        assert!(run.node_runs.iter().all(|node| node.status == "pending"));
+
+        database
+            .update_workflow_node_run(
+                &record.run_id,
+                &input_id,
+                "completed",
+                Some("Texto para revisar"),
+                Some("Texto para revisar"),
+                None,
+                None,
+            )
+            .expect("input should complete");
+        database
+            .update_workflow_node_run(
+                &record.run_id,
+                &gpt_node_id,
+                "failed",
+                Some("Texto para revisar"),
+                None,
+                Some("broker-failed"),
+                Some(&serde_json::json!({"message": "fallo"})),
+            )
+            .expect("GPT node should fail");
+        database
+            .update_workflow_run_status(
+                &record.run_id,
+                "failed",
+                None,
+                Some(&serde_json::json!({"message": "fallo"})),
+            )
+            .expect("run should fail");
+        let retry = database
+            .retry_workflow_run(&record.run_id)
+            .expect("failed run should be retried");
+        let retry_view = database
+            .workflow_run(&retry.run_id)
+            .expect("retry should load");
+        assert_eq!(
+            retry_view
+                .node_runs
+                .iter()
+                .find(|node| node.node_id == input_id)
+                .expect("input should exist")
+                .status,
+            "completed",
+            "successful upstream work is reused"
+        );
+        assert_eq!(
+            retry_view
+                .node_runs
+                .iter()
+                .find(|node| node.node_id == gpt_node_id)
+                .expect("GPT should exist")
+                .status,
+            "pending",
+            "the failed node is executed again"
+        );
+        database
+            .set_custom_gpt_memory_item_enabled(&gpt.id, &memory_id, false)
+            .expect("knowledge should be disabled");
+        database
+            .remove_custom_gpt_file(&gpt.id, &gpt_file.id)
+            .expect("file should be removed from the GPT");
+        assert!(database
+            .custom_gpt_memories_for_workflow(&gpt.id, &frozen_gpt.custom_gpt_memory_ids)
+            .expect("revoked knowledge should be ignored")
+            .is_empty());
+        assert!(database
+            .ready_custom_gpt_attachments_for_workflow(
+                &gpt.id,
+                &frozen_gpt.custom_gpt_attachment_ids,
+            )
+            .expect("revoked files should be ignored")
+            .is_empty());
+        database
+            .update_project_instructions(&project.id, Some("Nueva instrucción"))
+            .expect("project instructions should change");
+        database
+            .set_memory_item_enabled(&project_memory_id, false)
+            .expect("project memory should be disabled");
+        assert!(database
+            .project_instruction_for_workflow(frozen_project)
+            .expect("changed instructions should be revoked")
+            .is_none());
+        assert!(database
+            .project_memories_for_workflow(frozen_project)
+            .expect("disabled project memories should be ignored")
+            .is_empty());
+        cleanup(&database);
+    }
+
+    #[test]
+    fn attachment_deduplication_respects_the_image_processing_policy() {
+        let database = test_database();
+        let conversation = database
+            .create_conversation("Política de imágenes", None)
+            .expect("conversation should be created");
+
+        let text_only = database
+            .register_attachment_with_image_policy(
+                &conversation.id,
+                "C:/managed/book.pdf",
+                "book.pdf",
+                Some("application/pdf"),
+                42,
+                "same-book",
+                Some(false),
+            )
+            .expect("text-only attachment should register");
+        let rich = database
+            .register_attachment_with_image_policy(
+                &conversation.id,
+                "C:/managed/book.pdf",
+                "book.pdf",
+                Some("application/pdf"),
+                42,
+                "same-book",
+                Some(true),
+            )
+            .expect("rich attachment should register separately");
+
+        assert_ne!(text_only.id, rich.id);
+        assert_eq!(text_only.describe_images, Some(false));
+        assert_eq!(rich.describe_images, Some(true));
+
+        let rich_first = database
+            .register_attachment_with_image_policy(
+                &conversation.id,
+                "C:/managed/other.pdf",
+                "other.pdf",
+                Some("application/pdf"),
+                21,
+                "rich-first",
+                Some(true),
+            )
+            .expect("rich attachment should register");
+        let text_request = database
+            .register_attachment_with_image_policy(
+                &conversation.id,
+                "C:/managed/other.pdf",
+                "other.pdf",
+                Some("application/pdf"),
+                21,
+                "rich-first",
+                Some(false),
+            )
+            .expect("rich attachment may satisfy a text-only request");
+
+        assert_eq!(rich_first.id, text_request.id);
+        assert_eq!(text_request.describe_images, Some(true));
+        cleanup(&database);
+    }
+
+    #[test]
     fn project_file_can_be_reused_without_leaking_into_another_project() {
         let database = test_database();
         let project = database
@@ -11416,7 +13686,14 @@ mod tests {
                     "provider": "lmstudio",
                     "deployment": "local",
                     "model": "modelo-prueba"
-                }
+                },
+                "consensus": {
+                    "synthesized": false,
+                    "warnings": ["Se entregó la mejor propuesta disponible"]
+                },
+                "arbiter_failures": [
+                    {"model": "revisor-prueba", "code": "PROVIDER_UNAVAILABLE", "message": "offline"}
+                ]
             },
             "error": null
         }))
@@ -11463,6 +13740,12 @@ mod tests {
             Some("modelo-prueba")
         );
         assert_eq!(assistant.response_duration_ms, Some(12_500));
+        assert_eq!(assistant.consensus_synthesized, Some(false));
+        assert_eq!(
+            assistant.consensus_warnings,
+            ["Se entregó la mejor propuesta disponible"]
+        );
+        assert_eq!(assistant.arbiter_failure_count, 1);
         assert_eq!(
             assistant.sources[0].source_attachment_id.as_deref(),
             Some(attachment.id.as_str())
@@ -13279,6 +15562,86 @@ mod tests {
     }
 
     #[test]
+    fn global_document_request_prefers_structure_over_cosine_winners() {
+        let database = test_database();
+        let managed_root = std::env::temp_dir().join(format!(
+            "chatygpt-global-document-test-{}",
+            Uuid::new_v4().simple()
+        ));
+        let managed_file = managed_root.join("book.pdf");
+        std::fs::create_dir_all(&managed_root).expect("managed root should exist");
+        std::fs::write(&managed_file, b"book").expect("managed file should exist");
+        let conversation = database
+            .create_conversation("Resumen de libro", None)
+            .expect("conversation should be created");
+        let attachment = database
+            .register_attachment(
+                &conversation.id,
+                managed_file.to_str().expect("managed path should be UTF-8"),
+                "book.pdf",
+                Some("application/pdf"),
+                4,
+                "book-hash",
+            )
+            .expect("attachment should be registered");
+        database
+            .replace_attachment_chunks(
+                &attachment.id,
+                &[
+                    "Título y autor de la obra.".to_owned(),
+                    "Table of contents. Chapter 1: Origins. Chapter 2: Methods.".to_owned(),
+                    "Preface. This book presents the history and foundations of pattern recognition."
+                        .to_owned(),
+                    "Un detalle aislado acerca de un algoritmo.".to_owned(),
+                    "Otro detalle técnico.".to_owned(),
+                    "Conclusion. The field combines statistical learning and computation."
+                        .to_owned(),
+                ],
+            )
+            .expect("chunks should be stored");
+
+        let selected = database
+            .select_attachment_chunks(
+                &conversation.id,
+                std::slice::from_ref(&attachment.id),
+                "Dime de qué va el libro y hazme un resumen",
+                4,
+                20_000,
+            )
+            .expect("global view should be selected");
+
+        assert_eq!(selected.len(), 4);
+        assert_eq!(selected[0].ordinal, 1);
+        assert!(selected[0].reason.contains("índice"));
+        assert_eq!(selected[1].ordinal, 2);
+        assert!(selected[1].reason.contains("prefacio"));
+        assert_eq!(selected[2].ordinal, 5);
+        assert!(selected[2].reason.contains("conclusiones"));
+        assert_eq!(selected[3].ordinal, 0);
+        assert!(selected
+            .iter()
+            .all(|chunk| chunk.reason.starts_with("Vista global del documento")));
+        cleanup(&database);
+        std::fs::remove_dir_all(managed_root).expect("managed test files should be removed");
+    }
+
+    #[test]
+    fn specific_document_request_keeps_relevance_ranking() {
+        assert!(!super::is_global_document_request(
+            "¿Qué fórmula utiliza el capítulo 7 para la varianza?"
+        ));
+        assert!(super::is_global_document_request(
+            "¿De qué trata este documento?"
+        ));
+        assert!(super::is_global_document_request(
+            "Hazme un resumen del libro"
+        ));
+        assert!(!super::is_global_document_request(
+            "Haz un resumen de la sección sobre regresión"
+        ));
+    }
+
+    #[test]
     fn attachment_exposes_durable_document_context_progress_and_chunk_count() {
         let database = test_database();
         let conversation = database
@@ -13677,7 +16040,7 @@ mod tests {
             .claim_scheduled_task_now(&scheduled.id, true)
             .expect("manual run should be claimed");
         assert_eq!(manual.scheduled_task_id, scheduled.id);
-        assert_eq!(manual.conversation_id, conversation.id);
+        assert_eq!(manual.conversation_id, Some(conversation.id));
         assert!(matches!(
             database.claim_scheduled_task_now(&scheduled.id, true),
             Err(AppError::Conflict(_))
@@ -13703,6 +16066,129 @@ mod tests {
             )
             .expect("audit event should be queryable");
         assert!(audited);
+        cleanup(&database);
+    }
+
+    #[test]
+    fn published_workflow_can_be_scheduled_claimed_and_reconciled() {
+        let database = test_database();
+        let workflow = database
+            .create_workflow("Informe encadenado", None)
+            .expect("workflow should be created");
+        database
+            .publish_workflow(&workflow.summary.id)
+            .expect("workflow should publish");
+        assert!(matches!(
+            database.create_scheduled_workflow(
+                "Informe nocturno",
+                &workflow.summary.id,
+                "Resume la actividad de hoy.",
+                "2099-01-01T22:00:00.000Z",
+                "Atlantic/Canary",
+                "daily",
+                false,
+            ),
+            Err(AppError::Validation(_))
+        ));
+        let scheduled = database
+            .create_scheduled_workflow(
+                "Informe nocturno",
+                &workflow.summary.id,
+                "Resume la actividad de hoy.",
+                "2099-01-01T22:00:00.000Z",
+                "Atlantic/Canary",
+                "daily",
+                true,
+            )
+            .expect("published workflow should be scheduled");
+        assert_eq!(scheduled.target_kind, "workflow");
+        assert_eq!(
+            scheduled.workflow_id.as_deref(),
+            Some(workflow.summary.id.as_str())
+        );
+        assert_eq!(
+            scheduled.workflow_name.as_deref(),
+            Some("Informe encadenado")
+        );
+        assert_eq!(scheduled.workflow_version_no, Some(1));
+        assert!(scheduled.conversation_id.is_none());
+        database
+            .publish_workflow(&workflow.summary.id)
+            .expect("a later workflow version should publish");
+
+        database
+            .connect()
+            .expect("database should connect")
+            .execute(
+                "UPDATE scheduled_tasks
+                 SET next_run_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 minute')
+                 WHERE id = ?1",
+                params![scheduled.id],
+            )
+            .expect("workflow schedule should become due");
+        let claim = database
+            .claim_due_scheduled_task()
+            .expect("claim should succeed")
+            .expect("workflow schedule should be due");
+        assert_eq!(claim.target_kind, "workflow");
+        assert_eq!(
+            claim.workflow_id.as_deref(),
+            Some(workflow.summary.id.as_str())
+        );
+        assert!(claim.workflow_version_id.is_some());
+        assert_eq!(claim.prompt, "Resume la actividad de hoy.");
+
+        let workflow_run = database
+            .create_workflow_run_from_version(
+                &workflow.summary.id,
+                claim
+                    .workflow_version_id
+                    .as_deref()
+                    .expect("version should be frozen"),
+                &claim.prompt,
+            )
+            .expect("workflow run should be durable");
+        assert_eq!(
+            database
+                .workflow_run(&workflow_run.run_id)
+                .expect("workflow run should load")
+                .version_no,
+            1,
+            "the schedule must keep the version confirmed by the user"
+        );
+        database
+            .start_scheduled_workflow_run(&claim.run_id, &workflow_run.run_id)
+            .expect("scheduled run should link to workflow run");
+        database
+            .update_workflow_run_status(
+                &workflow_run.run_id,
+                "completed",
+                Some(&serde_json::json!({"Resultado": "Informe listo"})),
+                None,
+            )
+            .expect("workflow should complete");
+        assert_eq!(
+            database
+                .reconcile_scheduled_runs()
+                .expect("scheduler should reconcile"),
+            1
+        );
+        let reloaded = database
+            .list_scheduled_tasks()
+            .expect("schedule should reload");
+        assert_eq!(reloaded[0].runs[0].status, "completed");
+        assert_eq!(
+            reloaded[0].runs[0].workflow_run_id.as_deref(),
+            Some(workflow_run.run_id.as_str())
+        );
+        assert_eq!(
+            reloaded[0].runs[0]
+                .result
+                .as_ref()
+                .and_then(|value| value.pointer("/outputs/Resultado"))
+                .and_then(serde_json::Value::as_str),
+            Some("Informe listo")
+        );
         cleanup(&database);
     }
 
@@ -13795,7 +16281,7 @@ mod tests {
             )
             .expect("schedule should be created");
         assert!(scheduled.enabled);
-        assert_eq!(scheduled.conversation_id, conversation.id);
+        assert_eq!(scheduled.conversation_id, Some(conversation.id.clone()));
         let updated = database
             .update_scheduled_task(
                 &scheduled.id,
@@ -13836,7 +16322,7 @@ mod tests {
             .claim_due_scheduled_task()
             .expect("claim should succeed")
             .expect("due schedule should be claimed");
-        assert_eq!(claim.conversation_id, conversation.id);
+        assert_eq!(claim.conversation_id, Some(conversation.id));
         assert_eq!(
             claim.prompt,
             "Resume la actividad pendiente con tres puntos."
@@ -14022,9 +16508,15 @@ mod tests {
         let target = database
             .scheduled_cancellation_target(&claim.run_id, true)
             .expect("running run should expose its local task");
-        assert_eq!(target.broker_task_id, "cancel-local-task");
+        assert_eq!(target.broker_task_id.as_deref(), Some("cancel-local-task"));
         database
-            .finish_scheduled_cancellation(&claim.run_id, &target.broker_task_id)
+            .finish_scheduled_cancellation(
+                &claim.run_id,
+                target
+                    .broker_task_id
+                    .as_deref()
+                    .expect("broker task should exist"),
+            )
             .expect("cancellation should be persisted");
 
         let listed = database

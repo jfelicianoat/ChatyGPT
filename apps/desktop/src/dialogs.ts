@@ -7,7 +7,7 @@
  * es comprobable; dentro de un componente de 7.000 líneas, no lo era.
  */
 
-import type { ConversationView, ProjectSummary } from "./domain";
+import type { ConversationView, CustomGptView, ProjectSummary } from "./domain";
 
 export type DialogState =
   | { kind: "project-create" }
@@ -16,7 +16,8 @@ export type DialogState =
   | { kind: "project-archive"; project: ProjectSummary }
   | { kind: "conversation-rename"; conversation: ConversationView }
   | { kind: "conversation-archive"; conversation: ConversationView }
-  | { kind: "conversation-delete"; conversation: ConversationView };
+  | { kind: "conversation-delete"; conversation: ConversationView }
+  | { kind: "custom-gpt-test"; customGpt: CustomGptView };
 
 export type DialogCopy = {
   title: string;
@@ -24,6 +25,8 @@ export type DialogCopy = {
   fieldLabel?: string;
   initialValue?: string;
   multiline?: boolean;
+  placeholder?: string;
+  busyLabel?: string;
   allowEmpty?: boolean;
   maxLength?: number;
   /** Marca la ventana como destructiva para que la interfaz lo señale. */
@@ -92,6 +95,19 @@ export function dialogCopy(dialog: DialogState): DialogCopy {
           "La conversación quedará marcada como eliminada. Esta acción no borra físicamente los registros todavía.",
         destructive: true,
         action: "Eliminar"
+      };
+    case "custom-gpt-test":
+      return {
+        title: `Probar ${dialog.customGpt.name}`,
+        description:
+          "Se creará un chat real con este GPT. La pregunta, la respuesta y cualquier error quedarán guardados en Recientes.",
+        fieldLabel: "Pregunta de prueba",
+        initialValue: dialog.customGpt.conversationStarters[0] ?? "",
+        multiline: true,
+        placeholder: "Escribe una pregunta que permita comprobar sus instrucciones y conocimiento.",
+        busyLabel: "Creando chat…",
+        maxLength: 20_000,
+        action: "Crear chat y probar"
       };
   }
 }

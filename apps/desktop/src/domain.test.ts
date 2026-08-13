@@ -14,6 +14,7 @@ import {
   canUseSemanticMemory,
   canRevealContextSource,
   confirmationSummary,
+  customGptIconGlyph,
   customGptVersionSummary,
   formatResponseDuration,
   formatResponseUsage,
@@ -807,14 +808,22 @@ describe("historial de versiones de un GPT", () => {
   ): CustomGptVersionView => ({
     id: "version-1",
     versionNo: 1,
+    iconRef: "spark",
     instructions: "Explica con ejemplos.",
     conversationStarters: [],
     preferredModel: null,
+    executionProfile: null,
     createdAt: "2026-08-01T09:00:00Z",
     active: false,
     toolPermissions: { runCode: "deny", renameConversation: "deny" },
     taskCount: 0,
     ...overrides
+  });
+
+  it("resuelve los iconos conocidos y protege datos antiguos o desconocidos", () => {
+    expect(customGptIconGlyph("research")).toBe("⌕");
+    expect(customGptIconGlyph(undefined)).toBe("✦");
+    expect(customGptIconGlyph("icono-no-admitido")).toBe("✦");
   });
 
   it("distingue la versión en uso de las revisiones anteriores", () => {

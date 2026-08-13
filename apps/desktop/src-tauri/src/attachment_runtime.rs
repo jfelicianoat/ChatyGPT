@@ -21,19 +21,22 @@ pub async fn import_attachment(
     attachments_dir: PathBuf,
     conversation_id: String,
     source_path: String,
+    describe_images: bool,
 ) -> Result<AttachmentView, AppError> {
     let imported = tauri::async_runtime::spawn_blocking(move || {
         copy_into_managed_storage(&attachments_dir, Path::new(&source_path))
     })
     .await
     .map_err(|error| AppError::DataDirectory(error.to_string()))??;
-    let view = database.register_attachment(
+    let describe_images = direct_image_policy(imported.media_type.as_deref(), describe_images);
+    let view = database.register_attachment_with_image_policy(
         &conversation_id,
         &imported.path.to_string_lossy(),
         &imported.display_name,
         imported.media_type.as_deref(),
         imported.size_bytes as i64,
         &imported.sha256,
+        Some(describe_images),
     )?;
     if matches!(view.ingestion_status.as_str(), "local" | "failed") {
         spawn_ingestion(database, broker, view.id.clone());
@@ -54,13 +57,14 @@ pub async fn import_captured_image(
     })
     .await
     .map_err(|error| AppError::DataDirectory(error.to_string()))??;
-    let view = database.register_attachment(
+    let view = database.register_attachment_with_image_policy(
         &conversation_id,
         &imported.path.to_string_lossy(),
         &imported.display_name,
         imported.media_type.as_deref(),
         imported.size_bytes as i64,
         &imported.sha256,
+        Some(true),
     )?;
     if matches!(view.ingestion_status.as_str(), "local" | "failed") {
         spawn_ingestion(database, broker, view.id.clone());
@@ -74,19 +78,22 @@ pub async fn import_custom_gpt_attachment(
     attachments_dir: PathBuf,
     custom_gpt_id: String,
     source_path: String,
+    describe_images: bool,
 ) -> Result<AttachmentView, AppError> {
     let imported = tauri::async_runtime::spawn_blocking(move || {
         copy_into_managed_storage(&attachments_dir, Path::new(&source_path))
     })
     .await
     .map_err(|error| AppError::DataDirectory(error.to_string()))??;
-    let view = database.register_custom_gpt_attachment(
+    let describe_images = direct_image_policy(imported.media_type.as_deref(), describe_images);
+    let view = database.register_custom_gpt_attachment_with_image_policy(
         &custom_gpt_id,
         &imported.path.to_string_lossy(),
         &imported.display_name,
         imported.media_type.as_deref(),
         imported.size_bytes as i64,
         &imported.sha256,
+        Some(describe_images),
     )?;
     if matches!(view.ingestion_status.as_str(), "local" | "failed") {
         spawn_ingestion(database, broker, view.id.clone());
@@ -192,12 +199,16 @@ async fn upload_local_file(
             &record.display_name,
             record.media_type.as_deref(),
             record.size_bytes as u64,
+            record.describe_images,
         )
         .await?;
     if !accepted.sha256.eq_ignore_ascii_case(&record.sha256) {
         return Err(AppError::BrokerContract(
             "la huella devuelta por el Broker no coincide con el archivo local".to_owned(),
         ));
+    }
+    if let Some(describe_images) = accepted.describe_images {
+        database.set_attachment_describe_images(&record.id, describe_images)?;
     }
     database.update_attachment_ingestion(
         &record.id,
@@ -224,6 +235,9 @@ async fn poll_remote_file(
         return Err(AppError::BrokerContract(
             "el Broker asoció un contenido distinto al adjunto local".to_owned(),
         ));
+    }
+    if let Some(describe_images) = state.describe_images {
+        database.set_attachment_describe_images(&record.id, describe_images)?;
     }
     let terminal = state.status == "ready" || state.status == "failed";
     if state.status == "ready" {
@@ -317,6 +331,10 @@ struct ImportedFile {
     media_type: Option<String>,
     size_bytes: u64,
     sha256: String,
+}
+
+fn direct_image_policy(media_type: Option<&str>, requested: bool) -> bool {
+    media_type.is_some_and(|value| value.starts_with("image/")) || requested
 }
 
 fn store_captured_image(
@@ -524,6 +542,7 @@ mod tests {
                 self.attachments_dir.clone(),
                 conversation_id.to_owned(),
                 self.source.to_string_lossy().into_owned(),
+                true,
             ))
             .expect("el adjunto debe registrarse localmente")
         }

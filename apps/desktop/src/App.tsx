@@ -5,6 +5,7 @@ import {
   attachmentContextSummary,
   attachmentNeedsSandbox,
   attachmentSelectionOnConversationOpen,
+  attachmentImagePolicyLabel,
   attachmentStatusLabel,
   brokerSupportsPreset,
   brokerAttachmentExtensions,
@@ -42,6 +43,8 @@ import {
   taskProgressSummary,
   authorizedFolderPurpose,
   brokerCredentialLabel,
+  customGptIconGlyph,
+  customGptIconOptions,
   customGptVersionSummary,
   type BootstrapReport,
   type BrokerCredentialStatus,
@@ -56,6 +59,7 @@ import {
   type ComposerErrorGuidance,
   type ConversationView,
   type CustomGptPreview,
+  type CustomGptIcon,
   type CustomGptVersionView,
   type CustomGptView,
   type LocalTaskSnapshot,
@@ -96,7 +100,14 @@ import {
   type AppearancePreference,
   type ResolvedAppearance
 } from "./appearance";
+import {
+  loadImageDescriptionPreference,
+  persistImageDescriptionPreference,
+  shouldDescribeImages,
+  type ImageDescriptionPreference
+} from "./ingestionPreferences";
 import { isEditableKeyboardTarget, keyboardShortcutAction } from "./keyboard";
+import { WorkflowStudio } from "./WorkflowStudio";
 import { dialogCopy, type DialogState } from "./dialogs";
 import { describeError } from "./errors";
 import {
@@ -147,7 +158,7 @@ type ScreenCapturePreview = CapturedScreenFrame & {
   source: "screen" | "camera";
 };
 
-type WorkspaceDestination = "chats" | "projects" | "gpts" | "automations" | "settings";
+type WorkspaceDestination = "chats" | "projects" | "gpts" | "workflows" | "automations" | "settings";
 
 export function App() {
   const messageListRef = useRef<HTMLDivElement>(null);
@@ -159,6 +170,8 @@ export function App() {
   const [bootstrap, setBootstrap] = useState<Loadable<BootstrapReport>>({ state: "loading" });
   const [appearancePreference, setAppearancePreference] =
     useState<AppearancePreference>(loadAppearancePreference);
+  const [imageDescriptionPreference, setImageDescriptionPreference] =
+    useState<ImageDescriptionPreference>(loadImageDescriptionPreference);
   const [resolvedAppearance, setResolvedAppearance] = useState<ResolvedAppearance>(() =>
     document.documentElement.dataset.theme === "dark" ? "dark" : "light"
   );
@@ -230,6 +243,9 @@ export function App() {
       ? subscribeToSystemAppearance(synchronize)
       : undefined;
   }, [appearancePreference]);
+  useEffect(() => {
+    persistImageDescriptionPreference(imageDescriptionPreference);
+  }, [imageDescriptionPreference]);
   const [schedulerReadIds, setSchedulerReadIds] =
     useState<Set<string>>(loadSchedulerReadNotifications);
   const [schedulerNotifications, setSchedulerNotifications] = useState<
@@ -317,12 +333,24 @@ export function App() {
   const [customGptEditingId, setCustomGptEditingId] = useState<string | null>(null);
   const [customGptName, setCustomGptName] = useState("");
   const [customGptDescription, setCustomGptDescription] = useState("");
+  const [customGptIcon, setCustomGptIcon] = useState<CustomGptIcon>("spark");
   const [customGptInstructions, setCustomGptInstructions] = useState("");
   const [customGptStartersText, setCustomGptStartersText] = useState("");
   const [customGptRunCodePermission, setCustomGptRunCodePermission] = useState(false);
   const [customGptRenamePermission, setCustomGptRenamePermission] = useState(false);
   const [customGptPreferredModel, setCustomGptPreferredModel] = useState("");
   const [customGptDefaultProject, setCustomGptDefaultProject] = useState("");
+  const [customGptOwnExecution, setCustomGptOwnExecution] = useState(false);
+  const [customGptDataClassification, setCustomGptDataClassification] =
+    useState<ConversationExecutionPreferences["dataClassification"]>("internal");
+  const [customGptStrategy, setCustomGptStrategy] =
+    useState<ConversationExecutionPreferences["strategy"]>("single");
+  const [customGptPreset, setCustomGptPreset] =
+    useState<ConversationExecutionPreferences["preset"]>("fast");
+  const [customGptMaxCost, setCustomGptMaxCost] = useState("0.10");
+  const [customGptLongContext, setCustomGptLongContext] =
+    useState<ConversationExecutionPreferences["longContext"]>("fail");
+  const [customGptPriority, setCustomGptPriority] = useState("100");
   const [customGptHistoryId, setCustomGptHistoryId] = useState<string | null>(null);
   const [customGptPreview, setCustomGptPreview] =
     useState<Loadable<CustomGptPreview> | null>(null);
@@ -1178,7 +1206,11 @@ export function App() {
     try {
       const importedIds: string[] = [];
       for (const path of paths) {
-        const attachment = await platform.importAttachment(conversationId, path);
+        const attachment = await platform.importAttachment(
+          conversationId,
+          path,
+          shouldDescribeImages(imageDescriptionPreference)
+        );
         importedIds.push(attachment.id);
       }
       setAttachments(await platform.listAttachments(conversationId));
@@ -1655,12 +1687,20 @@ export function App() {
     setCustomGptEditingId(null);
     setCustomGptName("");
     setCustomGptDescription("");
+    setCustomGptIcon("spark");
     setCustomGptInstructions("");
     setCustomGptStartersText("");
     setCustomGptRunCodePermission(false);
     setCustomGptRenamePermission(false);
     setCustomGptPreferredModel("");
     setCustomGptDefaultProject("");
+    setCustomGptOwnExecution(false);
+    setCustomGptDataClassification("internal");
+    setCustomGptStrategy("single");
+    setCustomGptPreset("fast");
+    setCustomGptMaxCost("0.10");
+    setCustomGptLongContext("fail");
+    setCustomGptPriority("100");
     setCustomGptError(null);
   };
 
@@ -1746,12 +1786,20 @@ export function App() {
     setCustomGptEditingId(item.id);
     setCustomGptName(item.name);
     setCustomGptDescription(item.description ?? "");
+    setCustomGptIcon(item.iconRef ?? "spark");
     setCustomGptInstructions(item.instructions);
     setCustomGptStartersText(item.conversationStarters.join("\n"));
     setCustomGptRunCodePermission(item.toolPermissions.runCode === "confirm");
     setCustomGptRenamePermission(item.toolPermissions.renameConversation === "confirm");
     setCustomGptPreferredModel(item.preferredModel ?? "");
     setCustomGptDefaultProject(item.defaultProjectId ?? "");
+    setCustomGptOwnExecution(item.executionProfile !== null);
+    setCustomGptDataClassification(item.executionProfile?.dataClassification ?? "internal");
+    setCustomGptStrategy(item.executionProfile?.strategy ?? "single");
+    setCustomGptPreset(item.executionProfile?.preset ?? "fast");
+    setCustomGptMaxCost(String(item.executionProfile?.maxCostUsd ?? 0.1));
+    setCustomGptLongContext(item.executionProfile?.longContext ?? "fail");
+    setCustomGptPriority(String(item.executionProfile?.priority ?? 100));
     setCustomGptError(null);
     setCustomGptNotice(null);
   };
@@ -1766,11 +1814,30 @@ export function App() {
         .split(/\r?\n/)
         .map((starter) => starter.trim())
         .filter(Boolean);
+      const parsedCost = Number(customGptMaxCost);
+      const parsedPriority = Number(customGptPriority);
+      if (customGptOwnExecution && (!Number.isFinite(parsedCost) || parsedCost < 0 || parsedCost > 10)) {
+        throw new Error("El límite de coste debe estar entre 0 y 10 USD.");
+      }
+      if (customGptOwnExecution && (!Number.isInteger(parsedPriority) || parsedPriority < 0 || parsedPriority > 1000)) {
+        throw new Error("La prioridad debe ser un número entero entre 0 y 1000.");
+      }
+      const executionProfile: CustomGptView["executionProfile"] = customGptOwnExecution
+        ? {
+            dataClassification: customGptDataClassification,
+            strategy: customGptStrategy,
+            preset: customGptStrategy === "mixture_of_agents" ? customGptPreset : "fast",
+            maxCostUsd: parsedCost,
+            longContext: customGptStrategy === "mixture_of_agents" ? "fail" : customGptLongContext,
+            priority: parsedPriority
+          }
+        : null;
       const saved = customGptEditingId
         ? await platform.updateCustomGpt(
             customGptEditingId,
             customGptName,
             customGptDescription,
+            customGptIcon,
             customGptInstructions,
             conversationStarters,
             {
@@ -1778,11 +1845,13 @@ export function App() {
               renameConversation: customGptRenamePermission ? "confirm" : "deny"
             },
             customGptPreferredModel.trim() || null,
-            customGptDefaultProject || null
+            customGptDefaultProject || null,
+            executionProfile
           )
         : await platform.createCustomGpt(
             customGptName,
             customGptDescription,
+            customGptIcon,
             customGptInstructions,
             conversationStarters,
             {
@@ -1790,7 +1859,8 @@ export function App() {
               renameConversation: customGptRenamePermission ? "confirm" : "deny"
             },
             customGptPreferredModel.trim() || null,
-            customGptDefaultProject || null
+            customGptDefaultProject || null,
+            executionProfile
           );
       setCustomGpts({ state: "ready", value: await platform.listCustomGpts() });
       setCustomGptNotice(
@@ -1914,7 +1984,11 @@ export function App() {
         );
       }
       for (const sourcePath of paths) {
-        await platform.importCustomGptFile(customGptId, sourcePath);
+        await platform.importCustomGptFile(
+          customGptId,
+          sourcePath,
+          shouldDescribeImages(imageDescriptionPreference)
+        );
       }
       const files = await platform.listCustomGptFiles(customGptId);
       setCustomGptFiles({ customGptId, data: { state: "ready", value: files } });
@@ -2165,6 +2239,15 @@ export function App() {
     setConversation(null);
     setNavigationError(null);
     if (destination !== "projects") setSelectedProjectId(null);
+  };
+
+  const openBrokerCredentialSettings = () => {
+    openWorkspaceDestination("settings");
+    window.requestAnimationFrame(() => {
+      const tokenInput = document.getElementById("broker-token");
+      tokenInput?.scrollIntoView?.({ block: "center", behavior: "smooth" });
+      tokenInput?.focus();
+    });
   };
 
   const createConversation = async () => {
@@ -2697,6 +2780,40 @@ export function App() {
           await platform.deleteConversation(dialog.conversation.id);
           setConversation(null);
           break;
+        case "custom-gpt-test": {
+          // La prueba usa exactamente el mismo recorrido durable que un chat
+          // normal: queda en SQLite, aparece en Recientes y puede reanudarse.
+          const prompt = dialogValue.trim();
+          const created = await platform.createConversation(
+            `Prueba · ${dialog.customGpt.name}`,
+            dialog.customGpt.defaultProjectId ?? undefined
+          );
+          await platform.setConversationCustomGpt(created.id, dialog.customGpt.id);
+          setDialog(null);
+          await reloadNavigation();
+          await openConversation(created.id);
+          followConversationScrollRef.current = true;
+          setActiveTurn({ state: "loading" });
+          setActiveTurnConversationId(created.id);
+          try {
+            const task = await platform.sendChatTurn(
+              created.id,
+              prompt,
+              [],
+              false,
+              false,
+              false,
+              false
+            );
+            setActiveTurn({ state: "ready", value: task });
+            await loadConversation(created.id);
+          } catch (error) {
+            // El chat ya existe: mostramos el fallo dentro de él para que no se
+            // pierda el contexto ni parezca que el botón no hizo nada.
+            setActiveTurn({ state: "error", message: describeError(error) });
+          }
+          break;
+        }
       }
       await reloadNavigation();
       setDialog(null);
@@ -2774,7 +2891,7 @@ export function App() {
   const beginScheduleEdit = (task: ScheduledTaskView) => {
     setScheduleEditingId(task.id);
     setScheduleName(task.name);
-    setScheduleConversationId(task.conversationId);
+    setScheduleConversationId(task.conversationId ?? "");
     setSchedulePrompt(task.prompt);
     setScheduleExpression(task.scheduleExpression);
     setScheduleAt(
@@ -3327,6 +3444,7 @@ export function App() {
             ["chats", "Chats"],
             ["projects", "Proyectos"],
             ["gpts", "GPTs"],
+            ["workflows", "Flujos"],
             ["automations", "Automatizaciones"],
             ["settings", "Ajustes"],
           ] as const).map(([destination, label], index) => (
@@ -3507,7 +3625,7 @@ export function App() {
                 {customGpts.state === "ready" &&
                   customGpts.value.map((customGpt) => (
                     <option key={customGpt.id} value={customGpt.id}>
-                      GPT · {customGpt.name} · v{customGpt.versionNo}
+                      {customGptIconGlyph(customGpt.iconRef)} {customGpt.name} · v{customGpt.versionNo}
                     </option>
                   ))}
               </select>
@@ -3756,6 +3874,22 @@ export function App() {
                             )}
                           </section>
                         ))}
+                    {message.role === "assistant" &&
+                      message.consensusSynthesized === false && (
+                        <div className="consensus-warning" role="status">
+                          <strong>Respuesta sin consenso completo</strong>
+                          <span>
+                            Los revisores no pudieron sintetizar una respuesta. El Broker entregó
+                            la mejor propuesta disponible
+                            {(message.arbiterFailureCount ?? 0) > 0
+                              ? ` después de ${message.arbiterFailureCount} fallo(s) del revisor.`
+                              : "."}
+                          </span>
+                          {(message.consensusWarnings?.length ?? 0) > 0 && (
+                            <small>{message.consensusWarnings?.join(" · ")}</small>
+                          )}
+                        </div>
+                      )}
                     {message.role === "assistant" &&
                       (message.modelUsed ||
                         message.responseDurationMs !== undefined ||
@@ -4196,7 +4330,11 @@ export function App() {
                         <article className="project-file-item" key={file.id}>
                           <span>
                             <strong>{file.displayName}</strong>
-                            <small>{attachmentStatusLabel(file.ingestionStatus)}</small>
+                            <small>
+                              {attachmentStatusLabel(file.ingestionStatus)}
+                              {attachmentImagePolicyLabel(file) &&
+                                ` · ${attachmentImagePolicyLabel(file)}`}
+                            </small>
                           </span>
                           <button
                             onClick={() => addProjectFileToConversation(file.id)}
@@ -4240,6 +4378,8 @@ export function App() {
                             <small>
                               {(attachment.sizeBytes / 1024).toFixed(1)} KB ·{" "}
                               {attachmentStatusLabel(attachment.ingestionStatus)}
+                              {attachmentImagePolicyLabel(attachment) &&
+                                ` · ${attachmentImagePolicyLabel(attachment)}`}
                             </small>
                           </button>
                           {conversation.value.projectId && (
@@ -4851,6 +4991,13 @@ export function App() {
                 )}
               </section>
 
+              <WorkflowStudio
+                projects={projects}
+                customGpts={customGpts.state === "ready" ? customGpts.value : []}
+                onOpenBrokerCredential={openBrokerCredentialSettings}
+                onOpenAutomations={() => setWorkspaceDestination("automations")}
+              />
+
               <div className="grid">
                 <article className="panel">
                   <div className="panel-heading">
@@ -4955,6 +5102,46 @@ export function App() {
                 <small aria-live="polite">
                   Tema visible: {resolvedAppearance === "dark" ? "oscuro" : "claro"}
                   {appearancePreference === "system" ? " · cambia con Windows" : ""}.
+                </small>
+              </section>
+
+              <section
+                className="appearance-card attachment-processing-card"
+                aria-labelledby="attachment-processing-heading"
+              >
+                <div>
+                  <span className="kicker">Procesamiento de archivos</span>
+                  <h3 id="attachment-processing-heading">Imágenes en documentos</h3>
+                  <p>
+                    Decide si el Broker debe describir las figuras con un modelo de visión
+                    cuando adjuntes un archivo nuevo.
+                  </p>
+                </div>
+                <div
+                  className="appearance-options"
+                  role="radiogroup"
+                  aria-label="Tratamiento de imágenes en documentos"
+                >
+                  {([
+                    ["describe", "Con imágenes", "Extrae y describe figuras; tarda más"],
+                    ["ignore", "Sin imágenes", "Ignora figuras y acelera la conversión"]
+                  ] as const).map(([value, label, description]) => (
+                    <button
+                      key={value}
+                      type="button"
+                      role="radio"
+                      aria-checked={imageDescriptionPreference === value}
+                      className={imageDescriptionPreference === value ? "active" : ""}
+                      onClick={() => setImageDescriptionPreference(value)}
+                    >
+                      <strong>{label}</strong>
+                      <span>{description}</span>
+                    </button>
+                  ))}
+                </div>
+                <small aria-live="polite">
+                  Se aplicará a los próximos archivos. Las imágenes adjuntadas directamente
+                  y las capturas siempre se procesan.
                 </small>
               </section>
 
@@ -5691,7 +5878,7 @@ export function App() {
                           <div className="scheduler-item-heading">
                             <div>
                               <strong>{task.name}</strong>
-                              <span>{task.conversationTitle}</span>
+                              <span>{task.targetKind === "workflow" ? `Flujo · ${task.workflowName} · versión ${task.workflowVersionNo}` : task.conversationTitle}</span>
                             </div>
                             <span className={`badge ${task.enabled ? "success" : ""}`}>
                               {task.enabled
@@ -5775,7 +5962,7 @@ export function App() {
                                               : "Reintentar"}
                                           </button>
                                         )}
-                                        {run.status === "running" && run.brokerTaskId && (
+                                        {run.status === "running" && (run.brokerTaskId || run.workflowRunId) && (
                                           <button
                                             className="danger-link compact"
                                             onClick={() => void cancelScheduledRun(task, run)}
@@ -5890,7 +6077,7 @@ export function App() {
                                                     : "Reintentar"}
                                                 </button>
                                               )}
-                                              {run.status === "running" && run.brokerTaskId && (
+                                              {run.status === "running" && (run.brokerTaskId || run.workflowRunId) && (
                                                 <button
                                                   className="danger-link compact"
                                                   onClick={() => void cancelScheduledRun(task, run)}
@@ -5951,12 +6138,11 @@ export function App() {
                             </div>
                           )}
                           <div className="scheduler-item-actions">
-                            <button
-                              className="secondary"
-                              onClick={() => openConversation(task.conversationId)}
-                            >
-                              Abrir conversación
-                            </button>
+                            {task.targetKind === "workflow" ? (
+                              <button className="secondary" onClick={() => setWorkspaceDestination("workflows")}>Abrir Flujos</button>
+                            ) : (
+                              <button className="secondary" onClick={() => task.conversationId && openConversation(task.conversationId)}>Abrir conversación</button>
+                            )}
                             {(task.runs.length === 0 ||
                               task.scheduleExpression !== "once") && (
                               <button
@@ -5981,25 +6167,12 @@ export function App() {
                                 ? "Iniciando…"
                                 : "Ejecutar ahora"}
                             </button>
-                            <button
-                              className="secondary"
-                              onClick={() => duplicateSchedule(task)}
-                              disabled={scheduleBusyId !== null}
-                            >
-                              Duplicar
-                            </button>
-                            <button
+                            {task.targetKind !== "workflow" && <button className="secondary" onClick={() => duplicateSchedule(task)} disabled={scheduleBusyId !== null}>Duplicar</button>}
+                            {task.targetKind !== "workflow" && <button
                               className="secondary"
                               onClick={() => beginScheduleEdit(task)}
-                              disabled={
-                                scheduleBusyId !== null ||
-                                task.runs.some((run) =>
-                                  ["claimed", "running"].includes(run.status)
-                                )
-                              }
-                            >
-                              Editar
-                            </button>
+                              disabled={scheduleBusyId !== null || task.runs.some((run) => ["claimed", "running"].includes(run.status))}
+                            >Editar</button>}
                             <button
                               className="danger-link"
                               onClick={() => void removeSchedule(task)}
@@ -6066,6 +6239,26 @@ export function App() {
                       disabled={customGptBusy}
                     />
                   </label>
+                  <fieldset className="custom-gpt-icon-picker">
+                    <legend>Icono</legend>
+                    <div role="group" aria-label="Icono del GPT personal">
+                      {customGptIconOptions.map((option) => (
+                        <button
+                          key={option.id}
+                          type="button"
+                          className={customGptIcon === option.id ? "selected" : ""}
+                          aria-pressed={customGptIcon === option.id}
+                          aria-label={`Icono ${option.label}`}
+                          onClick={() => setCustomGptIcon(option.id)}
+                          disabled={customGptBusy}
+                        >
+                          <span aria-hidden="true">{option.glyph}</span>
+                          <small>{option.label}</small>
+                        </button>
+                      ))}
+                    </div>
+                    <small>Se guarda con cada versión y ayuda a reconocerlo en chats y flujos.</small>
+                  </fieldset>
                   <label>
                     <span>Descripción breve (opcional)</span>
                     <textarea
@@ -6168,6 +6361,97 @@ export function App() {
                       Solo se aplica a los chats que aún no pertenecen a ningún
                       proyecto; nunca mueve una conversación ya clasificada.
                     </small>
+                    <label className="custom-gpt-own-execution">
+                      <input
+                        type="checkbox"
+                        checked={customGptOwnExecution}
+                        onChange={(event) => setCustomGptOwnExecution(event.target.checked)}
+                        disabled={customGptBusy}
+                      />
+                      <span>
+                        Usar un perfil propio
+                        <small>Si está desactivado, este GPT respeta las opciones elegidas en cada chat.</small>
+                      </span>
+                    </label>
+                    {customGptOwnExecution && (
+                      <div className="custom-gpt-execution-grid">
+                        <label>
+                          <span>Privacidad de los datos</span>
+                          <select
+                            value={customGptDataClassification}
+                            onChange={(event) => setCustomGptDataClassification(event.target.value as ConversationExecutionPreferences["dataClassification"])}
+                            disabled={customGptBusy}
+                          >
+                            <option value="public">Públicos · local o nube</option>
+                            <option value="internal">Uso personal · local o nube</option>
+                            <option value="confidential">Confidenciales · solo local</option>
+                            <option value="local_only">Siempre en este equipo</option>
+                          </select>
+                        </label>
+                        <label>
+                          <span>Forma de responder</span>
+                          <select
+                            value={customGptStrategy}
+                            onChange={(event) => setCustomGptStrategy(event.target.value as ConversationExecutionPreferences["strategy"])}
+                            disabled={customGptBusy}
+                          >
+                            <option value="single">Una respuesta</option>
+                            <option value="auto">Que decida el Broker</option>
+                            <option value="mixture_of_agents">Varios modelos y un revisor</option>
+                          </select>
+                        </label>
+                        {customGptStrategy === "mixture_of_agents" && (
+                          <label>
+                            <span>Profundidad</span>
+                            <select
+                              value={customGptPreset}
+                              onChange={(event) => setCustomGptPreset(event.target.value as ConversationExecutionPreferences["preset"])}
+                              disabled={customGptBusy}
+                            >
+                              <option value="fast">Rápida · secuencial</option>
+                              <option value="slow">Profunda · paralela si es posible</option>
+                            </select>
+                          </label>
+                        )}
+                        {customGptStrategy !== "mixture_of_agents" && (
+                          <label>
+                            <span>Documentos demasiado largos</span>
+                            <select
+                              value={customGptLongContext}
+                              onChange={(event) => setCustomGptLongContext(event.target.value as ConversationExecutionPreferences["longContext"])}
+                              disabled={customGptBusy}
+                            >
+                              <option value="fail">Parar y avisar</option>
+                              <option value="map_reduce">Dividir y combinar resultados</option>
+                            </select>
+                          </label>
+                        )}
+                        <label>
+                          <span>Límite por respuesta (USD)</span>
+                          <input
+                            type="number"
+                            min="0"
+                            max="10"
+                            step="0.01"
+                            value={customGptMaxCost}
+                            onChange={(event) => setCustomGptMaxCost(event.target.value)}
+                            disabled={customGptBusy}
+                          />
+                        </label>
+                        <label>
+                          <span>Prioridad en la cola</span>
+                          <select
+                            value={customGptPriority}
+                            onChange={(event) => setCustomGptPriority(event.target.value)}
+                            disabled={customGptBusy}
+                          >
+                            <option value="50">Alta</option>
+                            <option value="100">Normal</option>
+                            <option value="200">Baja</option>
+                          </select>
+                        </label>
+                      </div>
+                    )}
                   </fieldset>
                   {customGptError && (
                     <p className="error" role="alert">{customGptError}</p>
@@ -6219,6 +6503,9 @@ export function App() {
                         <article key={item.id} className="custom-gpt-item">
                           <div>
                             <div className="custom-gpt-item-heading">
+                              <span className="custom-gpt-avatar" aria-hidden="true">
+                                {customGptIconGlyph(item.iconRef)}
+                              </span>
                               <strong>{item.name}</strong>
                               <span>Versión {item.versionNo}</span>
                             </div>
@@ -6240,9 +6527,26 @@ export function App() {
                                   ? "confirmar"
                                   : "denegado"}
                               </span>
+                              <span>
+                                Ejecución: {item.executionProfile
+                                  ? item.executionProfile.strategy === "mixture_of_agents"
+                                    ? `varios modelos · ${item.executionProfile.preset === "slow" ? "profunda" : "rápida"}`
+                                    : item.executionProfile.strategy === "auto"
+                                      ? "decide el Broker"
+                                      : "una respuesta"
+                                  : "ajustes del chat"}
+                              </span>
                             </div>
                           </div>
                           <div className="custom-gpt-item-actions">
+                            <button
+                              className="primary"
+                              onClick={() => openDialog({ kind: "custom-gpt-test", customGpt: item })}
+                              disabled={customGptBusy}
+                              title="Crea un chat normal, envía una pregunta y conserva el resultado."
+                            >
+                              Probar
+                            </button>
                             <button
                               className={
                                 customGptKnowledge?.customGptId === item.id
@@ -6316,8 +6620,22 @@ export function App() {
                                   {customGptVersions.value.map((version) => (
                                     <li key={version.id}>
                                       <div>
-                                        <strong>Versión {version.versionNo}</strong>
+                                        <strong>
+                                          <span className="custom-gpt-history-icon" aria-hidden="true">
+                                            {customGptIconGlyph(version.iconRef)}
+                                          </span>{" "}
+                                          Versión {version.versionNo}
+                                        </strong>
                                         <span>{customGptVersionSummary(version)}</span>
+                                        <span>
+                                          Ejecución: {version.executionProfile
+                                            ? version.executionProfile.strategy === "mixture_of_agents"
+                                              ? `varios modelos · ${version.executionProfile.preset === "slow" ? "profunda" : "rápida"}`
+                                              : version.executionProfile.strategy === "auto"
+                                                ? "decide el Broker"
+                                                : "una respuesta"
+                                            : "ajustes del chat"}
+                                        </span>
                                         <small>{version.instructions}</small>
                                       </div>
                                       {!version.active && (
@@ -6405,6 +6723,8 @@ export function App() {
                                   <strong>{file.displayName}</strong>
                                   <span>
                                     {attachmentStatusLabel(file.ingestionStatus)}
+                                    {attachmentImagePolicyLabel(file) &&
+                                      ` · ${attachmentImagePolicyLabel(file)}`}
                                     {file.ingestionStatus === "ready" &&
                                       ` · ${
                                         attachmentContextSummary(file)?.label ??
@@ -6985,7 +7305,7 @@ export function App() {
             <span className="kicker">Vista previa</span>
             <h2 id="custom-gpt-preview-title">
               {customGptPreview.state === "ready"
-                ? `${customGptPreview.value.name} · versión ${customGptPreview.value.versionNo}`
+                ? `${customGptIconGlyph(customGptPreview.value.iconRef)} ${customGptPreview.value.name} · versión ${customGptPreview.value.versionNo}`
                 : "GPT personal"}
             </h2>
             <p id="custom-gpt-preview-description">
@@ -7009,6 +7329,12 @@ export function App() {
                   <div>
                     <dt>Modelo preferido</dt>
                     <dd>{customGptPreview.value.preferredModel ?? "Lo elige el Broker"}</dd>
+                  </div>
+                  <div>
+                    <dt>Perfil de ejecución</dt>
+                    <dd>{customGptPreview.value.executionProfile
+                      ? `${customGptPreview.value.executionProfile.strategy} · hasta ${customGptPreview.value.executionProfile.maxCostUsd.toFixed(2)} USD`
+                      : "Hereda los ajustes del chat"}</dd>
                   </div>
                   <div>
                     <dt>Proyecto predeterminado</dt>
@@ -7129,7 +7455,7 @@ export function App() {
                     }}
                     maxLength={dialogCopy(dialog).maxLength}
                     rows={9}
-                    placeholder="Ejemplo: responde en español, cita siempre las fuentes y separa claramente hechos de hipótesis."
+                    placeholder={dialogCopy(dialog).placeholder ?? "Ejemplo: responde en español, cita siempre las fuentes y separa claramente hechos de hipótesis."}
                   />
                 ) : (
                   <input
@@ -7161,7 +7487,7 @@ export function App() {
                   )
                 }
               >
-                {dialogBusy ? "Guardando…" : dialogCopy(dialog).action}
+                {dialogBusy ? dialogCopy(dialog).busyLabel ?? "Guardando…" : dialogCopy(dialog).action}
               </button>
             </div>
           </section>
@@ -7307,6 +7633,8 @@ export function App() {
                                 <strong>{file.displayName}</strong>
                                 <span>
                                   {attachmentStatusLabel(file.ingestionStatus)}
+                                  {attachmentImagePolicyLabel(file) &&
+                                    ` · ${attachmentImagePolicyLabel(file)}`}
                                   {" · "}
                                   {file.chunkCount} fragmentos
                                 </span>

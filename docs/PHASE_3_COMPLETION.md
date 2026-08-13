@@ -23,6 +23,7 @@ muerto. Este documento recoge su cierre.
 | Límite real del Broker | Verificado automáticamente | test `preferred_model_is_validated_against_the_broker_limit` | 128 caracteres y sin espacios, igual que `ModelRequirements` del Broker | intentar guardar un modelo con espacios |
 | Vista previa sin coste | Verificado automáticamente | comando `preview_custom_gpt` y test `the_preview_block_is_literally_the_one_sent_to_the_broker` | muestra el bloque exacto que se antepone al mensaje, los permisos, el modelo, el proyecto, el recuento de conocimiento y archivos, y avisos accionables; no crea ninguna tarea | pulsar **Vista previa** en una ficha de GPT |
 | Vista previa que no puede mentir | Verificado automáticamente | `custom_gpt_prompt_block` compartida entre la vista previa y la petición | el test comprueba que el bloque mostrado aparece **literalmente** dentro del prompt real | comparar la vista previa con **Ver contexto utilizado** tras enviar |
+| Prueba desde la ficha | Verificado automáticamente | botón **Probar**, diálogo específico y prueba `prueba un GPT en un chat real que queda guardado` | crea una conversación normal `Prueba · nombre`, aplica el proyecto predeterminado, asocia el GPT y envía la pregunta por el recorrido habitual; el resultado o el error permanecen en **Recientes** | **Inicio → GPTs → Probar**, escribir una pregunta y comprobar que se abre el chat de prueba |
 
 ## Contrato comprobado, no supuesto
 
@@ -77,9 +78,6 @@ Python en verde; clippy sin avisos. La cobertura de líneas de Rust queda en
 
 ## Lo que sigue faltando en la Fase 3
 
-- **Probar un GPT con una pregunta real** desde su ficha: la vista previa muestra
-  lo que se enviaría, pero no ejecuta un turno de prueba aislado. Hacerlo exige
-  decidir dónde vive esa conversación efímera y cómo se descarta.
 - **Funciones definidas por el cliente**: sigue existiendo una única herramienta
   codificada (`rename_conversation`). El encargo pide que cada GPT pueda definir
   las suyas, lo que exige un modelo de validación y confirmación propio.
@@ -89,4 +87,6 @@ Python en verde; clippy sin avisos. La cobertura de líneas de Rust queda en
   declarar permisos para herramientas que no existen sería teatro de seguridad.
   Ahora que las carpetas autorizadas están activas, «leer carpetas» es el
   siguiente candidato razonable.
-- **Icono, límites y configuración de contexto por GPT**: sin implementar.
+- **Límites y configuración avanzada de contexto por GPT**: el icono y el perfil
+  de ejecución ya están versionados, pero todavía no existe un presupuesto de
+  contexto propio más granular que las opciones generales del perfil.

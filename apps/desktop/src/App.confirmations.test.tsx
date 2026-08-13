@@ -14,7 +14,7 @@
  * detecta que la pregunta se ignore, y esta no detecta una ruta que nadie use.
  */
 
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -152,6 +152,334 @@ describe("navegación principal simplificada", () => {
       .toBe("page");
     expect(document.querySelector(".home-projects")).not.toBeNull();
     expect(screen.getByRole("heading", { name: "Proyectos" })).toBeDefined();
+
+    await userEvent.click(screen.getByRole("button", { name: "Flujos" }));
+    expect(screen.getByRole("button", { name: "Flujos" }).getAttribute("aria-current"))
+      .toBe("page");
+    expect(screen.getByRole("heading", { name: "Flujos" })).toBeDefined();
+    expect(screen.getByRole("button", { name: "Crear flujo" })).toBeDefined();
+  });
+
+  it("permite elegir si los documentos nuevos describen sus imágenes", async () => {
+    localStorage.removeItem("chatygpt.ingestion.describe-images.v1");
+    await mountHome();
+
+    await userEvent.click(screen.getByRole("button", { name: "Ajustes" }));
+    const withImages = screen.getByRole("radio", { name: /Con imágenes/ });
+    const withoutImages = screen.getByRole("radio", { name: /Sin imágenes/ });
+
+    expect(withImages.getAttribute("aria-checked")).toBe("true");
+    await userEvent.click(withoutImages);
+    expect(withoutImages.getAttribute("aria-checked")).toBe("true");
+    expect(localStorage.getItem("chatygpt.ingestion.describe-images.v1")).toBe("ignore");
+    localStorage.removeItem("chatygpt.ingestion.describe-images.v1");
+  });
+
+  it("guarda un perfil de ejecución propio para un GPT personal", async () => {
+    const savedGpt = {
+      id: "gpt-profile",
+      name: "Analista profundo",
+      description: "Contrasta varias perspectivas",
+      iconRef: "research" as const,
+      instructions: "Analiza la entrada y justifica la conclusión.",
+      conversationStarters: [],
+      toolPermissions: { runCode: "deny", renameConversation: "deny" },
+      preferredModel: null,
+      executionProfile: {
+        dataClassification: "confidential",
+        strategy: "mixture_of_agents",
+        preset: "slow",
+        maxCostUsd: 0.75,
+        longContext: "fail",
+        priority: 50
+      },
+      defaultProjectId: null,
+      versionNo: 1,
+      createdAt: "2026-08-12T18:00:00Z",
+      updatedAt: "2026-08-12T18:00:00Z"
+    };
+    platformMethod("createCustomGpt").mockResolvedValue(savedGpt);
+    platformMethod("listCustomGpts")
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([savedGpt]);
+
+    await mountHome();
+    await userEvent.click(screen.getByRole("button", { name: "GPTs" }));
+    const panel = screen.getByRole("heading", { name: "Mis GPTs" }).closest("section");
+    expect(panel).not.toBeNull();
+    const form = within(panel as HTMLElement);
+    await userEvent.type(form.getByLabelText("Nombre"), savedGpt.name);
+    await userEvent.click(form.getByRole("button", { name: "Icono Investigación" }));
+    await userEvent.type(form.getByLabelText("Instrucciones"), savedGpt.instructions);
+    await userEvent.click(form.getByRole("checkbox", { name: /Usar un perfil propio/ }));
+    await userEvent.selectOptions(form.getByLabelText("Privacidad de los datos"), "confidential");
+    await userEvent.selectOptions(form.getByLabelText("Forma de responder"), "mixture_of_agents");
+    await userEvent.selectOptions(form.getByLabelText("Profundidad"), "slow");
+    const cost = form.getByLabelText("Límite por respuesta (USD)");
+    await userEvent.clear(cost);
+    await userEvent.type(cost, "0.75");
+    await userEvent.selectOptions(form.getByLabelText("Prioridad en la cola"), "50");
+    await userEvent.click(form.getByRole("button", { name: "Crear GPT" }));
+
+    await waitFor(() => expect(platformMethod("createCustomGpt")).toHaveBeenCalledWith(
+      savedGpt.name,
+      "",
+      "research",
+      savedGpt.instructions,
+      [],
+      { runCode: "deny", renameConversation: "deny" },
+      null,
+      null,
+      savedGpt.executionProfile
+    ));
+    expect(await form.findByText(/GPT creado con su versión 1/)).toBeDefined();
+  }, 10_000);
+
+  it("prueba un GPT en un chat real que queda guardado", async () => {
+    const gpt = {
+      id: "gpt-test",
+      name: "Analista documental",
+      description: "Responde usando sus fuentes",
+      iconRef: "research" as const,
+      instructions: "Distingue hechos de inferencias.",
+      conversationStarters: ["Resume la documentación disponible"],
+      toolPermissions: { runCode: "deny", renameConversation: "deny" },
+      preferredModel: null,
+      executionProfile: null,
+      defaultProjectId: "project-docs",
+      versionNo: 2,
+      createdAt: "2026-08-12T18:00:00Z",
+      updatedAt: "2026-08-12T18:00:00Z"
+    };
+    const created = {
+      id: "conversation-test",
+      title: "Prueba · Analista documental",
+      projectId: "project-docs",
+      updatedAt: "2026-08-12T19:00:00Z"
+    };
+    const conversation = {
+      ...created,
+      customGptId: gpt.id,
+      executionPreferences: {
+        dataClassification: "public",
+        strategy: "single",
+        preset: "fast",
+        maxCostUsd: 0.1,
+        longContext: "fail",
+        priority: 50
+      },
+      messages: [],
+      researchRuns: []
+    };
+    const task = {
+      id: "task-test",
+      remoteStatus: "completed",
+      localState: "completed",
+      consecutivePollErrors: 0,
+      result: { assistant_content: "Resultado de prueba" },
+      progress: { phase: "completed" },
+      pendingToolCalls: [],
+      updatedAt: "2026-08-12T19:00:01Z"
+    };
+    platformMethod("listCustomGpts").mockResolvedValue([gpt]);
+    platformMethod("createConversation").mockResolvedValue(created);
+    platformMethod("setConversationCustomGpt").mockResolvedValue(conversation);
+    platformMethod("getConversation").mockResolvedValue(conversation);
+    platformMethod("listAttachments").mockResolvedValue([]);
+    platformMethod("listProjectFiles").mockResolvedValue([]);
+    platformMethod("sendChatTurn").mockResolvedValue(task);
+
+    await mountHome();
+    await userEvent.click(screen.getByRole("button", { name: "GPTs" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Probar" }));
+
+    const question = screen.getByLabelText("Pregunta de prueba");
+    expect((question as HTMLTextAreaElement).value).toBe(gpt.conversationStarters[0]);
+    await userEvent.clear(question);
+    await userEvent.type(question, "¿Qué conclusiones principales encuentras?");
+    await userEvent.click(screen.getByRole("button", { name: "Crear chat y probar" }));
+
+    await waitFor(() => expect(platformMethod("createConversation")).toHaveBeenCalledWith(
+      "Prueba · Analista documental",
+      "project-docs"
+    ));
+    expect(platformMethod("setConversationCustomGpt"))
+      .toHaveBeenCalledWith("conversation-test", "gpt-test");
+    await waitFor(() => expect(platformMethod("sendChatTurn")).toHaveBeenCalledWith(
+      "conversation-test",
+      "¿Qué conclusiones principales encuentras?",
+      [],
+      false,
+      false,
+      false,
+      false
+    ));
+    expect(await screen.findByRole("heading", { name: created.title })).toBeDefined();
+  }, 10_000);
+
+  it("inserta el primer nodo útil entre Entrada y Resultado", async () => {
+    const flow = {
+      id: "flow-1",
+      name: "Revisar informe",
+      description: null,
+      projectId: null,
+      publishedVersionNo: null,
+      nodeCount: 2,
+      updatedAt: "2026-08-12T10:00:00Z",
+      definition: {
+        nodes: [
+          { id: "input-1", kind: "input", label: "Entrada", x: 35, y: 55, attachmentIds: [] },
+          { id: "result-1", kind: "result", label: "Resultado", x: 720, y: 55, attachmentIds: [] }
+        ],
+        edges: [{ id: "edge-direct", source: "input-1", target: "result-1" }]
+      }
+    };
+    platformMethod("createWorkflow").mockResolvedValue(flow);
+    platformMethod("listWorkflows").mockResolvedValue([flow]);
+    platformMethod("getWorkflow").mockResolvedValue(flow);
+    platformMethod("listWorkflowRuns").mockResolvedValue([]);
+    platformMethod("saveWorkflow").mockImplementation(async (...args: unknown[]) => ({
+      ...flow,
+      nodeCount: (args[4] as typeof flow.definition).nodes.length,
+      definition: args[4]
+    }));
+
+    await mountHome();
+    await userEvent.click(screen.getByRole("button", { name: "Flujos" }));
+    await userEvent.type(screen.getByLabelText("Nombre del flujo"), flow.name);
+    await userEvent.click(screen.getByRole("button", { name: "Crear flujo" }));
+    await screen.findByRole("button", { name: "Instrucción rápida" });
+    await userEvent.click(screen.getByRole("button", { name: "Instrucción rápida" }));
+    await userEvent.click(screen.getByRole("button", { name: "Guardar borrador" }));
+
+    await waitFor(() => expect(platformMethod("saveWorkflow")).toHaveBeenCalled());
+    const definition = platformMethod("saveWorkflow").mock.calls.at(-1)?.[4] as typeof flow.definition;
+    const prompt = definition.nodes.find((node) => node.kind === "prompt");
+    expect(prompt).toBeDefined();
+    expect(definition.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({ source: "input-1", target: prompt?.id }),
+      expect.objectContaining({ source: prompt?.id, target: "result-1" })
+    ]));
+    expect(definition.edges).not.toContainEqual(expect.objectContaining({ id: "edge-direct" }));
+  });
+
+  it("guía hasta la credencial cuando un flujo recibe ADMIN_AUTH_REQUIRED", async () => {
+    const flow = {
+      id: "flow-auth",
+      name: "Flujo protegido",
+      description: null,
+      projectId: null,
+      publishedVersionNo: 1,
+      nodeCount: 3,
+      updatedAt: "2026-08-12T16:26:19Z",
+      definition: {
+        nodes: [
+          { id: "input-auth", kind: "input", label: "Entrada", x: 35, y: 55, attachmentIds: [] },
+          { id: "gpt-auth", kind: "custom_gpt", label: "Analizar", x: 360, y: 55, customGptId: "gpt-1", attachmentIds: [] },
+          { id: "result-auth", kind: "result", label: "Resultado", x: 720, y: 55, attachmentIds: [] }
+        ],
+        edges: [
+          { id: "edge-auth-1", source: "input-auth", target: "gpt-auth" },
+          { id: "edge-auth-2", source: "gpt-auth", target: "result-auth" }
+        ]
+      }
+    };
+    const failedRun = {
+      id: "run-auth",
+      workflowId: flow.id,
+      workflowVersionId: "version-auth",
+      versionNo: 1,
+      status: "failed",
+      inputText: "Prueba",
+      outputs: {},
+      error: null,
+      nodeRuns: [
+        { id: "nr-input", nodeId: "input-auth", nodeKind: "input", nodeLabel: "Entrada", status: "completed", outputText: "Prueba", updatedAt: "2026-08-12T16:26:19Z" },
+        { id: "nr-gpt", nodeId: "gpt-auth", nodeKind: "custom_gpt", nodeLabel: "Analizar", status: "failed", error: { message: "Broker AI devolvió HTTP 403: ADMIN_AUTH_REQUIRED" }, updatedAt: "2026-08-12T16:26:19Z" },
+        { id: "nr-result", nodeId: "result-auth", nodeKind: "result", nodeLabel: "Resultado", status: "skipped", updatedAt: "2026-08-12T16:26:19Z" }
+      ],
+      completedAt: "2026-08-12T16:26:19Z",
+      updatedAt: "2026-08-12T16:26:19Z"
+    };
+    platformMethod("listWorkflows").mockResolvedValue([flow]);
+    platformMethod("getWorkflow").mockResolvedValue(flow);
+    platformMethod("listWorkflowRuns").mockResolvedValue([failedRun]);
+
+    await mountHome();
+    await userEvent.click(screen.getByRole("button", { name: "Flujos" }));
+    await userEvent.click(await screen.findByText("Historial reciente (1)"));
+    await userEvent.click(screen.getByRole("button", { name: /Fallido/ }));
+
+    expect(await screen.findByText("El Broker necesita una credencial nueva")).toBeDefined();
+    expect(screen.getByRole("button", { name: "Ya la renové: reintentar" })).toBeDefined();
+    await userEvent.click(screen.getByRole("button", { name: "Renovar credencial" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Ajustes" }).getAttribute("aria-current")).toBe("page");
+      expect(document.activeElement).toBe(screen.getByLabelText("Token administrativo"));
+    });
+  });
+
+  it("permite revisar y aprobar una rama pausada", async () => {
+    const flow = {
+      id: "flow-approval",
+      name: "Publicar informe",
+      description: null,
+      projectId: null,
+      publishedVersionNo: 1,
+      nodeCount: 3,
+      updatedAt: "2026-08-12T17:00:00Z",
+      definition: {
+        nodes: [
+          { id: "input-approval", kind: "input", label: "Entrada", x: 35, y: 55, attachmentIds: [] },
+          { id: "approval", kind: "approval", label: "Revisión final", x: 360, y: 55, attachmentIds: [] },
+          { id: "result-approval", kind: "result", label: "Resultado", x: 720, y: 55, attachmentIds: [] }
+        ],
+        edges: [
+          { id: "ea-1", source: "input-approval", target: "approval" },
+          { id: "ea-2", source: "approval", target: "result-approval" }
+        ]
+      }
+    };
+    const waitingRun = {
+      id: "run-approval",
+      workflowId: flow.id,
+      workflowVersionId: "version-approval",
+      versionNo: 1,
+      status: "waiting_approval",
+      inputText: "Informe confidencial",
+      outputs: {},
+      error: null,
+      nodeRuns: [
+        { id: "na-input", nodeId: "input-approval", nodeKind: "input", nodeLabel: "Entrada", status: "completed", outputText: "Informe confidencial", updatedAt: "2026-08-12T17:00:00Z" },
+        { id: "na-approval", nodeId: "approval", nodeKind: "approval", nodeLabel: "Revisión final", status: "waiting_approval", inputText: "### Salida de Entrada\nInforme confidencial", updatedAt: "2026-08-12T17:00:00Z" },
+        { id: "na-result", nodeId: "result-approval", nodeKind: "result", nodeLabel: "Resultado", status: "pending", updatedAt: "2026-08-12T17:00:00Z" }
+      ],
+      updatedAt: "2026-08-12T17:00:00Z"
+    };
+    platformMethod("listWorkflows").mockResolvedValue([flow]);
+    platformMethod("getWorkflow").mockResolvedValue(flow);
+    platformMethod("listWorkflowRuns").mockResolvedValue([waitingRun]);
+    platformMethod("decideWorkflowApproval").mockResolvedValue({
+      ...waitingRun,
+      status: "completed",
+      outputs: { Resultado: "Informe confidencial" },
+      nodeRuns: waitingRun.nodeRuns.map((node) => ({ ...node, status: "completed" }))
+    });
+
+    await mountHome();
+    await userEvent.click(screen.getByRole("button", { name: "Flujos" }));
+    await userEvent.click(await screen.findByText("Historial reciente (1)"));
+    await userEvent.click(screen.getByRole("button", { name: /Esperando aprobación/ }));
+
+    expect((await screen.findAllByText("Revisión final")).length).toBeGreaterThanOrEqual(1);
+    await userEvent.click(screen.getByText("Ver contenido pendiente"));
+    expect(screen.getByText("Informe confidencial")).toBeDefined();
+    await userEvent.click(screen.getByRole("button", { name: "Aprobar y continuar" }));
+
+    await waitFor(() => expect(platformMethod("decideWorkflowApproval"))
+      .toHaveBeenCalledWith("run-approval", "approval", true));
+    expect(await screen.findByText("Rama aprobada. El flujo continúa desde este punto.")).toBeDefined();
   });
 });
 
