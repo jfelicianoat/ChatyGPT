@@ -246,11 +246,16 @@ async fn poll_remote_file(
             match broker.download_text(markdown_url).await {
                 Ok(markdown) => {
                     database.replace_attachment_chunks(&record.id, &chunk_markdown(&markdown))?;
+                    let dependencies_enabled = broker
+                        .capabilities()
+                        .await
+                        .is_ok_and(|capabilities| capabilities.task_dependencies);
                     let _ = crate::task_runtime::start_attachment_semantic_index(
                         database.clone(),
                         broker.clone(),
                         &record.id,
                         false,
+                        dependencies_enabled,
                     );
                 }
                 Err(error) => {

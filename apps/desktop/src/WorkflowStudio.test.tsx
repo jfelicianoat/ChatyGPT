@@ -41,12 +41,16 @@ const workflow: WorkflowView = {
 
 beforeEach(() => {
   calls.clear();
+  vi.spyOn(window, "confirm").mockReturnValue(true);
   method("listWorkflows").mockResolvedValue([workflow]);
   method("getWorkflow").mockResolvedValue(workflow);
   method("listWorkflowRuns").mockResolvedValue([]);
 });
 
-afterEach(cleanup);
+afterEach(() => {
+  vi.restoreAllMocks();
+  cleanup();
+});
 
 it("programa la versión publicada con la entrada visible y ofrece abrir Automatizaciones", async () => {
   const user = userEvent.setup();
@@ -144,7 +148,9 @@ it("explica el conocimiento propio que quedará autorizado al publicar un nodo G
     iconRef: "research",
     instructions: "Analiza con rigor.",
     conversationStarters: [],
-    toolPermissions: { runCode: "deny", renameConversation: "deny" },
+    toolPermissions: { runCode: "deny", renameConversation: "deny", readAuthorizedFolders: "deny", modifyAuthorizedFiles: "deny", createScheduledTasks: "deny", callExternalApis: "deny" },
+    apiActions: [],
+    contextProfile: "balanced",
     preferredModel: null,
     executionProfile: null,
     defaultProjectId: null,

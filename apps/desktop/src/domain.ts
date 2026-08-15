@@ -12,6 +12,7 @@ export const TASK_STATUSES = [
   "synthesizing",
   "verifying",
   "waiting_for_memory",
+  "waiting_for_dependencies",
   "waiting_for_tools",
   "completed",
   "failed",
@@ -39,7 +40,12 @@ export type BootstrapReport = {
  * declara cumplido ni incumplido sin una ejecución real que lo respalde.
  */
 export type PerformanceMetricSummary = {
-  metric: "app_start" | "conversation_open" | "conversation_search" | "ui_response";
+  metric:
+    | "app_start"
+    | "conversation_open"
+    | "conversation_search"
+    | "remote_operation_start"
+    | "ui_response";
   label: string;
   description: string;
   budgetMs: number;
@@ -709,6 +715,8 @@ export type BrokerDiagnostic = {
   derivedDataBoundary?: boolean;
   workLanes: string[];
   agentSkills: string[];
+  agentSkillsEgress?: string[];
+  taskDependencies?: boolean;
   sandboxRunCode?: boolean;
   fileIngestion?: boolean;
   longContextMapReduce?: boolean;
@@ -849,6 +857,7 @@ const TASK_PHASE_LABELS: Record<string, string> = {
   synthesizing: "Preparando la respuesta final",
   verifying: "Verificando el resultado",
   waiting_for_memory: "Esperando memoria disponible",
+  waiting_for_dependencies: "Esperando a que termine el índice documental",
   waiting_for_tools: "Esperando tu confirmación",
   completed: "Completado"
 };
@@ -932,6 +941,11 @@ export type BrokerCredentialStatus = {
   message: string;
 };
 
+export type ApiCredentialStatus = {
+  name: string;
+  protected: boolean;
+};
+
 /** Etiqueta corta del origen de la credencial en uso. */
 export const brokerCredentialLabel = (status: BrokerCredentialStatus): string => {
   switch (status.source) {
@@ -949,7 +963,7 @@ export type AuthorizedFolderView = {
   id: string;
   path: string;
   displayName: string;
-  permissions: { write?: boolean; purpose?: string };
+  permissions: { write?: boolean; read?: boolean; modify?: boolean; purpose?: string };
   grantedAt: string;
   revokedAt: string | null;
 };
@@ -967,6 +981,10 @@ export const authorizedFolderPurpose = (folder: AuthorizedFolderView): string =>
       return "Calendario de automatizaciones";
     case "custom_gpt_export":
       return "Exportar GPTs personales";
+    case "gpt_read":
+      return "Lectura solicitada por GPTs personales";
+    case "gpt_modify":
+      return "Modificación confirmada por GPTs personales";
     default:
       return "Uso no declarado";
   }
@@ -1028,7 +1046,17 @@ export const confirmationSummary = (
   return {
     action:
       disclosure.action_label ??
-      (call.name === "rename_conversation" ? "Renombrar la conversación" : call.name),
+      (call.name === "rename_conversation"
+        ? "Renombrar la conversación"
+        : call.name === "list_authorized_folders"
+          ? "Listar una carpeta autorizada"
+          : call.name === "read_authorized_file"
+            ? "Leer un archivo autorizado"
+            : call.name === "replace_authorized_file"
+              ? "Reemplazar un archivo autorizado"
+              : call.name === "create_scheduled_task"
+                ? "Crear una tarea programada"
+                : call.name),
     tool: confirmation?.toolName ?? call.name,
     resource: confirmation?.resources?.label ?? "Recursos no declarados",
     data: disclosure.data_sent ?? [],
@@ -1094,6 +1122,24 @@ export const shouldFollowConversationScroll = ({
   threshold?: number;
 }): boolean =>
   Math.max(0, scrollHeight - scrollTop - clientHeight) <= threshold;
+
+/**
+ * Ventana progresiva de un historial ya cargado.
+ *
+ * Conserva siempre el extremo reciente y solo amplía hacia atrás. La función
+ * es pura para que el render no pueda perder, reordenar ni duplicar mensajes.
+ */
+export const progressiveConversationWindow = <T>(
+  items: readonly T[],
+  visibleLimit: number
+): { visibleItems: readonly T[]; hiddenCount: number } => {
+  const normalizedLimit = Math.max(1, Math.floor(visibleLimit));
+  const hiddenCount = Math.max(0, items.length - normalizedLimit);
+  return {
+    visibleItems: items.slice(hiddenCount),
+    hiddenCount
+  };
+};
 
 export const canSendMessage = ({
   hasConversation,
@@ -1180,6 +1226,22 @@ export const customGptIconOptions: Array<{ id: CustomGptIcon; glyph: string; lab
 export const customGptIconGlyph = (icon: string | null | undefined): string =>
   customGptIconOptions.find((option) => option.id === icon)?.glyph ?? "✦";
 
+export type CustomGptApiAction = {
+  name: string;
+  description: string;
+  url: string;
+  queryParameters?: string[];
+  parameters: Array<{
+    name: string;
+    type: "string" | "number" | "boolean";
+    required: boolean;
+    location: "query" | "path";
+    description?: string;
+  }>;
+  credentialRef?: string;
+  authMode: "none" | "bearer" | "api_key";
+};
+
 export type CustomGptView = {
   id: string;
   name: string;
@@ -1190,11 +1252,18 @@ export type CustomGptView = {
   toolPermissions: {
     runCode: "deny" | "confirm";
     renameConversation: "deny" | "confirm";
+    readAuthorizedFolders: "deny" | "confirm";
+    modifyAuthorizedFiles: "deny" | "confirm";
+    createScheduledTasks: "deny" | "confirm";
+    callExternalApis: "deny" | "confirm";
   };
   /** Modelo que el Broker intentará primero; null deja decidir al Broker. */
   preferredModel: string | null;
   /** null conserva las opciones elegidas en cada chat. */
   executionProfile: ConversationExecutionPreferences | null;
+  /** Cantidad de historial, recuerdos y fragmentos documentales que puede usar. */
+  contextProfile: "focused" | "balanced" | "broad";
+  apiActions: CustomGptApiAction[];
   /** Proyecto al que van los chats nuevos que eligen este GPT. */
   defaultProjectId: string | null;
   versionNo: number;
@@ -1212,6 +1281,7 @@ export type CustomGptPreview = {
   promptBlock: string;
   preferredModel: string | null;
   executionProfile: ConversationExecutionPreferences | null;
+  contextProfile: CustomGptView["contextProfile"];
   defaultProjectName: string | null;
   conversationStarters: string[];
   toolPermissions: CustomGptView["toolPermissions"];
@@ -1233,6 +1303,8 @@ export type CustomGptVersionView = {
   conversationStarters: string[];
   preferredModel: string | null;
   executionProfile: ConversationExecutionPreferences | null;
+  contextProfile: CustomGptView["contextProfile"];
+  apiActions: CustomGptView["apiActions"];
   createdAt: string;
   active: boolean;
   toolPermissions: CustomGptView["toolPermissions"];
@@ -1352,8 +1424,27 @@ export type ConversationMessage = {
   consensusSynthesized?: boolean;
   consensusWarnings?: string[];
   arbiterFailureCount?: number;
+  executionWarnings?: string[];
+  unsupportedCitationUrls?: string[];
   sources: ConversationSource[];
   createdAt: string;
+};
+
+export type CustomGptApiActionPreview = {
+  finalUrl: string;
+  destination: string;
+  method: "GET";
+  dataSent: Array<{ name: string; value: unknown }>;
+};
+
+export type CustomGptApiActionTestResult = {
+  finalUrl: string;
+  destination: string;
+  status: number;
+  contentType?: string;
+  body: string;
+  truncated: boolean;
+  durationMs: number;
 };
 
 export type WorkflowNodeKind = "input" | "custom_gpt" | "prompt" | "approval" | "result";
@@ -1371,6 +1462,7 @@ export type WorkflowNode = {
   customGptInstructions?: string | null;
   preferredModel?: string | null;
   executionProfile?: ConversationExecutionPreferences | null;
+  contextProfile?: CustomGptView["contextProfile"];
   /** Conocimiento del GPT seleccionado al publicar; una revocación posterior se respeta. */
   customGptMemoryIds?: string[];
   /** Archivos propios del GPT preparados al publicar. */

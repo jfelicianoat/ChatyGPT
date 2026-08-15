@@ -1,4 +1,4 @@
-"""Verificación reproducible y sin persistencia de secretos para AI Broker 2.7."""
+"""Verificación reproducible y sin persistencia de secretos para AI Broker 2.8."""
 
 from __future__ import annotations
 
@@ -29,6 +29,7 @@ REQUIRED_TASK_STATES = {
     "synthesizing",
     "verifying",
     "waiting_for_memory",
+    "waiting_for_dependencies",
     "waiting_for_tools",
     *TERMINAL_STATES,
 }
@@ -143,7 +144,7 @@ def verify_read_contract(probe: BrokerProbe) -> list[Check]:
 
     _, capabilities = probe.request("GET", "/api/v1/capabilities")
     contract_version = capabilities.get("contract_version")
-    if contract_version != "2.7":
+    if contract_version != "2.8":
         raise VerificationError(f"versión contractual inesperada: {contract_version!r}")
     ingestion_formats = capabilities.get("ingestion_formats")
     if not isinstance(ingestion_formats, dict) or any(
@@ -155,6 +156,11 @@ def verify_read_contract(probe: BrokerProbe) -> list[Check]:
         raise VerificationError(
             "ingestion_formats debe ser un objeto de grupos con listas de extensiones"
         )
+    egress = capabilities.get("agent_skills_egress")
+    if not isinstance(egress, list) or any(not isinstance(skill, str) for skill in egress):
+        raise VerificationError("agent_skills_egress debe ser una lista de nombres")
+    if capabilities.get("task_dependencies") is not True:
+        raise VerificationError("task_dependencies debe estar anunciado para el contrato 2.8")
     checks.append(
         Check(
             "capabilities",
@@ -167,6 +173,8 @@ def verify_read_contract(probe: BrokerProbe) -> list[Check]:
                 "file_ingestion": capabilities.get("file_ingestion"),
                 "ingestion_formats": ingestion_formats,
                 "sandbox_run_code": capabilities.get("sandbox_run_code"),
+                "agent_skills_egress": egress,
+                "task_dependencies": capabilities.get("task_dependencies"),
                 "long_context_map_reduce": capabilities.get("long_context_map_reduce"),
             },
         )

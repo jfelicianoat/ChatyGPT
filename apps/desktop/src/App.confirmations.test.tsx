@@ -33,11 +33,13 @@ const DEFAULTS: Record<string, unknown> = {
     reachable: true,
     ready: true,
     baseUrl: "http://127.0.0.1:8765",
-    contractVersion: "2.7",
+    contractVersion: "2.8",
     strategies: ["single"],
     presets: {},
     workLanes: ["inference"],
     agentSkills: [],
+    agentSkillsEgress: [],
+    taskDependencies: true,
     latencyMs: 4,
     message: "Broker AI está listo"
   },
@@ -160,6 +162,137 @@ describe("navegación principal simplificada", () => {
     expect(screen.getByRole("button", { name: "Crear flujo" })).toBeDefined();
   });
 
+  it("hace visible inmediatamente que el mensaje remoto está arrancando", async () => {
+    const summary = {
+      id: "conversation-visible-start",
+      title: "Comprobar respuesta visual",
+      projectId: null,
+      updatedAt: "2026-08-14T10:00:00Z"
+    };
+    const conversation = {
+      ...summary,
+      customGptId: null,
+      executionPreferences: {
+        dataClassification: "public",
+        strategy: "single",
+        preset: "fast",
+        maxCostUsd: 0.1,
+        longContext: "fail",
+        priority: 50
+      },
+      messages: [],
+      researchRuns: []
+    };
+    platformMethod("listConversations").mockResolvedValue([summary]);
+    platformMethod("getConversation").mockResolvedValue(conversation);
+    platformMethod("listAttachments").mockResolvedValue([]);
+    platformMethod("listProjectFiles").mockResolvedValue([]);
+    platformMethod("sendChatTurn").mockReturnValue(new Promise(() => undefined));
+
+    render(<App />);
+    await waitFor(() => expect(platformMethod("bootstrap")).toHaveBeenCalled());
+    await screen.findByRole("heading", { name: summary.title });
+    await userEvent.type(screen.getByPlaceholderText("Escribe un mensaje…"), "Hola");
+    await userEvent.click(screen.getByRole("button", { name: "Enviar" }));
+
+    expect((await screen.findByRole("status")).textContent).toContain(
+      "Preparando y guardando el mensaje"
+    );
+    expect(platformMethod("sendChatTurn")).toHaveBeenCalledTimes(1);
+  });
+
+  it("abre un chat largo por el final y permite recuperar mensajes anteriores", async () => {
+    const summary = {
+      id: "conversation-long",
+      title: "Historial largo",
+      projectId: null,
+      updatedAt: "2026-08-14T10:00:00Z"
+    };
+    const messages = Array.from({ length: 82 }, (_, index) => ({
+      id: `message-${index + 1}`,
+      role: "user",
+      status: "completed",
+      sequenceNo: index + 1,
+      text: `Mensaje histórico ${index + 1}`,
+      error: null,
+      brokerTaskId: null,
+      sources: [],
+      createdAt: "2026-08-14T10:00:00Z"
+    }));
+    platformMethod("listConversations").mockResolvedValue([summary]);
+    platformMethod("getConversation").mockResolvedValue({
+      ...summary,
+      customGptId: null,
+      executionPreferences: {
+        dataClassification: "public",
+        strategy: "single",
+        preset: "fast",
+        maxCostUsd: 0.1,
+        longContext: "fail",
+        priority: 50
+      },
+      messages,
+      researchRuns: []
+    });
+    platformMethod("listAttachments").mockResolvedValue([]);
+    platformMethod("listProjectFiles").mockResolvedValue([]);
+
+    render(<App />);
+    await screen.findByRole("heading", { name: summary.title });
+
+    expect(screen.queryByText("Mensaje histórico 1")).toBeNull();
+    expect(screen.getByText("Mensaje histórico 82")).toBeDefined();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Mostrar 2 mensajes anteriores" })
+    );
+    expect(await screen.findByText("Mensaje histórico 1")).toBeDefined();
+    expect(screen.queryByText(/todavía ocultos/)).toBeNull();
+  });
+
+  it("muestra los avisos de dependencias y las citas no consultadas del contrato 2.8", async () => {
+    const summary = {
+      id: "conversation-warnings",
+      title: "Avisos de ejecución",
+      projectId: null,
+      updatedAt: "2026-08-15T10:00:00Z"
+    };
+    platformMethod("listConversations").mockResolvedValue([summary]);
+    platformMethod("getConversation").mockResolvedValue({
+      ...summary,
+      customGptId: null,
+      executionPreferences: {
+        dataClassification: "public",
+        strategy: "single",
+        preset: "fast",
+        maxCostUsd: 0.1,
+        longContext: "fail",
+        priority: 50
+      },
+      messages: [{
+        id: "message-warning",
+        role: "assistant",
+        status: "complete",
+        sequenceNo: 1,
+        text: "Respuesta disponible",
+        sources: [],
+        executionWarnings: ["Una dependencia falló; la tarea continuó"],
+        unsupportedCitationUrls: ["https://example.invalid/no-consultada"],
+        createdAt: "2026-08-15T10:00:00Z"
+      }],
+      researchRuns: []
+    });
+    platformMethod("listAttachments").mockResolvedValue([]);
+    platformMethod("listProjectFiles").mockResolvedValue([]);
+
+    render(<App />);
+    await screen.findByRole("heading", { name: summary.title });
+
+    expect(screen.getByText("La respuesta se generó con advertencias")).toBeDefined();
+    expect(screen.getByText(/Una dependencia falló/)).toBeDefined();
+    expect(screen.getByText("Hay enlaces que el agente no llegó a consultar")).toBeDefined();
+    expect(screen.getByText("https://example.invalid/no-consultada")).toBeDefined();
+  });
+
   it("permite elegir si los documentos nuevos describen sus imágenes", async () => {
     localStorage.removeItem("chatygpt.ingestion.describe-images.v1");
     await mountHome();
@@ -183,7 +316,9 @@ describe("navegación principal simplificada", () => {
       iconRef: "research" as const,
       instructions: "Analiza la entrada y justifica la conclusión.",
       conversationStarters: [],
-      toolPermissions: { runCode: "deny", renameConversation: "deny" },
+      toolPermissions: { runCode: "deny", renameConversation: "deny", readAuthorizedFolders: "deny", modifyAuthorizedFiles: "deny", createScheduledTasks: "deny", callExternalApis: "deny" },
+      apiActions: [],
+      contextProfile: "broad",
       preferredModel: null,
       executionProfile: {
         dataClassification: "confidential",
@@ -211,6 +346,7 @@ describe("navegación principal simplificada", () => {
     await userEvent.type(form.getByLabelText("Nombre"), savedGpt.name);
     await userEvent.click(form.getByRole("button", { name: "Icono Investigación" }));
     await userEvent.type(form.getByLabelText("Instrucciones"), savedGpt.instructions);
+    await userEvent.selectOptions(form.getByLabelText("Cantidad de contexto"), "broad");
     await userEvent.click(form.getByRole("checkbox", { name: /Usar un perfil propio/ }));
     await userEvent.selectOptions(form.getByLabelText("Privacidad de los datos"), "confidential");
     await userEvent.selectOptions(form.getByLabelText("Forma de responder"), "mixture_of_agents");
@@ -227,10 +363,12 @@ describe("navegación principal simplificada", () => {
       "research",
       savedGpt.instructions,
       [],
-      { runCode: "deny", renameConversation: "deny" },
+      { runCode: "deny", renameConversation: "deny", readAuthorizedFolders: "deny", modifyAuthorizedFiles: "deny", createScheduledTasks: "deny", callExternalApis: "deny" },
       null,
       null,
-      savedGpt.executionProfile
+      savedGpt.executionProfile,
+      "broad",
+      []
     ));
     expect(await form.findByText(/GPT creado con su versión 1/)).toBeDefined();
   }, 10_000);
@@ -243,7 +381,9 @@ describe("navegación principal simplificada", () => {
       iconRef: "research" as const,
       instructions: "Distingue hechos de inferencias.",
       conversationStarters: ["Resume la documentación disponible"],
-      toolPermissions: { runCode: "deny", renameConversation: "deny" },
+      toolPermissions: { runCode: "deny", renameConversation: "deny", readAuthorizedFolders: "deny", modifyAuthorizedFiles: "deny", createScheduledTasks: "deny", callExternalApis: "deny" },
+      apiActions: [],
+      contextProfile: "balanced",
       preferredModel: null,
       executionProfile: null,
       defaultProjectId: "project-docs",

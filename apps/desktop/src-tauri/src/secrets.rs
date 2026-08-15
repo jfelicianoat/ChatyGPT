@@ -18,6 +18,8 @@ use crate::error::AppError;
 
 const CREDENTIALS_DIR: &str = "credentials";
 const BROKER_TOKEN_FILE: &str = "broker-token.dpapi";
+const API_TOKEN_PREFIX: &str = "api-";
+const API_TOKEN_SUFFIX: &str = ".dpapi";
 /// Longitud máxima admitida; evita guardar por error el contenido de un archivo.
 const MAX_TOKEN_CHARS: usize = 512;
 
@@ -40,6 +42,94 @@ pub struct BrokerCredentialStatus {
     pub protected: bool,
     pub environment_present: bool,
     pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApiCredentialStatus {
+    pub name: String,
+    pub protected: bool,
+}
+
+pub fn validate_api_credential_name(name: &str) -> Result<String, AppError> {
+    let name = name.trim().to_ascii_lowercase();
+    if name.len() < 3
+        || name.len() > 40
+        || name.starts_with('_')
+        || !name.bytes().enumerate().all(|(index, byte)| {
+            byte.is_ascii_lowercase() || byte == b'_' || (index > 0 && byte.is_ascii_digit())
+        })
+    {
+        return Err(AppError::Validation(
+            "el alias de credencial debe usar entre 3 y 40 letras minúsculas, números o guiones bajos"
+                .to_owned(),
+        ));
+    }
+    Ok(name)
+}
+
+pub fn api_credential_path(data_dir: &Path, name: &str) -> Result<PathBuf, AppError> {
+    let name = validate_api_credential_name(name)?;
+    Ok(data_dir
+        .join(CREDENTIALS_DIR)
+        .join(format!("{API_TOKEN_PREFIX}{name}{API_TOKEN_SUFFIX}")))
+}
+
+pub fn list_api_credentials(data_dir: &Path) -> Result<Vec<ApiCredentialStatus>, AppError> {
+    let directory = data_dir.join(CREDENTIALS_DIR);
+    let entries = match std::fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(AppError::DataDirectory(format!(
+                "credenciales no accesibles: {error}"
+            )))
+        }
+    };
+    let mut credentials = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter_map(|file_name| {
+            file_name
+                .strip_prefix(API_TOKEN_PREFIX)?
+                .strip_suffix(API_TOKEN_SUFFIX)
+                .map(str::to_owned)
+        })
+        .filter(|name| validate_api_credential_name(name).is_ok())
+        .map(|name| ApiCredentialStatus {
+            name,
+            protected: true,
+        })
+        .collect::<Vec<_>>();
+    credentials.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(credentials)
+}
+
+pub fn store_api_credential(data_dir: &Path, name: &str, secret: &str) -> Result<(), AppError> {
+    let secret = validated_secret(secret)?;
+    let destination = api_credential_path(data_dir, name)?;
+    let parent = destination.parent().ok_or_else(|| {
+        AppError::DataDirectory("el directorio de credenciales no es válido".to_owned())
+    })?;
+    std::fs::create_dir_all(parent)
+        .map_err(|error| AppError::DataDirectory(format!("credenciales no accesibles: {error}")))?;
+    protect_token(&destination, secret)
+}
+
+pub fn load_api_credential(data_dir: &Path, name: &str) -> Option<String> {
+    let source = api_credential_path(data_dir, name).ok()?;
+    unprotect_token(&source)
+}
+
+pub fn clear_api_credential(data_dir: &Path, name: &str) -> Result<(), AppError> {
+    let destination = api_credential_path(data_dir, name)?;
+    match std::fs::remove_file(destination) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(AppError::DataDirectory(format!(
+            "no se pudo retirar la credencial: {error}"
+        ))),
+    }
 }
 
 pub fn broker_token_path(data_dir: &Path) -> PathBuf {
@@ -93,6 +183,17 @@ pub fn credential_status(data_dir: &Path) -> BrokerCredentialStatus {
 
 /// Guarda el token cifrado, sustituyendo el anterior si lo hubiera.
 pub fn store_broker_token(data_dir: &Path, token: &str) -> Result<(), AppError> {
+    let token = validated_secret(token)?;
+    let destination = broker_token_path(data_dir);
+    let parent = destination.parent().ok_or_else(|| {
+        AppError::DataDirectory("el directorio de credenciales no es válido".to_owned())
+    })?;
+    std::fs::create_dir_all(parent)
+        .map_err(|error| AppError::DataDirectory(format!("credenciales no accesibles: {error}")))?;
+    protect_token(&destination, token)
+}
+
+fn validated_secret(token: &str) -> Result<&str, AppError> {
     let token = token.trim();
     if token.is_empty() {
         return Err(AppError::Validation(
@@ -109,13 +210,7 @@ pub fn store_broker_token(data_dir: &Path, token: &str) -> Result<(), AppError> 
             "el token no puede contener saltos de línea ni caracteres de control".to_owned(),
         ));
     }
-    let destination = broker_token_path(data_dir);
-    let parent = destination.parent().ok_or_else(|| {
-        AppError::DataDirectory("el directorio de credenciales no es válido".to_owned())
-    })?;
-    std::fs::create_dir_all(parent)
-        .map_err(|error| AppError::DataDirectory(format!("credenciales no accesibles: {error}")))?;
-    protect_token(&destination, token)
+    Ok(token)
 }
 
 pub fn clear_broker_token(data_dir: &Path) -> Result<(), AppError> {
@@ -183,9 +278,12 @@ pub fn protect_token(destination: &Path, token: &str) -> Result<(), AppError> {
 
 /// Descifra el token guardado. Un archivo ilegible se trata como ausencia.
 pub fn load_broker_token(data_dir: &Path) -> Option<String> {
+    unprotect_token(&broker_token_path(data_dir))
+}
+
+fn unprotect_token(source: &Path) -> Option<String> {
     #[cfg(target_os = "windows")]
     {
-        let source = broker_token_path(data_dir);
         if !source.is_file() {
             return None;
         }
@@ -204,7 +302,7 @@ pub fn load_broker_token(data_dir: &Path) -> Option<String> {
         "#;
         let output = Command::new("powershell.exe")
             .args(["-NoProfile", "-NonInteractive", "-Command", script])
-            .env("CHATYGPT_SECRET_PATH", &source)
+            .env("CHATYGPT_SECRET_PATH", source)
             .output()
             .ok()?;
         if !output.status.success() {
@@ -215,7 +313,7 @@ pub fn load_broker_token(data_dir: &Path) -> Option<String> {
     }
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = data_dir;
+        let _ = source;
         None
     }
 }
@@ -274,6 +372,58 @@ mod tests {
             !directory.join(CREDENTIALS_DIR).exists(),
             "un token inválido no debe crear el almacén"
         );
+    }
+
+    #[test]
+    fn api_credential_aliases_cannot_escape_the_protected_directory() {
+        for invalid in [
+            "../broker-token",
+            "_hidden",
+            "2starts_with_number",
+            "two words",
+            "ab",
+            "name.with.dot",
+        ] {
+            assert!(
+                validate_api_credential_name(invalid).is_err(),
+                "debía rechazarse: {invalid}"
+            );
+        }
+        assert_eq!(
+            validate_api_credential_name("  Mi_Servicio_2  ").unwrap(),
+            "mi_servicio_2"
+        );
+    }
+
+    #[test]
+    fn api_credential_listing_exposes_only_aliases() {
+        let directory = std::env::temp_dir().join(format!(
+            "chatygpt-api-secret-list-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let credentials = directory.join(CREDENTIALS_DIR);
+        std::fs::create_dir_all(&credentials).expect("credentials directory should exist");
+        std::fs::write(credentials.join("api-weather.dpapi"), b"protected-one")
+            .expect("test credential should exist");
+        std::fs::write(credentials.join("api-stock_prices.dpapi"), b"protected-two")
+            .expect("test credential should exist");
+        std::fs::write(credentials.join("api-../escape.dpapi"), b"ignored").ok();
+        std::fs::write(credentials.join(BROKER_TOKEN_FILE), b"broker-secret")
+            .expect("broker credential should exist");
+
+        let listed = list_api_credentials(&directory).expect("aliases should list");
+        assert_eq!(
+            listed
+                .iter()
+                .map(|item| item.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["stock_prices", "weather"]
+        );
+        assert!(listed.iter().all(|item| item.protected));
+        assert!(!serde_json::to_string(&listed)
+            .unwrap()
+            .contains("protected-one"));
+        let _ = std::fs::remove_dir_all(directory);
     }
 
     #[test]

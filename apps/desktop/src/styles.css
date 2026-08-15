@@ -177,6 +177,11 @@ nav { margin-top: 14px; overflow-y: auto; min-height: 0; padding-right: 2px; }
 .real-progress span { width: 9px; height: 9px; border-radius: 50%; background: #d39a45; animation: pulse 1.4s ease-in-out infinite; }
 .real-progress progress { width: 92px; height: 5px; margin-left: 4px; accent-color: #b57c36; }
 .real-progress small { flex-basis: 100%; padding-inline-start: 18px; color: #857a70; line-height: 1.45; }
+.earlier-messages { display: grid; justify-items: center; gap: 7px; padding: 8px 16px 20px; }
+.earlier-messages button { min-height: 38px; }
+.earlier-messages small { color: var(--text-muted); font-size: var(--text-readable-label); }
+.composer-status { display: flex; align-items: center; gap: 9px; margin: 10px 0 0; color: var(--text-muted); font-size: var(--text-readable-label); line-height: 1.45; }
+.composer-status span { width: 9px; height: 9px; flex: 0 0 auto; border-radius: 50%; background: #d39a45; animation: pulse 1.4s ease-in-out infinite; }
 .task-failure { display: grid; gap: 4px; padding: 10px 12px; border: 1px solid #ead5d0; border-radius: 10px; background: #fff3f0; color: #723b35; }
 .task-failure strong { font-size: 11px; }
 .task-failure span { font-size: 10px; line-height: 1.45; overflow-wrap: anywhere; }
@@ -629,6 +634,31 @@ nav { margin-top: 14px; overflow-y: auto; min-height: 0; padding-right: 2px; }
 .custom-gpt-permissions input { width: auto; margin-top: 4px; }
 .custom-gpt-permissions label span, .custom-gpt-permissions label small { display: block; }
 .custom-gpt-permissions label small { margin-top: 2px; color: #796e5c; font-weight: 400; }
+.custom-gpt-api-actions { display: grid; gap: 10px; margin-top: 7px; padding-top: 13px; border-top: 1px solid #d8c9aa; }
+.custom-gpt-api-actions > small { color: #695d4a; line-height: 1.45; }
+.custom-gpt-api-action { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding: 12px; border: 1px solid #d8c9aa; border-radius: 9px; background: #fff; }
+.custom-gpt-api-action label { display: grid; gap: 5px; }
+.custom-gpt-api-action input { width: 100%; margin: 0; }
+.custom-gpt-api-action button { justify-self: start; }
+.custom-gpt-api-credential { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding: 11px; border: 1px solid #d8c9aa; border-radius: 8px; background: #fffaf0; }
+.custom-gpt-api-credential-heading { grid-column: 1 / -1; display: grid; gap: 3px; }
+.custom-gpt-api-credential-heading small, .custom-gpt-api-credential label small { color: #695d4a; font-weight: 400; line-height: 1.4; }
+.custom-gpt-api-credential-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 9px; }
+.custom-gpt-api-credential-saved { padding: 5px 8px; border-radius: 999px; background: #dfeedf; color: #235c2d; font-size: 13px; font-weight: 800; }
+.custom-gpt-api-parameters { grid-column: 1 / -1; display: grid; gap: 8px; padding-top: 8px; border-top: 1px solid #e5dac4; }
+.custom-gpt-api-parameter { display: grid; grid-template-columns: 1fr 110px 110px auto 1.4fr auto; gap: 8px; align-items: center; }
+.custom-gpt-api-parameter label { display: flex; align-items: center; white-space: nowrap; }
+.custom-gpt-api-parameter label input { width: auto; }
+.custom-gpt-api-tester { grid-column: 1 / -1; display: grid; gap: 8px; padding: 11px; border: 1px dashed #c9b489; border-radius: 8px; background: #fffaf0; }
+.custom-gpt-api-samples { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 8px; }
+.custom-gpt-api-samples label { display: grid; gap: 4px; }
+.custom-gpt-api-preview { display: grid; gap: 5px; padding: 9px; border-radius: 7px; background: #eef7ed; color: #244b2a; }
+.custom-gpt-api-preview code { overflow-wrap: anywhere; white-space: normal; color: #173d20; }
+.custom-gpt-api-test-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.custom-gpt-api-test-result { display: grid; gap: 5px; padding: 10px; border: 1px solid #b8ccb7; border-radius: 7px; background: #eef7ed; color: #244b2a; }
+.custom-gpt-api-test-result pre { max-height: 240px; margin: 3px 0 0; padding: 10px; overflow: auto; border-radius: 6px; background: #182019; color: #f1f7f1; font: 12px/1.5 Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 760px) { .custom-gpt-api-action, .custom-gpt-api-credential { grid-template-columns: 1fr; } }
+@media (max-width: 980px) { .custom-gpt-api-parameter { grid-template-columns: 1fr; } }
 .custom-gpt-permission-summary { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .custom-gpt-permission-summary span { padding: 4px 7px; border-radius: 999px; background: #f1ece3; color: #685d4c; font-size: 12px; font-weight: 700; }
 .conversation-starters { display: grid; width: min(620px, 100%); gap: 8px; margin-top: 22px; }

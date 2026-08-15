@@ -18,6 +18,7 @@ pub enum TaskStatus {
     Synthesizing,
     Verifying,
     WaitingForMemory,
+    WaitingForDependencies,
     WaitingForTools,
     Completed,
     Failed,
@@ -46,12 +47,173 @@ impl TaskStatus {
             Self::Synthesizing => "synthesizing",
             Self::Verifying => "verifying",
             Self::WaitingForMemory => "waiting_for_memory",
+            Self::WaitingForDependencies => "waiting_for_dependencies",
             Self::WaitingForTools => "waiting_for_tools",
             Self::Completed => "completed",
             Self::Failed => "failed",
             Self::Cancelled => "cancelled",
             Self::Unknown => "working",
         }
+    }
+}
+
+impl TaskState {
+    /// Valida el núcleo estable de `GET /tasks/{id}` antes de que el resto de
+    /// la aplicación tome decisiones con él.
+    ///
+    /// No se aplica `deny_unknown_fields`: el contrato 2.8 es aditivo y los
+    /// estados intermedios pueden crecer. Sí se comprueban las invariantes que
+    /// ChatyGPT usa para progreso, herramientas y reintentos.
+    pub fn from_contract_value(value: Value, expected_task_id: &str) -> Result<Self, String> {
+        let object = value
+            .as_object()
+            .ok_or_else(|| "la respuesta debe ser un objeto JSON".to_owned())?;
+
+        let task_id = required_non_empty_string(object, "task_id")?;
+        if task_id != expected_task_id {
+            return Err("task_id no coincide con la tarea consultada".to_owned());
+        }
+
+        let kind = required_non_empty_string(object, "kind")?;
+        if !matches!(kind, "inference" | "ingestion") {
+            return Err("kind no pertenece al contrato de tareas".to_owned());
+        }
+        let status = required_non_empty_string(object, "status")?;
+        required_nullable_string(object, "request_id")?;
+        required_non_empty_string(object, "created_at")?;
+        required_non_empty_string(object, "updated_at")?;
+        optional_enum(
+            object,
+            "execution_strategy",
+            &["single", "mixture_of_agents", "agent", "auto"],
+        )?;
+        optional_enum(
+            object,
+            "execution_preset",
+            &["fast", "slow", "standard", "verified", "high_stakes"],
+        )?;
+        optional_enum(object, "selection_mode", &["auto", "manual", "hybrid"])?;
+
+        let progress = object
+            .get("progress")
+            .and_then(Value::as_object)
+            .ok_or_else(|| "progress debe ser un objeto".to_owned())?;
+        required_non_empty_string(progress, "phase")?;
+        if kind == "inference" {
+            required_non_negative_integer(progress, "invocations_completed")?;
+            required_non_negative_integer(progress, "invocations_total")?;
+        }
+
+        required_nullable_object(object, "result")?;
+        required_nullable_object(object, "error")?;
+
+        if status == "waiting_for_tools" {
+            let result = object
+                .get("result")
+                .and_then(Value::as_object)
+                .ok_or_else(|| "result debe describir las herramientas pendientes".to_owned())?;
+            if result.get("status").and_then(Value::as_str) != Some("waiting_for_tools") {
+                return Err("result.status debe ser waiting_for_tools".to_owned());
+            }
+            let calls = result
+                .get("pending_tool_calls")
+                .and_then(Value::as_array)
+                .filter(|calls| !calls.is_empty())
+                .ok_or_else(|| "result.pending_tool_calls debe contener llamadas".to_owned())?;
+            for call in calls {
+                let call = call
+                    .as_object()
+                    .ok_or_else(|| "cada llamada pendiente debe ser un objeto".to_owned())?;
+                required_non_empty_string(call, "id")?;
+                required_non_empty_string(call, "name")?;
+                if !call.get("arguments").is_some_and(Value::is_object) {
+                    return Err("cada llamada pendiente necesita arguments".to_owned());
+                }
+            }
+            if object.get("execution_strategy").and_then(Value::as_str) == Some("agent") {
+                required_non_negative_integer(progress, "agent_iteration")?;
+                required_positive_integer(progress, "agent_max_iterations")?;
+            }
+        }
+
+        if status == "failed" {
+            let error = object
+                .get("error")
+                .and_then(Value::as_object)
+                .ok_or_else(|| "error debe describir el fallo terminal".to_owned())?;
+            required_non_empty_string(error, "code")?;
+            if !error.get("message").is_some_and(Value::is_string) {
+                return Err("error.message debe ser texto".to_owned());
+            }
+            if !error.get("retryable").is_some_and(Value::is_boolean) {
+                return Err("error.retryable debe indicar si se puede reintentar".to_owned());
+            }
+        }
+
+        serde_json::from_value(value).map_err(|error| error.to_string())
+    }
+}
+
+fn required_non_empty_string<'a>(
+    object: &'a serde_json::Map<String, Value>,
+    field: &str,
+) -> Result<&'a str, String> {
+    object
+        .get(field)
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| format!("{field} debe ser texto no vacío"))
+}
+
+fn required_nullable_string(
+    object: &serde_json::Map<String, Value>,
+    field: &str,
+) -> Result<(), String> {
+    match object.get(field) {
+        Some(Value::Null | Value::String(_)) => Ok(()),
+        _ => Err(format!("{field} debe ser texto o null")),
+    }
+}
+
+fn required_nullable_object(
+    object: &serde_json::Map<String, Value>,
+    field: &str,
+) -> Result<(), String> {
+    match object.get(field) {
+        Some(Value::Null | Value::Object(_)) => Ok(()),
+        _ => Err(format!("{field} debe ser un objeto o null")),
+    }
+}
+
+fn optional_enum(
+    object: &serde_json::Map<String, Value>,
+    field: &str,
+    allowed: &[&str],
+) -> Result<(), String> {
+    match object.get(field) {
+        None | Some(Value::Null) => Ok(()),
+        Some(Value::String(value)) if allowed.contains(&value.as_str()) => Ok(()),
+        _ => Err(format!("{field} contiene un valor no admitido")),
+    }
+}
+
+fn required_non_negative_integer(
+    object: &serde_json::Map<String, Value>,
+    field: &str,
+) -> Result<(), String> {
+    match object.get(field).and_then(Value::as_i64) {
+        Some(value) if value >= 0 => Ok(()),
+        _ => Err(format!("{field} debe ser un entero no negativo")),
+    }
+}
+
+fn required_positive_integer(
+    object: &serde_json::Map<String, Value>,
+    field: &str,
+) -> Result<(), String> {
+    match object.get(field).and_then(Value::as_i64) {
+        Some(value) if value > 0 => Ok(()),
+        _ => Err(format!("{field} debe ser un entero positivo")),
     }
 }
 
@@ -104,6 +266,10 @@ pub struct BrokerCapabilities {
     pub scheduling_by_preset: Value,
     #[serde(default)]
     pub agent_skills: Vec<String>,
+    #[serde(default)]
+    pub agent_skills_egress: Vec<String>,
+    #[serde(default)]
+    pub task_dependencies: bool,
     #[serde(default)]
     pub sandbox_run_code: bool,
     #[serde(default)]
@@ -232,6 +398,47 @@ mod tests {
     }
 
     #[test]
+    fn contract_2_8_discovers_dependencies_egress_and_waits_without_finishing() {
+        let capabilities: BrokerCapabilities = serde_json::from_value(serde_json::json!({
+            "contract_version": "2.8",
+            "agent_skills": ["web_search", "calculator"],
+            "agent_skills_egress": ["web_search", "fetch_url"],
+            "task_dependencies": true
+        }))
+        .expect("2.8 capabilities should deserialize");
+        assert!(capabilities.task_dependencies);
+        assert_eq!(
+            capabilities.agent_skills_egress,
+            ["web_search", "fetch_url"]
+        );
+
+        let state = TaskState::from_contract_value(
+            serde_json::json!({
+                "task_id": "task-dependency-wait",
+                "kind": "inference",
+                "status": "waiting_for_dependencies",
+                "request_id": "request-dependency-wait",
+                "created_at": "2026-08-15T10:00:00Z",
+                "updated_at": "2026-08-15T10:00:01Z",
+                "execution_strategy": "single",
+                "execution_preset": "fast",
+                "selection_mode": "auto",
+                "progress": {
+                    "phase": "waiting_for_dependencies",
+                    "invocations_completed": 0,
+                    "invocations_total": 1
+                },
+                "result": null,
+                "error": null
+            }),
+            "task-dependency-wait",
+        )
+        .expect("dependency wait is a valid non-terminal state");
+        assert_eq!(state.status.as_str(), "waiting_for_dependencies");
+        assert!(!state.status.is_terminal());
+    }
+
+    #[test]
     fn contract_2_7_accepts_a_degraded_consensus_result() {
         let state: TaskState = serde_json::from_value(serde_json::json!({
             "task_id": "task-degraded-consensus",
@@ -277,6 +484,73 @@ mod tests {
 
         assert!(!status.is_terminal());
         assert_eq!(status.as_str(), "working");
+    }
+
+    #[test]
+    fn runtime_contract_rejects_incomplete_progress_and_crossed_task_ids() {
+        let incomplete = serde_json::json!({
+            "task_id": "task-one",
+            "kind": "inference",
+            "status": "generating",
+            "request_id": "request-one",
+            "created_at": "2026-08-14T10:00:00Z",
+            "updated_at": "2026-08-14T10:00:01Z",
+            "execution_strategy": "single",
+            "execution_preset": "fast",
+            "selection_mode": "auto",
+            "progress": {"phase": "generating"},
+            "result": null,
+            "error": null
+        });
+        let error = TaskState::from_contract_value(incomplete, "task-one")
+            .expect_err("una inferencia sin contadores no cumple el contrato");
+        assert!(error.contains("invocations_completed"));
+
+        let crossed = serde_json::json!({
+            "task_id": "task-two",
+            "kind": "ingestion",
+            "status": "future_ingestion_stage",
+            "request_id": null,
+            "created_at": "2026-08-14T10:00:00Z",
+            "updated_at": "2026-08-14T10:00:01Z",
+            "progress": {"phase": "future_ingestion_stage"},
+            "result": null,
+            "error": null
+        });
+        let error = TaskState::from_contract_value(crossed, "task-one")
+            .expect_err("una respuesta de otra tarea no debe mezclarse");
+        assert!(error.contains("task_id"));
+    }
+
+    #[test]
+    fn runtime_contract_remains_forward_compatible_with_new_working_states() {
+        let state = TaskState::from_contract_value(
+            serde_json::json!({
+                "task_id": "task-future",
+                "kind": "inference",
+                "status": "future_planning_stage",
+                "request_id": "request-future",
+                "created_at": "2026-08-14T10:00:00Z",
+                "updated_at": "2026-08-14T10:00:01Z",
+                "execution_strategy": "single",
+                "execution_preset": "fast",
+                "selection_mode": "auto",
+                "progress": {
+                    "phase": "future_planning_stage",
+                    "invocations_completed": 0,
+                    "invocations_total": 2,
+                    "future_detail": true
+                },
+                "result": null,
+                "error": null,
+                "future_field": {"enabled": true}
+            }),
+            "task-future",
+        )
+        .expect("los estados de trabajo y campos aditivos deben seguir siendo compatibles");
+
+        assert_eq!(state.status.as_str(), "working");
+        assert!(!state.status.is_terminal());
     }
 }
 

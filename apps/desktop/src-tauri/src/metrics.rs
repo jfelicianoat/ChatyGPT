@@ -41,16 +41,19 @@ pub enum PerformanceMetric {
     ConversationOpen,
     /// Consulta de conversaciones resuelta contra SQLite.
     ConversationSearch,
+    /// Desde que se confirma el envío hasta que su estado aparece en pantalla.
+    RemoteOperationStart,
     /// Interacción de la persona hasta el fotograma que la refleja.
     UiResponse,
 }
 
 impl PerformanceMetric {
     /// Todas las métricas, en el orden en que se presentan.
-    pub const ALL: [PerformanceMetric; 4] = [
+    pub const ALL: [PerformanceMetric; 5] = [
         PerformanceMetric::AppStart,
         PerformanceMetric::ConversationOpen,
         PerformanceMetric::ConversationSearch,
+        PerformanceMetric::RemoteOperationStart,
         PerformanceMetric::UiResponse,
     ];
 
@@ -60,6 +63,7 @@ impl PerformanceMetric {
             PerformanceMetric::AppStart => "app_start",
             PerformanceMetric::ConversationOpen => "conversation_open",
             PerformanceMetric::ConversationSearch => "conversation_search",
+            PerformanceMetric::RemoteOperationStart => "remote_operation_start",
             PerformanceMetric::UiResponse => "ui_response",
         }
     }
@@ -81,6 +85,7 @@ impl PerformanceMetric {
             PerformanceMetric::AppStart => 2_000,
             PerformanceMetric::ConversationOpen => 400,
             PerformanceMetric::ConversationSearch => 300,
+            PerformanceMetric::RemoteOperationStart => 300,
             PerformanceMetric::UiResponse => 100,
         }
     }
@@ -91,6 +96,7 @@ impl PerformanceMetric {
             PerformanceMetric::AppStart => "Arranque de la aplicación",
             PerformanceMetric::ConversationOpen => "Apertura de una conversación",
             PerformanceMetric::ConversationSearch => "Búsqueda de conversaciones",
+            PerformanceMetric::RemoteOperationStart => "Inicio visible de una operación remota",
             PerformanceMetric::UiResponse => "Respuesta inmediata de la interfaz",
         }
     }
@@ -111,6 +117,11 @@ impl PerformanceMetric {
             PerformanceMetric::ConversationSearch => {
                 "Consulta contra SQLite ya escrita la búsqueda. No incluye la espera \
                  deliberada de 250 ms que evita consultar en cada tecla."
+            }
+            PerformanceMetric::RemoteOperationStart => {
+                "Desde que se confirma el envío hasta el fotograma que muestra \
+                 «Preparando y guardando el mensaje». Incluye las comprobaciones \
+                 previas necesarias, pero no espera la respuesta del Broker ni del modelo."
             }
             PerformanceMetric::UiResponse => {
                 "Desde la interacción hasta el fotograma que la refleja. Solo son \
@@ -285,7 +296,8 @@ mod tests {
     /// métrica desconocida. Esta prueba impide que ambas listas se separen.
     #[test]
     fn metric_keys_match_the_check_of_the_migration() {
-        const MIGRATION: &str = include_str!("../migrations/0017_performance_samples.sql");
+        const MIGRATION: &str =
+            include_str!("../migrations/0022_remote_operation_start_metric.sql");
         for metric in PerformanceMetric::ALL {
             assert!(
                 MIGRATION.contains(&format!("'{}'", metric.as_str())),

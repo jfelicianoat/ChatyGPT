@@ -434,7 +434,7 @@ pub fn task_state(task_id: &str, status: &str, result: Option<Value>) -> Value {
         "execution_strategy": "single",
         "execution_preset": "fast",
         "selection_mode": "auto",
-        "progress": {"phase": status},
+        "progress": {"phase": status, "invocations_completed": 0, "invocations_total": 1},
         "result": result,
         "error": null
     })
@@ -452,9 +452,9 @@ pub fn failed_task_state(task_id: &str, message: &str) -> Value {
         "execution_strategy": "single",
         "execution_preset": "fast",
         "selection_mode": "auto",
-        "progress": {"phase": "failed"},
+        "progress": {"phase": "failed", "invocations_completed": 0, "invocations_total": 1},
         "result": null,
-        "error": {"code": "PROVIDER_UNAVAILABLE", "message": message}
+        "error": {"code": "PROVIDER_UNAVAILABLE", "message": message, "retryable": true}
     })
 }
 
@@ -470,7 +470,13 @@ pub fn waiting_for_tools_state(task_id: &str, tool_call_id: &str, tool_name: &st
         "execution_strategy": "agent",
         "execution_preset": "fast",
         "selection_mode": "auto",
-        "progress": {},
+        "progress": {
+            "phase": "waiting_for_tools",
+            "invocations_completed": 1,
+            "invocations_total": 1,
+            "agent_iteration": 1,
+            "agent_max_iterations": 6
+        },
         "result": {
             "status": "waiting_for_tools",
             "pending_tool_calls": [{

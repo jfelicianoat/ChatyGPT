@@ -10,7 +10,7 @@ el primer workflow de investigación incluyen:
 
 - shell Tauri 2 + React + TypeScript;
 - SQLite local con migración inicial y recuperación de tareas activas;
-- adaptador tipado de AI Broker 2.7;
+- adaptador tipado de AI Broker 2.8;
 - descubrimiento automático al arrancar de salud, carriles, frontera de datos,
   sandbox, ingesta y soporte de documentos largos;
 - recorrido durable opcional: persistir, enviar, sondear, cancelar y recuperar;
@@ -37,11 +37,16 @@ el primer workflow de investigación incluyen:
   profundidad, coste máximo, tratamiento de contexto largo y prioridad; cuando
   no se configura, el GPT hereda las opciones del chat, y los flujos publicados
   congelan el perfil exacto junto con la versión del GPT;
+- presupuesto de contexto versionado por GPT, elegible como Enfocado,
+  Equilibrado o Amplio; limita historial, recuerdos y fragmentos documentales
+  sin alterar los archivos originales;
 - selección reversible de un GPT personal por conversación;
 - captura por valor de la versión activa al enviar, incluso antes de una búsqueda
   semántica, con sus instrucciones visibles en el contexto exacto de la respuesta;
-- matriz de permisos versionada para Código aislado y Renombrar conversación,
-  denegada por defecto y siempre sujeta a confirmación;
+- matriz de permisos versionada para Código aislado, Renombrar conversación,
+  leer carpetas autorizadas, modificar archivos de texto autorizados y crear
+  tareas programadas de una sola ejecución, denegada por defecto y siempre
+  sujeta a confirmación;
 - hasta seis iniciadores editables por versión, visibles como propuestas en los
   chats vacíos que usan ese GPT;
 - exportación portable segura: configuración sola por defecto o, mediante una
@@ -91,6 +96,9 @@ el primer workflow de investigación incluyen:
 - biblioteca explícita de archivos por proyecto, reutilizable entre sus chats sin
   nuevas subidas ni inyección automática de contexto;
 - búsqueda por título y contenido de mensajes;
+- apertura fluida de conversaciones largas: se muestran primero los 80 mensajes
+  más recientes y el historial anterior se incorpora en bloques de hasta 50 sin
+  desplazar el punto de lectura;
 - confirmaciones explícitas y auditoría para operaciones de ciclo de vida;
 - recuperación visual de una tarea pendiente al reabrir su conversación;
 - adjuntos reutilizables con copia local administrada, SHA-256 y deduplicación;
@@ -110,7 +118,7 @@ el primer workflow de investigación incluyen:
 - comprobación redundante de la capacidad `sandbox_run_code` antes de persistir y enviar la tarea;
 - aviso explícito cuando el mensaje pide ejecutar o probar código sin haber concedido todavía el permiso;
 - privacidad, estrategia, profundidad, coste máximo y tratamiento de documentos largos configurables por conversación;
-- selección entre modelos locales y proveedores cloud habilitados, gobernada únicamente por la clasificación de datos del contrato 2.7;
+- selección entre modelos locales y proveedores cloud habilitados, gobernada únicamente por la clasificación de datos del contrato 2.8;
 - presupuesto duro por petición (0, 0,10, 0,50 o 1 USD) y protección automática que conserva en local los recuerdos sensibles;
 - respuesta directa, decisión automática del Broker o análisis en equipo, limitados a las capacidades y presets que anuncia el Broker;
 - map-reduce explícito para adjuntos que no caben, sin truncado silencioso;
@@ -148,8 +156,9 @@ el primer workflow de investigación incluyen:
 - expediente durable de cada confirmación de herramienta, con acción, recursos,
   datos, destino, alcance y consecuencias, resuelto antes de ejecutar y sin
   posibilidad de repetirse;
-- carpetas autorizadas revisables y revocables desde Inicio: ChatyGPT solo
-  escribe donde la persona eligió en un selector de Windows;
+- carpetas autorizadas revisables y revocables desde Ajustes: escritura,
+  lectura y modificación son concesiones explícitas distintas; una edición de
+  texto exige confirmación, comprueba la huella vigente y escribe atómicamente;
 - credencial de Broker AI cifrada con DPAPI para la cuenta de Windows, con alta
   y retirada desde la aplicación y sustitución en caliente;
 - fixture contractual local-only y sin coste cloud;
@@ -186,6 +195,15 @@ el resumen no entra en ninguna petición. Si quedan mensajes sin cubrir, el pane
 muestra el recuento y ofrece **Actualizar borrador** para avanzar otro lote.
 La petición HTTP se realiza en segundo plano después del commit local y se
 reintenta con la misma clave idempotente ante errores transitorios.
+Cada respuesta de estado del Broker se valida antes de actualizar el chat. Si
+falta el progreso contractual, una herramienta pendiente está incompleta o el
+identificador pertenece a otra tarea, ChatyGPT muestra un fallo de contrato en
+lugar de continuar esperando con datos incoherentes. Los campos adicionales y
+las fases intermedias nuevas siguen siendo compatibles.
+Al enviar, el compositor muestra inmediatamente **Preparando y guardando el
+mensaje…**. La duración hasta ese primer fotograma se conserva como una quinta
+métrica local y puede revisarse en **Ajustes → Rendimiento**, separada del tiempo
+que después necesiten Broker AI y el modelo para responder.
 Las automatizaciones se gestionan desde **Inicio → Tareas programadas**. Admiten
 una ejecución, repetición diaria o semanal, edición, pausa y un historial durable.
 Una ejecución fallida puede reintentarse como un intento nuevo sin borrar el
@@ -332,9 +350,9 @@ Credencial de Broker AI:
 - `Arrancar ChatyGPT.bat` reutiliza la credencial guardada y solo pide el token
   cuando no existe o no puede descifrarse.
 
-Compatibilidad con el contrato 2.7:
+Compatibilidad con el contrato 2.8:
 
-- La especificación de cliente vigente es [docs/Client_API.md](docs/Client_API.md).
+- La especificación de cliente vigente es [Client_API.md](../docs/Client_API.md).
 - Las capacidades nuevas son aditivas. Si no pueden verificarse, ChatyGPT avisa
   pero permite enviar; la creación de la tarea sigue siendo la autoridad final.
 - El selector de adjuntos usa los grupos de `ingestion_formats` anunciados por
@@ -345,6 +363,21 @@ Compatibilidad con el contrato 2.7:
   `fallback_used` o `long_context`, esa información aparece bajo la respuesta.
 - Una rotación de credencial (`401`/`403`) no convierte la tarea en un fallo
   permanente: puede reanudarse tras actualizar el token protegido.
+- Los fragmentos de un documento se preparan como un lote completo antes de
+  enviar su primera tarea de embedding. Cuando el Broker anuncia
+  `task_dependencies`, cada documento recibe un grupo estable propio. Una
+  pregunta sobre un documento usa `depends_on_group`; con varios usa hasta 64
+  `depends_on` exactos. La petición solo se crea después de confirmar que todo
+  el lote implicado ya tiene identidad remota.
+- `waiting_for_dependencies` permanece en sondeo y aparece como **Esperando a
+  que termine el índice documental**. Si una dependencia falla o caduca, los
+  avisos de `result.warnings` se muestran bajo la respuesta; no se ocultan como
+  un éxito limpio.
+- Las habilidades declaradas en `agent_skills_egress` no se envían con datos
+  `confidential` o `local_only`. Investigación profunda se rechaza antes de
+  persistir el turno y explica qué clasificación hay que revisar.
+- Los enlaces que el agente no llegó a consultar, publicados en
+  `result.agent.citations.unsupported`, aparecen como advertencia verificable.
 
 ## Documentación
 
@@ -354,4 +387,4 @@ Compatibilidad con el contrato 2.7:
 - [Evidencias de Fase 0](docs/PHASE_0_VERIFICATION.md)
 - [Evidencias de Fase 1](docs/PHASE_1_VERIFICATION.md)
 - [Evidencias de Fase 2](docs/PHASE_2_VERIFICATION.md)
-- [Contrato local AI Broker 2.7](contracts/broker/2.7/single-task.request.json)
+- [Contrato local AI Broker 2.8](contracts/broker/2.8/single-task.request.json)

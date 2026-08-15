@@ -382,6 +382,9 @@ export function WorkflowStudio({ projects, customGpts, onOpenBrokerCredential, o
     try {
       const dueAt = new Date(scheduleAt);
       if (!Number.isFinite(dueAt.getTime())) throw new Error("Selecciona una fecha y hora válidas.");
+      if (!window.confirm(
+        `¿Programar “${selected.name}”?\n\nEntrada: ${runInput}\nPrimera ejecución: ${dueAt.toLocaleString()}\nRepetición: ${scheduleExpression === "once" ? "una vez" : scheduleExpression === "daily" ? "cada día" : "cada semana"}`
+      )) return;
       await platform.createScheduledWorkflow(
         selected.name,
         selected.id,

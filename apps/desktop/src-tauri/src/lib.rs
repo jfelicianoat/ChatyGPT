@@ -92,6 +92,102 @@ fn list_authorized_folders(
 }
 
 #[tauri::command]
+fn pick_gpt_read_folder(
+    state: State<'_, AppState>,
+) -> Result<Option<AuthorizedFolderView>, AppError> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        let script = r#"
+            Add-Type -AssemblyName System.Windows.Forms
+            $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+            $dialog.Description = 'Elige una carpeta que los GPT personales podrán solicitar leer'
+            $dialog.ShowNewFolderButton = $false
+            if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+                [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+                [Console]::Write($dialog.SelectedPath)
+            }
+        "#;
+        let output = std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-STA", "-Command", script])
+            .creation_flags(0x0800_0000)
+            .output()
+            .map_err(|error| {
+                AppError::Validation(format!("no se pudo abrir el selector: {error}"))
+            })?;
+        if !output.status.success() {
+            return Err(AppError::Validation(
+                String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+            ));
+        }
+        let path = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        if path.is_empty() {
+            return Ok(None);
+        }
+        state
+            .database
+            .authorize_folder_for_read(std::path::Path::new(&path), &path)?;
+        Ok(state
+            .database
+            .list_authorized_folders()?
+            .into_iter()
+            .find(|folder| folder.path.eq_ignore_ascii_case(&path)))
+    }
+    #[cfg(not(target_os = "windows"))]
+    Err(AppError::Validation(
+        "la selección de carpetas todavía solo está disponible en Windows".to_owned(),
+    ))
+}
+
+#[tauri::command]
+fn pick_gpt_modify_folder(
+    state: State<'_, AppState>,
+) -> Result<Option<AuthorizedFolderView>, AppError> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        let script = r#"
+            Add-Type -AssemblyName System.Windows.Forms
+            $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+            $dialog.Description = 'Elige una carpeta cuyos archivos de texto podrán modificarse tras tu confirmación'
+            $dialog.ShowNewFolderButton = $false
+            if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+                [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+                [Console]::Write($dialog.SelectedPath)
+            }
+        "#;
+        let output = std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-STA", "-Command", script])
+            .creation_flags(0x0800_0000)
+            .output()
+            .map_err(|error| {
+                AppError::Validation(format!("no se pudo abrir el selector: {error}"))
+            })?;
+        if !output.status.success() {
+            return Err(AppError::Validation(
+                String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+            ));
+        }
+        let path = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        if path.is_empty() {
+            return Ok(None);
+        }
+        state
+            .database
+            .authorize_folder_for_modify(std::path::Path::new(&path), &path)?;
+        Ok(state
+            .database
+            .list_authorized_folders()?
+            .into_iter()
+            .find(|folder| folder.path.eq_ignore_ascii_case(&path)))
+    }
+    #[cfg(not(target_os = "windows"))]
+    Err(AppError::Validation(
+        "la selección de carpetas todavía solo está disponible en Windows".to_owned(),
+    ))
+}
+
+#[tauri::command]
 fn revoke_authorized_folder(
     folder_id: String,
     confirmed: bool,
@@ -183,6 +279,40 @@ fn clear_broker_credential(
     state.database.record_broker_credential_changed(false)?;
     logging::info("broker.credential_cleared", None, &[]);
     Ok(secrets::credential_status(&state.data_dir))
+}
+
+#[tauri::command]
+fn list_api_credentials(
+    state: State<'_, AppState>,
+) -> Result<Vec<secrets::ApiCredentialStatus>, AppError> {
+    secrets::list_api_credentials(&state.data_dir)
+}
+
+#[tauri::command]
+fn set_api_credential(
+    name: String,
+    secret: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<secrets::ApiCredentialStatus>, AppError> {
+    secrets::store_api_credential(&state.data_dir, &name, &secret)?;
+    logging::info("api.credential_stored", None, &[]);
+    secrets::list_api_credentials(&state.data_dir)
+}
+
+#[tauri::command]
+fn clear_api_credential(
+    name: String,
+    confirmed: bool,
+    state: State<'_, AppState>,
+) -> Result<Vec<secrets::ApiCredentialStatus>, AppError> {
+    if !confirmed {
+        return Err(AppError::Validation(
+            "retirar la credencial API requiere confirmación".to_owned(),
+        ));
+    }
+    secrets::clear_api_credential(&state.data_dir, &name)?;
+    logging::info("api.credential_cleared", None, &[]);
+    secrets::list_api_credentials(&state.data_dir)
 }
 
 #[tauri::command]
@@ -772,9 +902,11 @@ fn create_custom_gpt(
     preferred_model: Option<String>,
     default_project_id: Option<String>,
     execution_profile: Option<db::ConversationExecutionPreferences>,
+    context_profile: String,
+    api_actions: Vec<db::CustomGptApiAction>,
     state: State<'_, AppState>,
 ) -> Result<CustomGptView, AppError> {
-    state.database.create_custom_gpt_with_icon(
+    state.database.create_custom_gpt_with_api_actions(
         &name,
         description.as_deref(),
         icon_ref.as_deref(),
@@ -784,6 +916,8 @@ fn create_custom_gpt(
         preferred_model.as_deref(),
         default_project_id.as_deref(),
         execution_profile.as_ref(),
+        Some(&context_profile),
+        &api_actions,
     )
 }
 
@@ -800,9 +934,11 @@ fn update_custom_gpt(
     preferred_model: Option<String>,
     default_project_id: Option<String>,
     execution_profile: Option<db::ConversationExecutionPreferences>,
+    context_profile: String,
+    api_actions: Vec<db::CustomGptApiAction>,
     state: State<'_, AppState>,
 ) -> Result<CustomGptView, AppError> {
-    state.database.update_custom_gpt_with_icon(
+    state.database.update_custom_gpt_with_api_actions(
         &custom_gpt_id,
         &name,
         description.as_deref(),
@@ -813,6 +949,8 @@ fn update_custom_gpt(
         preferred_model.as_deref(),
         default_project_id.as_deref(),
         execution_profile.as_ref(),
+        Some(&context_profile),
+        &api_actions,
     )
 }
 
@@ -849,6 +987,7 @@ struct CustomGptPreview {
     prompt_block: String,
     preferred_model: Option<String>,
     execution_profile: Option<db::ConversationExecutionPreferences>,
+    context_profile: String,
     default_project_name: Option<String>,
     conversation_starters: Vec<String>,
     tool_permissions: CustomGptToolPermissions,
@@ -860,6 +999,143 @@ struct CustomGptPreview {
     pending_file_count: usize,
     /// Avisos accionables sobre lo que hoy no se usaría.
     warnings: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CustomGptApiActionPreview {
+    final_url: String,
+    destination: String,
+    method: &'static str,
+    data_sent: Vec<ApiActionPreviewValue>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CustomGptApiActionTestResult {
+    final_url: String,
+    destination: String,
+    status: u16,
+    content_type: Option<String>,
+    body: String,
+    truncated: bool,
+    duration_ms: u128,
+}
+
+#[derive(Debug, Serialize)]
+struct ApiActionPreviewValue {
+    name: String,
+    value: serde_json::Value,
+}
+
+#[tauri::command]
+fn preview_custom_gpt_api_action(
+    action: db::CustomGptApiAction,
+    sample_values: serde_json::Value,
+) -> Result<CustomGptApiActionPreview, AppError> {
+    let action = db::validated_custom_gpt_api_action(&action)?;
+    let action_json =
+        serde_json::to_value(&action).map_err(|error| AppError::Validation(error.to_string()))?;
+    let mut arguments = sample_values
+        .as_object()
+        .cloned()
+        .ok_or_else(|| AppError::Validation("los valores de prueba no son válidos".to_owned()))?;
+    arguments.insert("url".to_owned(), serde_json::json!(action.url));
+    if let Some(credential_ref) = &action.credential_ref {
+        arguments.insert(
+            "credential_ref".to_owned(),
+            serde_json::json!(credential_ref),
+        );
+        arguments.insert("auth_mode".to_owned(), serde_json::json!(action.auth_mode));
+    }
+    let final_url = task_runtime::configured_api_url(
+        &action_json,
+        &serde_json::Value::Object(arguments.clone()),
+    )?;
+    let destination = url::Url::parse(&final_url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned))
+        .ok_or_else(|| AppError::Validation("el destino final no es válido".to_owned()))?;
+    let data_sent = arguments
+        .into_iter()
+        .filter(|(key, _)| key != "url" && key != "credential_ref" && key != "auth_mode")
+        .map(|(name, value)| ApiActionPreviewValue { name, value })
+        .collect();
+    Ok(CustomGptApiActionPreview {
+        final_url,
+        destination,
+        method: "GET",
+        data_sent,
+    })
+}
+
+/// Ejecuta una prueba explícita de la acción que se está editando. La URL se
+/// recompone con el mismo código que usa la ejecución real y la confirmación
+/// viaja también al backend para que la interfaz no pueda omitirla por error.
+#[tauri::command]
+async fn test_custom_gpt_api_action(
+    action: db::CustomGptApiAction,
+    sample_values: serde_json::Value,
+    confirmed: bool,
+    state: State<'_, AppState>,
+) -> Result<CustomGptApiActionTestResult, AppError> {
+    test_custom_gpt_api_action_impl(action, sample_values, confirmed, &state.data_dir).await
+}
+
+async fn test_custom_gpt_api_action_impl(
+    action: db::CustomGptApiAction,
+    sample_values: serde_json::Value,
+    confirmed: bool,
+    data_dir: &std::path::Path,
+) -> Result<CustomGptApiActionTestResult, AppError> {
+    if !confirmed {
+        return Err(AppError::Validation(
+            "debes confirmar la conexión de prueba antes de abrir la API".to_owned(),
+        ));
+    }
+    let preview = preview_custom_gpt_api_action(action.clone(), sample_values)?;
+    let authentication = match action.auth_mode.as_str() {
+        "none" => None,
+        mode @ ("bearer" | "api_key") => {
+            let credential_ref = action.credential_ref.as_deref().ok_or_else(|| {
+                AppError::Validation("la acción API no indica su credencial".to_owned())
+            })?;
+            let secret =
+                secrets::load_api_credential(data_dir, credential_ref).ok_or_else(|| {
+                    AppError::Validation(format!(
+                        "la credencial API {credential_ref} no está disponible en este equipo"
+                    ))
+                })?;
+            Some((mode.to_owned(), secret))
+        }
+        _ => {
+            return Err(AppError::Validation(
+                "el tipo de autenticación API no es válido".to_owned(),
+            ))
+        }
+    };
+    let final_url = preview.final_url;
+    let requested_url = final_url.clone();
+    let started = std::time::Instant::now();
+    let response = tauri::async_runtime::spawn_blocking(move || {
+        crate::research_tools::external_api_get_with_auth(
+            &requested_url,
+            authentication
+                .as_ref()
+                .map(|(mode, secret)| (mode.as_str(), secret.as_str())),
+        )
+    })
+    .await
+    .map_err(|error| AppError::BrokerTransport(error.to_string()))??;
+    Ok(CustomGptApiActionTestResult {
+        final_url,
+        destination: preview.destination,
+        status: response.status,
+        content_type: response.content_type,
+        body: response.body,
+        truncated: response.truncated,
+        duration_ms: started.elapsed().as_millis(),
+    })
 }
 
 /// Compone la vista previa de un GPT sin crear tareas ni generar coste.
@@ -948,6 +1224,7 @@ fn preview_custom_gpt(
         prompt_block: task_runtime::custom_gpt_prompt_block(&context)?,
         preferred_model: view.preferred_model,
         execution_profile: view.execution_profile,
+        context_profile: view.context_profile,
         default_project_name,
         conversation_starters: view.conversation_starters,
         tool_permissions: view.tool_permissions,
@@ -1675,7 +1952,7 @@ async fn send_chat_turn(
 }
 
 #[tauri::command]
-fn resolve_tool_calls(
+async fn resolve_tool_calls(
     local_task_id: String,
     decisions: Vec<task_runtime::ToolDecision>,
     state: State<'_, AppState>,
@@ -1683,9 +1960,11 @@ fn resolve_tool_calls(
     task_runtime::resolve_tool_calls(
         state.database.clone(),
         state.broker.clone(),
+        &state.data_dir,
         &local_task_id,
         &decisions,
     )
+    .await
 }
 
 #[tauri::command]
@@ -2169,15 +2448,21 @@ fn retry_attachment_context(
 }
 
 #[tauri::command]
-fn retry_attachment_semantic_index(
+async fn retry_attachment_semantic_index(
     attachment_id: String,
     state: State<'_, AppState>,
 ) -> Result<AttachmentView, AppError> {
+    let dependencies_enabled = state
+        .broker
+        .capabilities()
+        .await
+        .is_ok_and(|capabilities| capabilities.task_dependencies);
     task_runtime::start_attachment_semantic_index(
         state.database.clone(),
         state.broker.clone(),
         &attachment_id,
         true,
+        dependencies_enabled,
     )?;
     state.database.attachment_view(&attachment_id)
 }
@@ -2253,6 +2538,13 @@ pub fn run() {
             get_broker_credential,
             set_broker_credential,
             clear_broker_credential,
+            list_authorized_folders,
+            list_api_credentials,
+            set_api_credential,
+            clear_api_credential,
+            pick_gpt_read_folder,
+            pick_gpt_modify_folder,
+            revoke_authorized_folder,
             start_smoke_task,
             get_local_task,
             cancel_local_task,
@@ -2310,6 +2602,8 @@ pub fn run() {
             restore_custom_gpt_version,
             duplicate_custom_gpt,
             preview_custom_gpt,
+            preview_custom_gpt_api_action,
+            test_custom_gpt_api_action,
             pick_custom_gpt_import_path,
             pick_custom_gpt_export_path,
             import_custom_gpt,
@@ -2318,8 +2612,6 @@ pub fn run() {
             remove_project_file,
             set_project_memory_item_enabled,
             list_audit_events,
-            list_authorized_folders,
-            revoke_authorized_folder,
             get_memory_overview,
             get_custom_gpt_knowledge,
             list_custom_gpt_files,
@@ -2367,7 +2659,11 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{attachment_filter_patterns, validated_managed_source_path};
+    use super::{
+        attachment_filter_patterns, preview_custom_gpt_api_action, test_custom_gpt_api_action_impl,
+        validated_managed_source_path,
+    };
+    use crate::db::{CustomGptApiAction, CustomGptApiParameter};
     use crate::error::AppError;
     use std::fs;
     use uuid::Uuid;
@@ -2412,6 +2708,91 @@ mod tests {
                 "x';Remove-Item".to_owned(),
             ]),
             "*.csv;*.pdf"
+        );
+    }
+
+    #[test]
+    fn api_action_preview_builds_the_final_url_without_network_access() {
+        let preview = preview_custom_gpt_api_action(
+            CustomGptApiAction {
+                name: "buscar_pais".to_owned(),
+                description: "Busca datos públicos de un país".to_owned(),
+                url: "https://restcountries.com/v3.1/name/{name}".to_owned(),
+                query_parameters: Vec::new(),
+                credential_ref: None,
+                auth_mode: "none".to_owned(),
+                parameters: vec![CustomGptApiParameter {
+                    name: "name".to_owned(),
+                    value_type: "string".to_owned(),
+                    required: true,
+                    location: "path".to_owned(),
+                    description: None,
+                }],
+            },
+            serde_json::json!({"name": "Costa Rica"}),
+        )
+        .expect("la vista previa debe componerse localmente");
+        assert_eq!(preview.destination, "restcountries.com");
+        assert_eq!(preview.method, "GET");
+        assert!(
+            preview.final_url.ends_with("/Costa%20Rica"),
+            "URL generada: {}",
+            preview.final_url
+        );
+        assert_eq!(preview.data_sent.len(), 1);
+    }
+
+    #[test]
+    fn api_action_test_cannot_connect_without_backend_confirmation() {
+        let result = tauri::async_runtime::block_on(test_custom_gpt_api_action_impl(
+            CustomGptApiAction {
+                name: "buscar_pais".to_owned(),
+                description: "Busca datos públicos de un país".to_owned(),
+                url: "https://restcountries.com/v3.1/name/{name}".to_owned(),
+                query_parameters: Vec::new(),
+                credential_ref: None,
+                auth_mode: "none".to_owned(),
+                parameters: vec![CustomGptApiParameter {
+                    name: "name".to_owned(),
+                    value_type: "string".to_owned(),
+                    required: true,
+                    location: "path".to_owned(),
+                    description: None,
+                }],
+            },
+            serde_json::json!({"name": "Costa Rica"}),
+            false,
+            &std::env::temp_dir(),
+        ));
+        assert!(matches!(result, Err(AppError::Validation(_))));
+    }
+
+    #[test]
+    fn authenticated_api_action_stops_before_network_when_credential_is_missing() {
+        let directory = std::env::temp_dir().join(format!(
+            "chatygpt-missing-api-secret-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let result = tauri::async_runtime::block_on(test_custom_gpt_api_action_impl(
+            CustomGptApiAction {
+                name: "private_status".to_owned(),
+                description: "Consulta el estado autenticado del servicio".to_owned(),
+                url: "https://api.example.org/status".to_owned(),
+                query_parameters: Vec::new(),
+                credential_ref: Some("missing_service".to_owned()),
+                auth_mode: "bearer".to_owned(),
+                parameters: Vec::new(),
+            },
+            serde_json::json!({}),
+            true,
+            &directory,
+        ));
+        assert!(
+            matches!(result, Err(AppError::Validation(message)) if message.contains("no está disponible"))
+        );
+        assert!(
+            !directory.exists(),
+            "leer una credencial ausente no debe crear archivos"
         );
     }
 }

@@ -540,16 +540,21 @@ async fn execute_model_node(
         .map(|context| database.project_memories_for_workflow(context))
         .transpose()?
         .unwrap_or_default();
+    let (memory_limit, memory_characters): (usize, usize) = match node.context_profile.as_str() {
+        "focused" => (5, 2_000),
+        "broad" => (30, 16_000),
+        _ => (20, 8_000),
+    };
     let mut used_memory_characters = gpt_memories
         .iter()
         .map(|memory| memory.content.chars().count())
         .sum::<usize>();
-    let remaining_memory_slots = 20_usize.saturating_sub(gpt_memories.len());
+    let remaining_memory_slots = memory_limit.saturating_sub(gpt_memories.len());
     let project_memories = project_memories
         .into_iter()
         .filter(|memory| {
             used_memory_characters += memory.content.chars().count();
-            used_memory_characters <= 8_000
+            used_memory_characters <= memory_characters
         })
         .take(remaining_memory_slots)
         .collect::<Vec<_>>();
@@ -693,6 +698,7 @@ async fn execute_model_node(
                 "custom_gpt_id": node.custom_gpt_id,
                 "custom_gpt_version_id": node.custom_gpt_version_id,
                 "custom_gpt_execution_profile": node.execution_profile,
+                "custom_gpt_context_profile": node.context_profile,
                 "custom_gpt_knowledge_count": gpt_memories.len(),
                 "custom_gpt_file_count": active_custom_gpt_file_count,
                 "project_id": record.definition.project_context.as_ref().map(|value| value.project_id.as_str()),
@@ -858,6 +864,7 @@ mod tests {
             custom_gpt_instructions: None,
             preferred_model: None,
             execution_profile: None,
+            context_profile: "balanced".to_owned(),
             custom_gpt_memory_ids: Vec::new(),
             custom_gpt_attachment_ids: Vec::new(),
             instruction: (kind == "prompt").then(|| "Resume".to_owned()),

@@ -9,9 +9,9 @@
 //! es admisible es una función pura que puede probarse exhaustivamente sin
 //! red, y es donde vive la seguridad.
 
-use std::net::IpAddr;
+use std::net::{IpAddr, ToSocketAddrs};
 
-use reqwest::Client;
+use reqwest::{blocking::Client as BlockingClient, Client};
 use serde::Serialize;
 use url::{Host, Url};
 
@@ -45,6 +45,35 @@ pub struct FetchedPage {
     pub title: Option<String>,
     pub text: String,
     pub truncated: bool,
+}
+
+/// Respuesta textual y acotada de una API externa.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalApiResponse {
+    pub url: String,
+    pub status: u16,
+    pub content_type: Option<String>,
+    pub body: String,
+    pub truncated: bool,
+}
+
+/// Las APIs que invoque un GPT se restringen a HTTPS. Es una capacidad distinta
+/// de abrir una fuente pública durante una investigación y siempre requiere
+/// confirmación humana.
+pub fn validate_external_api_url(raw: &str) -> Result<Url, AppError> {
+    let url = validate_fetch_url(raw)?;
+    if url.scheme() != "https" {
+        return Err(AppError::Validation(
+            "las llamadas a APIs externas deben usar HTTPS".to_owned(),
+        ));
+    }
+    if raw.trim().chars().count() > 2_048 {
+        return Err(AppError::Validation(
+            "la URL de la API supera 2048 caracteres".to_owned(),
+        ));
+    }
+    Ok(url)
 }
 
 /// Decide si una URL puede abrirse, y la normaliza.
@@ -212,6 +241,120 @@ pub fn web_client() -> Result<Client, AppError> {
         .map_err(|error| AppError::BrokerTransport(error.to_string()))
 }
 
+/// Ejecuta una consulta GET sin credenciales, cuerpo ni cabeceras aportadas por
+/// el modelo. Las redirecciones se desactivan para que una URL pública no pueda
+/// saltar después a la red local.
+pub fn external_api_get(raw_url: &str) -> Result<ExternalApiResponse, AppError> {
+    external_api_get_with_auth(raw_url, None)
+}
+
+/// Variante autenticada. El secreto solo se convierte en cabecera dentro de
+/// este cliente y nunca forma parte de la URL, la respuesta ni los registros.
+pub fn external_api_get_with_auth(
+    raw_url: &str,
+    authentication: Option<(&str, &str)>,
+) -> Result<ExternalApiResponse, AppError> {
+    use std::io::Read;
+
+    let url = validate_external_api_url(raw_url)?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| AppError::Validation("la API no tiene servidor".to_owned()))?;
+    let port = url.port_or_known_default().unwrap_or(443);
+    let addresses = (host, port)
+        .to_socket_addrs()
+        .map_err(|error| {
+            AppError::BrokerTransport(format!("no se pudo resolver el destino de la API: {error}"))
+        })?
+        .collect::<Vec<_>>();
+    if addresses.is_empty() {
+        return Err(AppError::BrokerTransport(
+            "la API no resolvió ninguna dirección".to_owned(),
+        ));
+    }
+    for address in addresses {
+        reject_private_address(address.ip())?;
+    }
+    let client = BlockingClient::builder()
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(FETCH_TIMEOUT_SECONDS))
+        .redirect(reqwest::redirect::Policy::none())
+        .user_agent(concat!("ChatyGPT/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|error| AppError::BrokerTransport(error.to_string()))?;
+    let mut request = client.get(url).header(
+        reqwest::header::ACCEPT,
+        "application/json, application/problem+json, text/plain, application/xml, text/xml",
+    );
+    if let Some((mode, secret)) = authentication {
+        let (name, value) = match mode {
+            "bearer" => (reqwest::header::AUTHORIZATION, format!("Bearer {secret}")),
+            "api_key" => (
+                reqwest::header::HeaderName::from_static("x-api-key"),
+                secret.to_owned(),
+            ),
+            _ => {
+                return Err(AppError::Validation(
+                    "el tipo de autenticación API no es válido".to_owned(),
+                ))
+            }
+        };
+        let mut value = reqwest::header::HeaderValue::from_str(&value).map_err(|_| {
+            AppError::Validation(
+                "la credencial contiene caracteres no admitidos en una cabecera HTTP".to_owned(),
+            )
+        })?;
+        value.set_sensitive(true);
+        request = request.header(name, value);
+    }
+    let response = request
+        .send()
+        .map_err(|error| AppError::BrokerTransport(error.to_string()))?;
+    let status = response.status();
+    if status.is_redirection() {
+        return Err(AppError::Validation(
+            "la API intentó redirigir la llamada; usa directamente su URL HTTPS final".to_owned(),
+        ));
+    }
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    if let Some(media_type) = content_type.as_deref() {
+        let media_type = media_type.split(';').next().unwrap_or_default().trim();
+        let textual = media_type.starts_with("text/")
+            || media_type == "application/json"
+            || media_type.ends_with("+json")
+            || media_type == "application/xml"
+            || media_type.ends_with("+xml");
+        if !textual {
+            return Err(AppError::Validation(format!(
+                "la API devolvió un contenido no textual ({media_type})"
+            )));
+        }
+    }
+    let mut bytes = Vec::new();
+    response
+        .take((MAX_FETCH_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|error| AppError::BrokerTransport(error.to_string()))?;
+    let bytes_truncated = bytes.len() > MAX_FETCH_BYTES;
+    if bytes_truncated {
+        bytes.truncate(MAX_FETCH_BYTES);
+    }
+    let decoded = String::from_utf8_lossy(&bytes);
+    let character_truncated = decoded.chars().count() > MAX_FETCH_CHARACTERS;
+    let body = decoded.chars().take(MAX_FETCH_CHARACTERS).collect();
+    Ok(ExternalApiResponse {
+        url: raw_url.trim().to_owned(),
+        status: status.as_u16(),
+        content_type,
+        body,
+        truncated: bytes_truncated || character_truncated,
+    })
+}
+
 /// Abre una página y devuelve su texto.
 pub async fn fetch_url(client: &Client, raw_url: &str) -> Result<FetchedPage, AppError> {
     let url = validate_fetch_url(raw_url)?;
@@ -250,7 +393,10 @@ pub async fn fetch_url(client: &Client, raw_url: &str) -> Result<FetchedPage, Ap
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_readable_text, extract_title, validate_fetch_url, MAX_FETCH_CHARACTERS};
+    use super::{
+        extract_readable_text, extract_title, validate_external_api_url, validate_fetch_url,
+        MAX_FETCH_CHARACTERS,
+    };
     use crate::error::AppError;
 
     #[test]
@@ -276,6 +422,14 @@ mod tests {
             Err(AppError::Validation(_))
         ));
         assert!(validate_fetch_url("https://usuario@example.org/x").is_err());
+    }
+
+    #[test]
+    fn external_apis_require_https_and_public_destinations() {
+        assert!(validate_external_api_url("https://api.example.org/v1/weather?q=Arrecife").is_ok());
+        assert!(validate_external_api_url("http://api.example.org/v1/weather").is_err());
+        assert!(validate_external_api_url("https://127.0.0.1:8765/api/v1/tasks").is_err());
+        assert!(validate_external_api_url("https://user:secret@example.org/v1").is_err());
     }
 
     #[test]

@@ -1,0 +1,30 @@
+{
+  "contract_version": "2.8",
+  "derived_data_boundary": true,
+  "work_lanes": ["inference", "ingestion"],
+  "strategies": ["single", "mixture_of_agents", "agent"],
+  "presets": {
+    "single": ["fast"],
+    "mixture_of_agents": ["fast", "slow"],
+    "agent": ["fast"]
+  },
+  "scheduling_by_preset": {
+    "fast": ["sequential"],
+    "slow": ["adaptive", "parallel", "waves", "sequential"]
+  },
+  "agent_skills": ["web_search", "fetch_url", "calculator", "current_datetime", "run_code"],
+  "agent_skills_egress": ["fetch_url", "web_search"],
+  "task_dependencies": true,
+  "file_ingestion": true,
+  "ingestion_formats": {
+    "pdf": [".pdf"],
+    "office": [".docx", ".epub", ".pptx", ".xlsx"],
+    "text": [".csv", ".json", ".md", ".py", ".txt"],
+    "image": [".jpg", ".png", ".webp"],
+    "audio": [".mp3", ".wav"],
+    "video": [".mkv", ".mp4"]
+  },
+  "sandbox_run_code": true,
+  "long_context_map_reduce": true,
+  "max_active_workflows": 1
+}

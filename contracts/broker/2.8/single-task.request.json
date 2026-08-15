@@ -1,0 +1,22 @@
+{
+  "idempotency_key": "chatygpt:smoke:replace-with-uuid",
+  "request_id": "chatygpt_smoke",
+  "inference_kind": "chat",
+  "content": {
+    "prompt": "Responde únicamente: conexión correcta",
+    "attachments": [],
+    "metadata": {"origin": "chatygpt_phase_0_smoke"}
+  },
+  "output": {"format": "markdown", "language": "es"},
+  "generation": {"temperature": 0, "max_output_tokens": 32},
+  "model_requirements": {"fallback_allowed": true, "max_cost_usd": 0},
+  "execution": {
+    "strategy": "single",
+    "preset": "fast",
+    "long_context": "fail",
+    "timeout_seconds": 120
+  },
+  "risk": {"data_classification": "local_only"},
+  "priority": 100,
+  "prompt_compression": "off"
+}

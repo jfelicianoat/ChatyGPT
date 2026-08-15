@@ -16,6 +16,7 @@ export const PERFORMANCE_METRICS = [
   "app_start",
   "conversation_open",
   "conversation_search",
+  "remote_operation_start",
   "ui_response"
 ] as const;
 

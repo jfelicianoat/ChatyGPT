@@ -1,5 +1,7 @@
 use std::collections::{HashMap, HashSet};
+use std::fs;
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -26,6 +28,55 @@ struct ChatExecutionOptions {
 const SUMMARY_INPUT_CHARACTER_BUDGET: usize = 48_000;
 const DOCUMENT_CONTEXT_CHUNK_LIMIT: usize = 8;
 const DOCUMENT_CONTEXT_CHARACTER_BUDGET: usize = 24_000;
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DocumentIndexDependency {
+    Group(String),
+    Tasks(Vec<String>),
+}
+
+fn document_embedding_group(attachment_id: &str) -> String {
+    let fingerprint = format!("{:x}", Sha256::digest(attachment_id.as_bytes()));
+    format!("chatygpt-index-{}", &fingerprint[..32])
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CustomGptContextBudget {
+    recent_messages: usize,
+    recent_characters: usize,
+    memory_items: usize,
+    memory_characters: usize,
+    document_chunks: usize,
+    document_characters: usize,
+}
+
+fn custom_gpt_context_budget(context: Option<&CustomGptContext>) -> CustomGptContextBudget {
+    match context.map(|item| item.context_profile.as_str()) {
+        Some("focused") => CustomGptContextBudget {
+            recent_messages: 6,
+            recent_characters: 6_000,
+            memory_items: 5,
+            memory_characters: 2_000,
+            document_chunks: 4,
+            document_characters: 12_000,
+        },
+        Some("broad") => CustomGptContextBudget {
+            recent_messages: 20,
+            recent_characters: 24_000,
+            memory_items: 30,
+            memory_characters: 16_000,
+            document_chunks: 12,
+            document_characters: 48_000,
+        },
+        _ => CustomGptContextBudget {
+            recent_messages: 12,
+            recent_characters: 12_000,
+            memory_items: 20,
+            memory_characters: 8_000,
+            document_chunks: DOCUMENT_CONTEXT_CHUNK_LIMIT,
+            document_characters: DOCUMENT_CONTEXT_CHARACTER_BUDGET,
+        },
+    }
+}
 
 pub async fn start_smoke_task(
     database: Database,
@@ -69,36 +120,111 @@ pub fn start_attachment_semantic_index(
     broker: BrokerClient,
     attachment_id: &str,
     retry_failed: bool,
+    dependencies_enabled: bool,
 ) -> Result<Option<LocalTaskSnapshot>, AppError> {
-    let Some(chunk) = database.next_attachment_chunk_for_embedding(attachment_id, retry_failed)?
-    else {
+    let chunks = database.attachment_chunks_for_embedding(attachment_id, retry_failed)?;
+    if chunks.is_empty() {
         return Ok(None);
-    };
-    let local_id = format!("local_{}", Uuid::new_v4().simple());
-    let idempotency_key = if retry_failed {
-        format!(
-            "chatygpt:attachment-chunk-embedding:{}:{}:retry:{}",
-            chunk.id,
-            chunk.content_sha256,
-            Uuid::new_v4()
-        )
-    } else {
-        format!(
-            "chatygpt:attachment-chunk-embedding:{}:{}",
-            chunk.id, chunk.content_sha256
-        )
-    };
-    let request = embedding_request(
-        &idempotency_key,
-        "attachment_chunk",
-        &chunk.id,
-        &chunk.text,
-        &chunk.content_sha256,
-    );
-    let record = database.prepare_broker_task(&local_id, &idempotency_key, &request)?;
-    let snapshot = database.task_snapshot(&local_id)?;
-    spawn_submission_and_poll(database, broker, record);
+    }
+    // Primero se persiste el lote entero. Solo después se lanza la primera
+    // petición HTTP, para que una pregunta nunca observe 12 de 259 tareas.
+    let mut records = Vec::with_capacity(chunks.len());
+    for chunk in chunks {
+        let local_id = format!("local_{}", Uuid::new_v4().simple());
+        let idempotency_key = if retry_failed {
+            format!(
+                "chatygpt:attachment-chunk-embedding:{}:{}:retry:{}",
+                chunk.id,
+                chunk.content_sha256,
+                Uuid::new_v4()
+            )
+        } else {
+            format!(
+                "chatygpt:attachment-chunk-embedding:{}:{}",
+                chunk.id, chunk.content_sha256
+            )
+        };
+        let mut request = embedding_request(
+            &idempotency_key,
+            "attachment_chunk",
+            &chunk.id,
+            &chunk.text,
+            &chunk.content_sha256,
+        );
+        if dependencies_enabled {
+            request["group"] = json!(document_embedding_group(attachment_id));
+        }
+        records.push(database.prepare_broker_task(&local_id, &idempotency_key, &request)?);
+    }
+    let snapshot = database.task_snapshot(&records[0].id)?;
+    for record in records {
+        spawn_submission_and_poll(database.clone(), broker.clone(), record);
+    }
     Ok(Some(snapshot))
+}
+
+async fn ensure_attachment_embeddings_are_enqueued(
+    database: &Database,
+    broker: &BrokerClient,
+    attachment_ids: &[String],
+) -> Result<Option<DocumentIndexDependency>, AppError> {
+    for attachment_id in attachment_ids {
+        start_attachment_semantic_index(
+            database.clone(),
+            broker.clone(),
+            attachment_id,
+            false,
+            true,
+        )?;
+    }
+    // Las tareas pueden haberse creado por la ingesta en segundo plano. No se
+    // considera listo el lote hasta que todas tienen identidad remota; así el
+    // grupo existe completo antes de enviar la pregunta dependiente.
+    let records = database.attachment_embedding_tasks(attachment_ids)?;
+    if records.is_empty() {
+        return Ok(None);
+    }
+    let single_document_group =
+        (attachment_ids.len() == 1).then(|| document_embedding_group(&attachment_ids[0]));
+    let can_use_group = single_document_group.as_ref().is_some_and(|expected| {
+        records.iter().all(|record| {
+            record
+                .request
+                .get("group")
+                .and_then(serde_json::Value::as_str)
+                == Some(expected)
+        })
+    });
+    let mut remote_ids = Vec::with_capacity(records.len());
+    for record in records {
+        let local_id = record.id.clone();
+        let needs_submission = record.remote_task_id.is_none();
+        submit_or_resume(database.clone(), broker.clone(), record).await?;
+        if needs_submission {
+            spawn_polling(database.clone(), broker.clone(), local_id.clone());
+        }
+        let remote_id = database
+            .task_record(&local_id)?
+            .remote_task_id
+            .ok_or_else(|| {
+                AppError::BrokerContract(
+                    "una tarea de indexación no recibió identificador remoto".to_owned(),
+                )
+            })?;
+        remote_ids.push(remote_id);
+    }
+    remote_ids.sort();
+    remote_ids.dedup();
+    if can_use_group {
+        return Ok(single_document_group.map(DocumentIndexDependency::Group));
+    }
+    if remote_ids.len() <= 64 {
+        return Ok(Some(DocumentIndexDependency::Tasks(remote_ids)));
+    }
+    Err(AppError::Conflict(
+        "Hay varios documentos con más de 64 fragmentos todavía indexándose. Espera a que indiquen Índice preparado antes de enviar una pregunta conjunta"
+            .to_owned(),
+    ))
 }
 
 pub fn start_memory_search(
@@ -173,7 +299,23 @@ pub async fn start_chat_turn(
     let attachment_ids = effective_attachment_ids.as_slice();
     let execution_preferences = database.conversation_execution_preferences(conversation_id)?;
     let custom_gpt_context = database.custom_gpt_for_conversation(conversation_id)?;
+    let context_budget = custom_gpt_context_budget(custom_gpt_context.as_ref());
     let attachments = database.ready_attachments_for_turn(conversation_id, attachment_ids)?;
+    let capabilities = if sandbox_enabled || research_mode || !attachments.is_empty() {
+        match broker.capabilities().await {
+            Ok(capabilities) => Some(capabilities),
+            Err(error) => {
+                logging::warn(
+                    "broker.capabilities_unverified_for_turn",
+                    None,
+                    &[("error_kind", logging::error_kind(&error))],
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
     let has_tabular_attachment = attachments.iter().any(is_tabular_attachment);
     if has_tabular_attachment && !sandbox_enabled {
         return Err(AppError::Conflict(
@@ -191,25 +333,38 @@ pub async fn start_chat_turn(
                 "la versión seleccionada del GPT mantiene Código aislado denegado".to_owned(),
             ));
         }
-        match broker.capabilities().await {
-            Ok(capabilities) => validate_sandbox_capability(&capabilities)?,
-            Err(_) => logging::warn(
+        match capabilities.as_ref() {
+            Some(capabilities) => validate_sandbox_capability(capabilities)?,
+            None => logging::warn(
                 "broker.capabilities_unverified_for_sandbox",
                 None,
                 &[("fallback", logging::code("broker_validation"))],
             ),
         }
     }
+    let document_index_dependency = if capabilities
+        .as_ref()
+        .is_some_and(|capabilities| capabilities.task_dependencies)
+        && !attachments.is_empty()
+    {
+        ensure_attachment_embeddings_are_enqueued(&database, &broker, attachment_ids).await?
+    } else {
+        None
+    };
     let document_chunks = database.select_attachment_chunks(
         conversation_id,
         attachment_ids,
         user_text,
-        DOCUMENT_CONTEXT_CHUNK_LIMIT,
-        DOCUMENT_CONTEXT_CHARACTER_BUDGET,
+        context_budget.document_chunks,
+        context_budget.document_characters,
     )?;
     let user_message_id = format!("msg_{}", Uuid::new_v4().simple());
     let assistant_message_id = format!("msg_{}", Uuid::new_v4().simple());
-    let mut context = database.recent_context(conversation_id, 12, 12_000)?;
+    let mut context = database.recent_context(
+        conversation_id,
+        context_budget.recent_messages,
+        context_budget.recent_characters,
+    )?;
     context.push(crate::db::ContextMessage {
         message_id: user_message_id.clone(),
         role: "user".to_owned(),
@@ -220,9 +375,9 @@ pub async fn start_chat_turn(
     // El plan se decide antes de persistir nada: si el Broker no anuncia las
     // herramientas necesarias, el turno se rechaza sin dejar un mensaje a medias.
     let research_plan = if research_mode {
-        Some(match broker.capabilities().await {
-            Ok(capabilities) => deep_research_plan(&capabilities)?,
-            Err(_) => {
+        Some(match capabilities.as_ref() {
+            Some(capabilities) => deep_research_plan(capabilities)?,
+            None => {
                 logging::warn(
                     "broker.capabilities_unverified_for_research",
                     None,
@@ -256,6 +411,7 @@ pub async fn start_chat_turn(
             user_text,
             &content_sha256,
         );
+        let request = apply_document_index_dependency(request, document_index_dependency.as_ref());
         let record = database.prepare_semantic_chat_turn_with_project_instruction(
             &workflow_id,
             conversation_id,
@@ -279,7 +435,11 @@ pub async fn start_chat_turn(
         return Ok(snapshot);
     }
 
-    let memories = database.active_memories_for_conversation(conversation_id)?;
+    let memories = database.active_memories_for_conversation_with_limits(
+        conversation_id,
+        context_budget.memory_items,
+        context_budget.memory_characters,
+    )?;
     let local_task_id = format!("local_{}", Uuid::new_v4().simple());
     let idempotency_key = format!("chatygpt:turn:{}", Uuid::new_v4());
     let mut request = chat_request_with_project_instruction(
@@ -301,6 +461,7 @@ pub async fn start_chat_turn(
     if let Some(plan) = research_plan.as_ref() {
         request = apply_deep_research_plan(request, plan)?;
     }
+    request = apply_document_index_dependency(request, document_index_dependency.as_ref());
     let record = database.prepare_chat_turn_with_project_instruction(
         conversation_id,
         &user_message_id,
@@ -335,6 +496,9 @@ pub struct ResearchPlan {
     /// Herramientas que ejecuta ChatyGPT y que el Broker pausa para pedirle.
     #[serde(default)]
     pub client_tools: Vec<String>,
+    /// Habilidades que sacan datos del equipo según las capacidades 2.8.
+    #[serde(default)]
+    pub egress_skills: Vec<String>,
     /// Vueltas máximas del bucle del agente, acotadas al tope del contrato.
     #[serde(default = "default_research_iterations")]
     pub max_iterations: u32,
@@ -440,6 +604,7 @@ fn deep_research_plan(capabilities: &BrokerCapabilities) -> Result<ResearchPlan,
             .map(str::to_owned)
             .collect(),
         client_tools: RESEARCH_CLIENT_TOOLS.map(str::to_owned).to_vec(),
+        egress_skills: capabilities.agent_skills_egress.clone(),
         max_iterations: RESEARCH_ITERATIONS.min(MAX_RESEARCH_ITERATIONS),
     })
 }
@@ -453,6 +618,7 @@ fn unverified_deep_research_plan() -> ResearchPlan {
     ResearchPlan {
         skills: RESEARCH_BROKER_SKILLS.map(str::to_owned).to_vec(),
         client_tools: RESEARCH_CLIENT_TOOLS.map(str::to_owned).to_vec(),
+        egress_skills: ["web_search", "fetch_url"].map(str::to_owned).to_vec(),
         max_iterations: RESEARCH_ITERATIONS.min(MAX_RESEARCH_ITERATIONS),
     }
 }
@@ -466,6 +632,36 @@ fn apply_deep_research_plan(
     plan: &ResearchPlan,
 ) -> Result<serde_json::Value, AppError> {
     let research_skills = &plan.skills;
+    let data_classification = request
+        .pointer("/risk/data_classification")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("internal");
+    if matches!(data_classification, "confidential" | "local_only") {
+        let mut blocked = research_skills
+            .iter()
+            .filter(|skill| plan.egress_skills.contains(skill))
+            .cloned()
+            .collect::<Vec<_>>();
+        blocked.extend(
+            plan.client_tools
+                .iter()
+                .filter(|tool| plan.egress_skills.contains(tool))
+                .cloned(),
+        );
+        blocked.sort();
+        blocked.dedup();
+        if !blocked.is_empty() {
+            return Err(AppError::Conflict(format!(
+                "Investigación profunda necesita herramientas que envían datos a Internet ({}) y no puede usarlas con la clasificación {}. Cambia el chat a Uso personal o desactiva Investigación profunda",
+                blocked.join(", "),
+                if data_classification == "local_only" {
+                    "Solo en este equipo"
+                } else {
+                    "Confidencial"
+                }
+            )));
+        }
+    }
     // El contrato prohíbe que una herramienta de cliente se llame igual que una
     // habilidad activa en la misma tarea: dos definiciones del mismo nombre son
     // ambiguas para el modelo. Se comprueba aquí porque el plan viene
@@ -668,13 +864,25 @@ pub fn recover_at_start(database: Database, broker: BrokerClient) -> Result<usiz
         advance_semantic_chat(database.clone(), broker.clone(), &embedding_task_id);
     }
     spawn_abandoned_task_cancellation(database.clone(), broker.clone());
-    for attachment_id in database.attachments_needing_semantic_index()? {
-        let _ = start_attachment_semantic_index(
-            database.clone(),
-            broker.clone(),
-            &attachment_id,
-            false,
-        );
+    let attachment_ids = database.attachments_needing_semantic_index()?;
+    if !attachment_ids.is_empty() {
+        let recovery_database = database.clone();
+        let recovery_broker = broker.clone();
+        tauri::async_runtime::spawn(async move {
+            let dependencies_enabled = recovery_broker
+                .capabilities()
+                .await
+                .is_ok_and(|capabilities| capabilities.task_dependencies);
+            for attachment_id in attachment_ids {
+                let _ = start_attachment_semantic_index(
+                    recovery_database.clone(),
+                    recovery_broker.clone(),
+                    &attachment_id,
+                    false,
+                    dependencies_enabled,
+                );
+            }
+        });
     }
     Ok(recovered)
 }
@@ -743,6 +951,269 @@ pub struct ToolDecision {
     pub approved: bool,
 }
 
+const AUTHORIZED_TEXT_FILE_LIMIT: u64 = 256 * 1024;
+
+fn validate_authorized_directory_arguments(arguments: &serde_json::Value) -> Result<(), AppError> {
+    if let Some(relative_path) = arguments
+        .get("relative_path")
+        .and_then(serde_json::Value::as_str)
+    {
+        let path = Path::new(relative_path);
+        if path.is_absolute()
+            || relative_path.chars().count() > 240
+            || path.components().any(|component| {
+                matches!(
+                    component,
+                    Component::ParentDir | Component::RootDir | Component::Prefix(_)
+                )
+            })
+        {
+            return Err(AppError::Validation(
+                "la subcarpeta debe ser relativa y permanecer dentro de la carpeta autorizada"
+                    .to_owned(),
+            ));
+        }
+    }
+    if arguments.get("relative_path").is_some() && arguments.get("folder_id").is_none() {
+        return Err(AppError::Validation(
+            "relative_path requiere un folder_id".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn list_bounded_authorized_directory(
+    root: &Path,
+    relative_path: &str,
+) -> Result<Vec<serde_json::Value>, AppError> {
+    let canonical_root = root.canonicalize().map_err(|_| {
+        AppError::NotFound("la carpeta autorizada ya no está disponible".to_owned())
+    })?;
+    let target = canonical_root
+        .join(relative_path)
+        .canonicalize()
+        .map_err(|_| AppError::NotFound("la subcarpeta solicitada no existe".to_owned()))?;
+    if !target.starts_with(&canonical_root) || !target.is_dir() {
+        return Err(AppError::Validation(
+            "la subcarpeta solicitada queda fuera de la carpeta autorizada".to_owned(),
+        ));
+    }
+    let mut entries = fs::read_dir(target)
+        .map_err(|error| AppError::Validation(format!("no se pudo listar la carpeta: {error}")))?
+        .filter_map(Result::ok)
+        .take(101)
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|entry| entry.file_name().to_string_lossy().to_lowercase());
+    let truncated = entries.len() > 100;
+    entries.truncate(100);
+    let mut values = entries
+        .into_iter()
+        .map(|entry| {
+            let kind = entry.file_type().ok();
+            serde_json::json!({
+                "name": entry.file_name().to_string_lossy(),
+                "kind": if kind.as_ref().is_some_and(|kind| kind.is_dir()) { "folder" }
+                    else if kind.as_ref().is_some_and(|kind| kind.is_symlink()) { "link" }
+                    else { "file" },
+                "size_bytes": entry.metadata().ok().filter(|metadata| metadata.is_file()).map(|metadata| metadata.len())
+            })
+        })
+        .collect::<Vec<_>>();
+    if truncated {
+        values.push(
+            serde_json::json!({"kind": "notice", "name": "Listado limitado a 100 elementos"}),
+        );
+    }
+    Ok(values)
+}
+
+fn validate_authorized_file_arguments(
+    arguments: &serde_json::Value,
+) -> Result<(&str, &str), AppError> {
+    let folder_id = arguments
+        .get("folder_id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            AppError::Validation("read_authorized_file requiere folder_id".to_owned())
+        })?;
+    let relative_path = arguments
+        .get("relative_path")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            AppError::Validation("read_authorized_file requiere relative_path".to_owned())
+        })?;
+    let path = Path::new(relative_path);
+    if path.is_absolute()
+        || relative_path.chars().count() > 240
+        || path.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        return Err(AppError::Validation(
+            "la ruta debe ser relativa y permanecer dentro de la carpeta autorizada".to_owned(),
+        ));
+    }
+    Ok((folder_id, relative_path))
+}
+
+fn read_bounded_authorized_text(root: &Path, relative_path: &str) -> Result<String, AppError> {
+    let canonical_root = root.canonicalize().map_err(|_| {
+        AppError::NotFound("la carpeta autorizada ya no está disponible".to_owned())
+    })?;
+    let candidate = canonical_root.join(PathBuf::from(relative_path));
+    let canonical_file = candidate
+        .canonicalize()
+        .map_err(|_| AppError::NotFound("el archivo solicitado no existe".to_owned()))?;
+    if !canonical_file.starts_with(&canonical_root) || !canonical_file.is_file() {
+        return Err(AppError::Validation(
+            "el archivo solicitado queda fuera de la carpeta autorizada".to_owned(),
+        ));
+    }
+    let allowed = [
+        "txt", "md", "csv", "tsv", "json", "jsonl", "yaml", "yml", "toml", "xml", "html", "css",
+        "sql", "log", "py", "js", "jsx", "ts", "tsx", "rs", "java", "c", "h", "cpp", "hpp", "cs",
+        "go", "rb", "php", "sh", "ps1",
+    ];
+    let extension = canonical_file
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if !allowed.contains(&extension.as_str()) {
+        return Err(AppError::Validation(
+            "solo se pueden leer archivos de texto o código compatibles".to_owned(),
+        ));
+    }
+    if fs::metadata(&canonical_file)
+        .map_err(|error| {
+            AppError::Validation(format!("no se pudo inspeccionar el archivo: {error}"))
+        })?
+        .len()
+        > AUTHORIZED_TEXT_FILE_LIMIT
+    {
+        return Err(AppError::Validation(format!(
+            "el archivo supera el límite de {} KB",
+            AUTHORIZED_TEXT_FILE_LIMIT / 1024
+        )));
+    }
+    fs::read_to_string(canonical_file)
+        .map_err(|_| AppError::Validation("el archivo no contiene texto UTF-8 legible".to_owned()))
+}
+
+fn validate_authorized_file_replacement(
+    arguments: &serde_json::Value,
+) -> Result<(&str, &str, &str, &str), AppError> {
+    let (folder_id, relative_path) = validate_authorized_file_arguments(arguments)?;
+    let expected_sha256 = arguments
+        .get("expected_sha256")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .ok_or_else(|| {
+            AppError::Validation(
+                "replace_authorized_file requiere la huella SHA-256 obtenida al leer".to_owned(),
+            )
+        })?;
+    let content = arguments
+        .get("content")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            AppError::Validation(
+                "replace_authorized_file requiere el contenido completo nuevo".to_owned(),
+            )
+        })?;
+    if content.len() as u64 > AUTHORIZED_TEXT_FILE_LIMIT {
+        return Err(AppError::Validation(format!(
+            "el contenido nuevo supera el límite de {} KB",
+            AUTHORIZED_TEXT_FILE_LIMIT / 1024
+        )));
+    }
+    Ok((folder_id, relative_path, expected_sha256, content))
+}
+
+fn validate_scheduled_task_arguments(
+    arguments: &serde_json::Value,
+) -> Result<(&str, &str, &str, &str), AppError> {
+    let required = |key: &str, label: &str, maximum: usize| {
+        arguments
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty() && value.chars().count() <= maximum)
+            .ok_or_else(|| {
+                AppError::Validation(format!("create_scheduled_task requiere {label} válido"))
+            })
+    };
+    Ok((
+        required("name", "un nombre de hasta 120 caracteres", 120)?,
+        required(
+            "prompt",
+            "una instrucción de hasta 20.000 caracteres",
+            20_000,
+        )?,
+        required("due_at", "una fecha ISO 8601 futura", 64)?,
+        required("timezone", "una zona horaria de hasta 100 caracteres", 100)?,
+    ))
+}
+
+fn replace_bounded_authorized_text(
+    root: &Path,
+    relative_path: &str,
+    expected_sha256: &str,
+    content: &str,
+) -> Result<String, AppError> {
+    let current = read_bounded_authorized_text(root, relative_path)?;
+    let current_sha256 = format!("{:x}", Sha256::digest(current.as_bytes()));
+    if !current_sha256.eq_ignore_ascii_case(expected_sha256) {
+        return Err(AppError::Conflict(
+            "el archivo cambió después de que el GPT lo leyera; vuelve a leerlo antes de modificarlo".to_owned(),
+        ));
+    }
+    let canonical_root = root.canonicalize().map_err(|_| {
+        AppError::NotFound("la carpeta autorizada ya no está disponible".to_owned())
+    })?;
+    let destination = canonical_root
+        .join(relative_path)
+        .canonicalize()
+        .map_err(|_| AppError::NotFound("el archivo solicitado no existe".to_owned()))?;
+    if !destination.starts_with(&canonical_root) || !destination.is_file() {
+        return Err(AppError::Validation(
+            "el archivo solicitado queda fuera de la carpeta autorizada".to_owned(),
+        ));
+    }
+    let parent = destination.parent().ok_or_else(|| {
+        AppError::Validation("el archivo no tiene una carpeta contenedora válida".to_owned())
+    })?;
+    let temporary = parent.join(format!(".chatygpt-edit-{}.tmp", Uuid::new_v4().simple()));
+    let write_result = (|| {
+        use std::io::Write;
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .map_err(|error| AppError::DataDirectory(error.to_string()))?;
+        file.write_all(content.as_bytes())
+            .map_err(|error| AppError::DataDirectory(error.to_string()))?;
+        file.sync_all()
+            .map_err(|error| AppError::DataDirectory(error.to_string()))?;
+        fs::rename(&temporary, &destination)
+            .map_err(|error| AppError::DataDirectory(error.to_string()))?;
+        Ok::<(), AppError>(())
+    })();
+    if write_result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    write_result?;
+    Ok(format!("{:x}", Sha256::digest(content.as_bytes())))
+}
+
 fn persisted_custom_gpt_allows_tool(request: &serde_json::Value, tool_name: &str) -> bool {
     let metadata = &request["content"]["metadata"];
     let has_custom_gpt = metadata
@@ -751,17 +1222,148 @@ fn persisted_custom_gpt_allows_tool(request: &serde_json::Value, tool_name: &str
     if !has_custom_gpt {
         return true;
     }
+    if tool_name.starts_with("api_action_") {
+        return metadata["custom_gpt_tool_permissions"]["callExternalApis"].as_str()
+            == Some("confirm")
+            && metadata["custom_gpt_api_actions"]
+                .as_array()
+                .is_some_and(|actions| {
+                    actions.iter().any(|action| {
+                        action["name"]
+                            .as_str()
+                            .is_some_and(|name| tool_name == format!("api_action_{name}"))
+                    })
+                });
+    }
     let permission_key = match tool_name {
         "rename_conversation" => "renameConversation",
         "run_code" => "runCode",
+        "list_authorized_folders" | "read_authorized_file" => "readAuthorizedFolders",
+        "replace_authorized_file" => "modifyAuthorizedFiles",
+        "create_scheduled_task" => "createScheduledTasks",
+        "call_external_api" => "callExternalApis",
         _ => return false,
     };
     metadata["custom_gpt_tool_permissions"][permission_key].as_str() == Some("confirm")
 }
 
-pub fn resolve_tool_calls(
+fn configured_api_action<'a>(
+    request: &'a serde_json::Value,
+    tool_name: &str,
+) -> Option<&'a serde_json::Value> {
+    let name = tool_name.strip_prefix("api_action_")?;
+    request["content"]["metadata"]["custom_gpt_api_actions"]
+        .as_array()?
+        .iter()
+        .find(|action| action["name"].as_str() == Some(name))
+}
+
+pub(crate) fn configured_api_url(
+    action: &serde_json::Value,
+    arguments: &serde_json::Value,
+) -> Result<String, AppError> {
+    let raw = action["url"].as_str().ok_or_else(|| {
+        AppError::Validation("la acción API no contiene una URL válida".to_owned())
+    })?;
+    let parameters = action["parameters"].as_array().cloned().unwrap_or_else(|| {
+        action["queryParameters"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|name| json!({"name": name, "type": "string", "required": true, "location": "query"}))
+            .collect()
+    });
+    let object = arguments.as_object().ok_or_else(|| {
+        AppError::Validation("los parámetros de la acción API no son válidos".to_owned())
+    })?;
+    let configured_credential = action["credentialRef"].as_str();
+    let configured_auth = configured_credential.and(action["authMode"].as_str());
+    if object.get("url").and_then(serde_json::Value::as_str) != Some(raw)
+        || object
+            .get("credential_ref")
+            .and_then(serde_json::Value::as_str)
+            != configured_credential
+        || object.get("auth_mode").and_then(serde_json::Value::as_str) != configured_auth
+        || object.keys().any(|key| {
+            key != "url"
+                && key != "credential_ref"
+                && key != "auth_mode"
+                && !parameters
+                    .iter()
+                    .any(|parameter| parameter["name"].as_str() == Some(key))
+        })
+        || parameters.iter().any(|parameter| {
+            parameter["required"].as_bool().unwrap_or(true)
+                && !object.contains_key(parameter["name"].as_str().unwrap_or_default())
+        })
+    {
+        return Err(AppError::Validation(
+            "la acción API no recibió exactamente sus parámetros configurados".to_owned(),
+        ));
+    }
+    let mut rendered_url = raw.to_owned();
+    for parameter in &parameters {
+        if parameter["location"].as_str().unwrap_or("query") != "path" {
+            continue;
+        }
+        let key = parameter["name"].as_str().unwrap_or_default();
+        let value = object
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| value.chars().count() <= 200)
+            .ok_or_else(|| {
+                AppError::Validation(format!("el parámetro de ruta {key} debe ser texto"))
+            })?;
+        let mut encoder = url::Url::parse("https://path.invalid/").expect("constant URL");
+        encoder
+            .path_segments_mut()
+            .expect("hierarchical URL")
+            .push(value);
+        let encoded = encoder.path().trim_start_matches('/');
+        rendered_url = rendered_url.replace(&format!("{{{key}}}"), encoded);
+    }
+    let mut url = crate::research_tools::validate_external_api_url(&rendered_url)?;
+    if parameters
+        .iter()
+        .any(|parameter| parameter["location"].as_str().unwrap_or("query") != "path")
+    {
+        let mut query = url.query_pairs_mut();
+        for parameter in parameters {
+            if parameter["location"].as_str().unwrap_or("query") == "path" {
+                continue;
+            }
+            let key = parameter["name"].as_str().unwrap_or_default();
+            let Some(value) = object.get(key) else {
+                continue;
+            };
+            let rendered = match parameter["type"].as_str().unwrap_or("string") {
+                "string" => value
+                    .as_str()
+                    .filter(|value| value.chars().count() <= 500)
+                    .map(str::to_owned),
+                "number" => value
+                    .as_f64()
+                    .filter(|value| value.is_finite())
+                    .map(|value| value.to_string()),
+                "boolean" => value.as_bool().map(|value| value.to_string()),
+                _ => None,
+            }
+            .ok_or_else(|| {
+                AppError::Validation(format!(
+                    "el parámetro {key} no coincide con su tipo configurado"
+                ))
+            })?;
+            query.append_pair(key, &rendered);
+        }
+    }
+    Ok(url.to_string())
+}
+
+pub async fn resolve_tool_calls(
     database: Database,
     broker: BrokerClient,
+    data_dir: &std::path::Path,
     local_task_id: &str,
     decisions: &[ToolDecision],
 ) -> Result<LocalTaskSnapshot, AppError> {
@@ -821,6 +1423,30 @@ pub fn resolve_tool_calls(
                         ));
                     }
                 }
+                "list_authorized_folders" => {
+                    validate_authorized_directory_arguments(&call.arguments)?;
+                }
+                "read_authorized_file" => {
+                    validate_authorized_file_arguments(&call.arguments)?;
+                }
+                "replace_authorized_file" => {
+                    validate_authorized_file_replacement(&call.arguments)?;
+                }
+                "create_scheduled_task" => {
+                    validate_scheduled_task_arguments(&call.arguments)?;
+                }
+                "call_external_api" => {
+                    validate_external_api_arguments(&call.arguments)?;
+                }
+                other if other.starts_with("api_action_") => {
+                    let action =
+                        configured_api_action(&persisted_request, other).ok_or_else(|| {
+                            AppError::Validation(
+                                "la acción API ya no pertenece a la versión del GPT".to_owned(),
+                            )
+                        })?;
+                    configured_api_url(action, &call.arguments)?;
+                }
                 other => {
                     return Err(AppError::Validation(format!(
                         "herramienta de cliente no admitida: {other}"
@@ -856,6 +1482,159 @@ pub fn resolve_tool_calls(
                     (
                         "approved",
                         serde_json::json!({"ok": true, "title": title}).to_string(),
+                    )
+                }
+                "list_authorized_folders" => {
+                    let folder_id = call
+                        .arguments
+                        .get("folder_id")
+                        .and_then(serde_json::Value::as_str);
+                    let relative_path = call
+                        .arguments
+                        .get("relative_path")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("");
+                    let value = if let Some(folder_id) = folder_id {
+                        let (root, folder_name) = database.authorized_folder_for_read(folder_id)?;
+                        serde_json::json!({
+                            "ok": true,
+                            "folder": folder_name,
+                            "relative_path": relative_path,
+                            "entries": list_bounded_authorized_directory(&root, relative_path)?
+                        })
+                    } else {
+                        let folders = database.list_read_authorized_folders()?;
+                        serde_json::json!({
+                            "ok": true,
+                            "folders": folders.into_iter().map(|folder| serde_json::json!({
+                                "folder_id": folder.id,
+                                "name": folder.display_name
+                            })).collect::<Vec<_>>()
+                        })
+                    };
+                    ("approved", value.to_string())
+                }
+                "read_authorized_file" => {
+                    let (folder_id, relative_path) =
+                        validate_authorized_file_arguments(&call.arguments)?;
+                    let (root, folder_name) = database.authorized_folder_for_read(folder_id)?;
+                    let content = read_bounded_authorized_text(&root, relative_path)?;
+                    let sha256 = format!("{:x}", Sha256::digest(content.as_bytes()));
+                    (
+                        "approved",
+                        serde_json::json!({
+                            "ok": true,
+                            "folder": folder_name,
+                            "relative_path": relative_path,
+                            "content": content,
+                            "sha256": sha256
+                        })
+                        .to_string(),
+                    )
+                }
+                "replace_authorized_file" => {
+                    let (folder_id, relative_path, expected_sha256, content) =
+                        validate_authorized_file_replacement(&call.arguments)?;
+                    let (root, folder_name) = database.authorized_folder_for_modify(folder_id)?;
+                    let after_sha256 = replace_bounded_authorized_text(
+                        &root,
+                        relative_path,
+                        expected_sha256,
+                        content,
+                    )?;
+                    database.record_authorized_file_modified(
+                        folder_id,
+                        expected_sha256,
+                        &after_sha256,
+                    )?;
+                    (
+                        "approved",
+                        serde_json::json!({
+                            "ok": true,
+                            "folder": folder_name,
+                            "relative_path": relative_path,
+                            "before_sha256": expected_sha256,
+                            "after_sha256": after_sha256
+                        })
+                        .to_string(),
+                    )
+                }
+                "create_scheduled_task" => {
+                    let (name, prompt, due_at, timezone) =
+                        validate_scheduled_task_arguments(&call.arguments)?;
+                    let scheduled = database.create_scheduled_task_from_tool(
+                        &call.tool_call_id,
+                        name,
+                        &conversation_id,
+                        prompt,
+                        due_at,
+                        timezone,
+                    )?;
+                    (
+                        "approved",
+                        serde_json::json!({
+                            "ok": true,
+                            "scheduled_task_id": scheduled.id,
+                            "name": scheduled.name,
+                            "next_run_at": scheduled.next_run_at
+                        })
+                        .to_string(),
+                    )
+                }
+                "call_external_api" => {
+                    let url = validate_external_api_arguments(&call.arguments)?;
+                    let url = url.to_owned();
+                    let response = tauri::async_runtime::spawn_blocking(move || {
+                        crate::research_tools::external_api_get(&url)
+                    })
+                    .await
+                    .map_err(|error| AppError::BrokerTransport(error.to_string()))??;
+                    (
+                        "approved",
+                        serde_json::to_string(&response)
+                            .map_err(|error| AppError::BrokerContract(error.to_string()))?,
+                    )
+                }
+                other if other.starts_with("api_action_") => {
+                    let action =
+                        configured_api_action(&persisted_request, other).ok_or_else(|| {
+                            AppError::Validation(
+                                "la acción API ya no pertenece a la versión del GPT".to_owned(),
+                            )
+                        })?;
+                    let url = configured_api_url(action, &call.arguments)?;
+                    let authentication = match action["authMode"].as_str().unwrap_or("none") {
+                        "none" => None,
+                        mode @ ("bearer" | "api_key") => {
+                            let credential_ref =
+                                action["credentialRef"].as_str().ok_or_else(|| {
+                                    AppError::Validation(
+                                        "la acción API no indica su credencial".to_owned(),
+                                    )
+                                })?;
+                            let secret = crate::secrets::load_api_credential(data_dir, credential_ref).ok_or_else(|| AppError::Validation(format!("la credencial API {credential_ref} no está disponible en este equipo")))?;
+                            Some((mode.to_owned(), secret))
+                        }
+                        _ => {
+                            return Err(AppError::Validation(
+                                "el tipo de autenticación API no es válido".to_owned(),
+                            ))
+                        }
+                    };
+                    let response = tauri::async_runtime::spawn_blocking(move || {
+                        crate::research_tools::external_api_get_with_auth(
+                            &url,
+                            authentication
+                                .as_ref()
+                                .map(|(mode, secret)| (mode.as_str(), secret.as_str())),
+                        )
+                    })
+                    .await
+                    .map_err(|error| AppError::BrokerTransport(error.to_string()))??;
+                    (
+                        "approved",
+                        serde_json::to_string(&response)
+                            .map_err(|error| AppError::BrokerContract(error.to_string()))?,
                     )
                 }
                 other => {
@@ -1210,16 +1989,6 @@ fn spawn_polling(database: Database, broker: BrokerClient, local_id: String) {
                         );
                         if state.status.is_terminal() {
                             advance_semantic_chat(database.clone(), broker.clone(), &local_id);
-                            if let Ok(Some(attachment_id)) =
-                                database.attachment_for_embedding_task(&local_id)
-                            {
-                                let _ = start_attachment_semantic_index(
-                                    database.clone(),
-                                    broker.clone(),
-                                    &attachment_id,
-                                    false,
-                                );
-                            }
                         } else {
                             // Una investigación resuelve sus propias herramientas:
                             // la persona autorizó el recorrido entero al activarla,
@@ -1293,14 +2062,24 @@ fn advance_semantic_chat(database: Database, broker: BrokerClient, embedding_tas
     match task.remote_status.as_str() {
         "completed" => {
             let result = (|| {
+                let context_budget =
+                    custom_gpt_context_budget(workflow.custom_gpt_context.as_ref());
                 let selected = if database.semantic_workflow_uses_memory(&workflow.id)? {
-                    database.semantic_memory_matches(&workflow.id)?
+                    database.semantic_memory_matches_with_limit(
+                        &workflow.id,
+                        context_budget.memory_items.min(10),
+                    )?
                 } else {
                     Vec::new()
                 };
+                let mut used_memory_characters = 0_usize;
                 let memories = selected
                     .iter()
                     .map(|item| item.memory.clone())
+                    .filter(|memory| {
+                        used_memory_characters += memory.content.chars().count();
+                        used_memory_characters <= context_budget.memory_characters
+                    })
                     .collect::<Vec<_>>();
                 let attachments = database.ready_attachments_for_turn(
                     &workflow.conversation_id,
@@ -1310,8 +2089,8 @@ fn advance_semantic_chat(database: Database, broker: BrokerClient, embedding_tas
                     &workflow.conversation_id,
                     &workflow.attachment_ids,
                     &workflow.user_text,
-                    DOCUMENT_CONTEXT_CHUNK_LIMIT,
-                    DOCUMENT_CONTEXT_CHARACTER_BUDGET,
+                    context_budget.document_chunks,
+                    context_budget.document_characters,
                     &workflow.id,
                 )?;
                 let chat_task_id = format!("local_{}", Uuid::new_v4().simple());
@@ -1401,6 +2180,22 @@ fn deterministic_jitter(local_id: &str, poll_no: u64) -> i32 {
     local_id.hash(&mut hasher);
     poll_no.hash(&mut hasher);
     (hasher.finish() % 3_001) as i32 - 1_500
+}
+
+fn apply_document_index_dependency(
+    mut request: serde_json::Value,
+    dependency: Option<&DocumentIndexDependency>,
+) -> serde_json::Value {
+    match dependency {
+        Some(DocumentIndexDependency::Group(group)) => {
+            request["depends_on_group"] = json!(group);
+        }
+        Some(DocumentIndexDependency::Tasks(task_ids)) => {
+            request["depends_on"] = json!(task_ids);
+        }
+        None => {}
+    }
+    request
 }
 
 fn smoke_request(idempotency_key: &str) -> serde_json::Value {
@@ -1531,6 +2326,95 @@ fn explicitly_requests_conversation_rename(text: &str) -> bool {
     ]
     .iter()
     .any(|request| normalized.contains(request))
+}
+
+fn explicitly_requests_authorized_folder_read(text: &str) -> bool {
+    let normalized = text.to_lowercase();
+    ["carpeta", "directorio", "folder", "directory"]
+        .iter()
+        .any(|term| normalized.contains(term))
+        && [
+            "lee", "leer", "lista", "listar", "busca", "buscar", "revisa", "revisar", "archivo",
+            "fichero", "read", "list", "find", "inspect",
+        ]
+        .iter()
+        .any(|term| normalized.contains(term))
+}
+
+fn explicitly_requests_authorized_file_modify(text: &str) -> bool {
+    let normalized = text.to_lowercase();
+    ["archivo", "fichero", "file"]
+        .iter()
+        .any(|term| normalized.contains(term))
+        && [
+            "modifica",
+            "modificar",
+            "edita",
+            "editar",
+            "cambia",
+            "cambiar",
+            "reemplaza",
+            "reemplazar",
+            "actualiza",
+            "actualizar",
+            "modify",
+            "edit",
+            "replace",
+            "update",
+        ]
+        .iter()
+        .any(|term| normalized.contains(term))
+}
+
+fn explicitly_requests_scheduled_task(text: &str) -> bool {
+    let normalized = text.to_lowercase();
+    [
+        "programa",
+        "programar",
+        "agenda",
+        "agendar",
+        "recuérdame",
+        "recordatorio",
+        "schedule",
+        "remind me",
+    ]
+    .iter()
+    .any(|term| normalized.contains(term))
+        && ["mañana", "hoy", "fecha", "hora", " a las ", "at ", "on "]
+            .iter()
+            .any(|term| normalized.contains(term))
+}
+
+fn explicitly_requests_external_api(text: &str) -> bool {
+    let normalized = text.to_lowercase();
+    normalized.contains("https://")
+        && [
+            " api ",
+            "api de",
+            "endpoint",
+            "consulta",
+            "consultar",
+            "llama",
+            "llamar",
+            "obtén",
+            "obtener",
+            "request",
+            "call",
+            "fetch",
+        ]
+        .iter()
+        .any(|term| normalized.contains(term))
+}
+
+fn validate_external_api_arguments(arguments: &serde_json::Value) -> Result<&str, AppError> {
+    let url = arguments
+        .get("url")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| AppError::Validation("call_external_api requiere una URL".to_owned()))?;
+    crate::research_tools::validate_external_api_url(url)?;
+    Ok(url)
 }
 
 fn is_tabular_attachment(attachment: &AttachmentRecord) -> bool {
@@ -1756,8 +2640,54 @@ fn chat_request_with_project_instruction(
                 .tool_permissions
                 .requires_confirmation("rename_conversation")
         });
+    let folder_tools_enabled = tools_enabled
+        && (explicitly_requests_authorized_folder_read(user_text)
+            || explicitly_requests_authorized_file_modify(user_text))
+        && custom_gpt_context.is_some_and(|custom_gpt| {
+            custom_gpt
+                .tool_permissions
+                .requires_confirmation("read_authorized_file")
+        });
+    let file_modify_tool_enabled = tools_enabled
+        && explicitly_requests_authorized_file_modify(user_text)
+        && custom_gpt_context.is_some_and(|custom_gpt| {
+            custom_gpt
+                .tool_permissions
+                .requires_confirmation("replace_authorized_file")
+        });
+    let schedule_tool_enabled = tools_enabled
+        && explicitly_requests_scheduled_task(user_text)
+        && custom_gpt_context.is_some_and(|custom_gpt| {
+            custom_gpt
+                .tool_permissions
+                .requires_confirmation("create_scheduled_task")
+        });
+    let external_api_tool_enabled = tools_enabled
+        && explicitly_requests_external_api(user_text)
+        && custom_gpt_context.is_some_and(|custom_gpt| {
+            custom_gpt
+                .tool_permissions
+                .requires_confirmation("call_external_api")
+        });
+    let configured_api_actions = if tools_enabled
+        && custom_gpt_context.is_some_and(|custom_gpt| {
+            custom_gpt
+                .tool_permissions
+                .requires_confirmation("call_external_api")
+        }) {
+        custom_gpt_context
+            .map(|custom_gpt| custom_gpt.api_actions.as_slice())
+            .unwrap_or_default()
+    } else {
+        &[]
+    };
     let execution = if sandbox_enabled
         && !rename_tool_enabled
+        && !folder_tools_enabled
+        && !file_modify_tool_enabled
+        && !schedule_tool_enabled
+        && !external_api_tool_enabled
+        && configured_api_actions.is_empty()
         && execution_preferences.strategy == "mixture_of_agents"
     {
         let scheduling = if execution_preferences.preset == "slow" {
@@ -1778,14 +2708,24 @@ fn chat_request_with_project_instruction(
             },
             "proposer_skills": ["run_code"]
         })
-    } else if rename_tool_enabled || sandbox_enabled {
-        let skills = if sandbox_enabled {
-            vec!["run_code"]
-        } else {
-            Vec::new()
-        };
-        let client_tools = if rename_tool_enabled {
-            vec![json!({
+    } else if rename_tool_enabled
+        || folder_tools_enabled
+        || file_modify_tool_enabled
+        || schedule_tool_enabled
+        || external_api_tool_enabled
+        || !configured_api_actions.is_empty()
+        || sandbox_enabled
+    {
+        let mut skills = Vec::new();
+        if sandbox_enabled {
+            skills.push("run_code");
+        }
+        if schedule_tool_enabled {
+            skills.push("current_datetime");
+        }
+        let mut client_tools = Vec::new();
+        if rename_tool_enabled {
+            client_tools.push(json!({
                 "name": "rename_conversation",
                 "description": "Renombra la conversación actual. Úsala solo cuando el usuario pida explícitamente cambiar el título del chat. La aplicación solicitará confirmación antes de ejecutar la acción.",
                 "parameters": {
@@ -1796,10 +2736,132 @@ fn chat_request_with_project_instruction(
                     "required": ["title"],
                     "additionalProperties": false
                 }
-            })]
-        } else {
-            Vec::new()
-        };
+            }));
+        }
+        if folder_tools_enabled {
+            client_tools.push(json!({
+                "name": "list_authorized_folders",
+                "description": "Lista las carpetas autorizadas o el contenido inmediato de una de ellas. Usa primero la llamada sin folder_id. ChatyGPT pedirá confirmación antes de cada listado.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "folder_id": {"type": "string", "description": "Identificador obtenido en un listado anterior"},
+                        "relative_path": {"type": "string", "description": "Subcarpeta relativa; omitir para la raíz"}
+                    },
+                    "additionalProperties": false
+                }
+            }));
+            client_tools.push(json!({
+                "name": "read_authorized_file",
+                "description": "Lee un archivo de texto pequeño dentro de una carpeta autorizada, usando únicamente folder_id y una ruta relativa obtenidos al listar. ChatyGPT pedirá confirmación antes de enviar el contenido al modelo.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "folder_id": {"type": "string"},
+                        "relative_path": {"type": "string"}
+                    },
+                    "required": ["folder_id", "relative_path"],
+                    "additionalProperties": false
+                }
+            }));
+        }
+        if file_modify_tool_enabled {
+            client_tools.push(json!({
+                "name": "replace_authorized_file",
+                "description": "Reemplaza por completo un archivo de texto existente dentro de una carpeta autorizada. Debes leerlo primero y copiar exactamente su sha256 en expected_sha256. No crea ni borra archivos. ChatyGPT pedirá confirmación y rechazará la operación si el archivo cambió entretanto.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "folder_id": {"type": "string"},
+                        "relative_path": {"type": "string"},
+                        "expected_sha256": {"type": "string"},
+                        "content": {"type": "string", "description": "Contenido completo nuevo"}
+                    },
+                    "required": ["folder_id", "relative_path", "expected_sha256", "content"],
+                    "additionalProperties": false
+                }
+            }));
+        }
+        if schedule_tool_enabled {
+            client_tools.push(json!({
+                "name": "create_scheduled_task",
+                "description": "Crea una única ejecución futura en la conversación actual. Convierte la fecha solicitada a ISO 8601 UTC e incluye la zona IANA original. ChatyGPT pedirá confirmación antes de activar la tarea persistente.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "prompt": {"type": "string", "description": "Instrucción que se enviará al ejecutarse"},
+                        "due_at": {"type": "string", "description": "Fecha ISO 8601 UTC futura"},
+                        "timezone": {"type": "string", "description": "Zona horaria IANA del usuario"}
+                    },
+                    "required": ["name", "prompt", "due_at", "timezone"],
+                    "additionalProperties": false
+                }
+            }));
+        }
+        if external_api_tool_enabled {
+            client_tools.push(json!({
+                "name": "call_external_api",
+                "description": "Consulta mediante HTTPS GET una API pública explícitamente indicada por el usuario. No admite credenciales, cuerpo, cabeceras personalizadas, red local ni redirecciones. ChatyGPT pedirá confirmación antes de enviar la URL completa.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string", "description": "URL HTTPS completa, incluidos los parámetros de consulta necesarios"}
+                    },
+                    "required": ["url"],
+                    "additionalProperties": false
+                }
+            }));
+        }
+        for action in configured_api_actions {
+            let mut properties = action
+                .parameters
+                .iter()
+                .map(|parameter| {
+                    let mut schema = json!({"type": parameter.value_type});
+                    if parameter.value_type == "string" {
+                        schema["maxLength"] = json!(500);
+                    }
+                    if let Some(description) = &parameter.description {
+                        schema["description"] = json!(description);
+                    }
+                    (parameter.name.clone(), schema)
+                })
+                .chain(std::iter::once((
+                    "url".to_owned(),
+                    json!({"type": "string", "const": action.url}),
+                )))
+                .collect::<serde_json::Map<_, _>>();
+            let mut required = action
+                .parameters
+                .iter()
+                .filter(|parameter| parameter.required)
+                .map(|parameter| parameter.name.clone())
+                .collect::<Vec<_>>();
+            required.push("url".to_owned());
+            if let Some(credential_ref) = &action.credential_ref {
+                properties.insert(
+                    "credential_ref".to_owned(),
+                    json!({"type": "string", "const": credential_ref}),
+                );
+                properties.insert(
+                    "auth_mode".to_owned(),
+                    json!({"type": "string", "const": action.auth_mode}),
+                );
+                required.push("credential_ref".to_owned());
+                required.push("auth_mode".to_owned());
+            }
+            client_tools.push(json!({
+                "name": format!("api_action_{}", action.name),
+                "description": format!("{}. Destino fijo configurado por la persona: {}. {}ChatyGPT pedirá confirmación antes de ejecutarla.", action.description, action.url, if action.credential_ref.is_some() { "Usa una credencial local protegida que el modelo no puede ver. " } else { "" }),
+                "parameters": {
+                    "type": "object",
+                    "properties": properties,
+                    "required": required,
+                    "additionalProperties": false
+                }
+            }));
+        }
         json!({
             "strategy": "agent",
             "preset": "fast",
@@ -1856,11 +2918,12 @@ fn chat_request_with_project_instruction(
     } else {
         "relevant_fragments"
     };
-    let data_classification = if contains_sensitive_memory {
-        "local_only"
-    } else {
-        execution_preferences.data_classification.as_str()
-    };
+    let data_classification =
+        if contains_sensitive_memory || folder_tools_enabled || file_modify_tool_enabled {
+            "local_only"
+        } else {
+            execution_preferences.data_classification.as_str()
+        };
     Ok(json!({
         "idempotency_key": idempotency_key,
         "request_id": format!("chatygpt_turn_{}", Uuid::new_v4().simple()),
@@ -1879,7 +2942,9 @@ fn chat_request_with_project_instruction(
                 "custom_gpt_version_id": custom_gpt_context.map(|context| context.version_id.as_str()),
                 "custom_gpt_name": custom_gpt_context.map(|context| context.name.as_str()),
                 "custom_gpt_version_no": custom_gpt_context.map(|context| context.version_no),
+                "custom_gpt_context_profile": custom_gpt_context.map(|context| context.context_profile.as_str()),
                 "custom_gpt_tool_permissions": custom_gpt_context.map(|context| &context.tool_permissions),
+                "custom_gpt_api_actions": custom_gpt_context.map(|context| &context.api_actions),
                  "approved_memory_count": memories.len(),
                  "selected_document_fragment_count": document_chunks.len(),
                  "document_context_mode": document_context_mode
@@ -1907,10 +2972,12 @@ fn chat_request_with_project_instruction(
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_deep_research_plan, chat_request, chat_request_with_project_instruction,
+        apply_deep_research_plan, apply_document_index_dependency, chat_request,
+        chat_request_with_project_instruction, configured_api_url, custom_gpt_context_budget,
         custom_gpt_prompt_block, deep_research_plan, deterministic_jitter, embedding_request,
         is_tabular_attachment, memory_embedding_request, persisted_custom_gpt_allows_tool,
-        validate_sandbox_capability, ChatExecutionOptions, ResearchPlan,
+        replace_bounded_authorized_text, validate_sandbox_capability, ChatExecutionOptions,
+        ResearchPlan,
     };
     use super::{cancel_task, recover_at_start, resolve_tool_calls, start_chat_turn, ToolDecision};
     use crate::broker::simulated::{
@@ -1923,8 +2990,12 @@ mod tests {
         CustomGptToolPermissions, Database, MemoryItemView, ProjectInstructionContext,
         SelectedAttachmentChunk,
     };
+    use crate::error::AppError;
     use serde_json::json;
+    use sha2::{Digest, Sha256};
+    use std::fs;
     use std::time::Duration;
+    use uuid::Uuid;
 
     /// Tiempo máximo que una prueba espera a que un bucle asíncrono se asiente.
     ///
@@ -2593,15 +3664,16 @@ mod tests {
         let waiting = database.task_snapshot(&local_id).expect("la tarea existe");
         assert_eq!(waiting.pending_tool_calls.len(), 1);
 
-        let resolved = resolve_tool_calls(
+        let resolved = tauri::async_runtime::block_on(resolve_tool_calls(
             database.clone(),
             broker.clone(),
+            &std::env::temp_dir(),
             &local_id,
             &[ToolDecision {
                 tool_call_id: waiting.pending_tool_calls[0].tool_call_id.clone(),
                 approved: false,
             }],
-        )
+        ))
         .expect("la decisión debe resolverse");
         assert!(resolved.pending_tool_calls.is_empty());
 
@@ -2797,6 +3869,8 @@ mod tests {
             tool_permissions: CustomGptToolPermissions::default(),
             preferred_model: None,
             execution_profile: None,
+            context_profile: "balanced".to_owned(),
+            api_actions: Vec::new(),
         };
         let request = chat_request_with_project_instruction(
             "conversation",
@@ -2848,6 +3922,8 @@ mod tests {
                 long_context: "fail".to_owned(),
                 priority: 50,
             }),
+            context_profile: "balanced".to_owned(),
+            api_actions: Vec::new(),
         };
         let request = chat_request_with_project_instruction(
             "conversation",
@@ -2876,6 +3952,340 @@ mod tests {
     }
 
     #[test]
+    fn authorized_folder_tools_require_gpt_permission_and_force_local_routing() {
+        let custom_gpt = CustomGptContext {
+            custom_gpt_id: "gpt-folders".to_owned(),
+            version_id: "gpt-folders-v1".to_owned(),
+            name: "Archivista".to_owned(),
+            icon_ref: "research".to_owned(),
+            version_no: 1,
+            instructions: "Ayuda a localizar información autorizada.".to_owned(),
+            tool_permissions: CustomGptToolPermissions {
+                run_code: "deny".to_owned(),
+                rename_conversation: "deny".to_owned(),
+                read_authorized_folders: "confirm".to_owned(),
+                modify_authorized_files: "deny".to_owned(),
+                create_scheduled_tasks: "deny".to_owned(),
+                call_external_apis: "deny".to_owned(),
+            },
+            preferred_model: None,
+            execution_profile: None,
+            context_profile: "balanced".to_owned(),
+            api_actions: Vec::new(),
+        };
+        let request = chat_request_with_project_instruction(
+            "conversation",
+            "folder-key",
+            "Lista los archivos de la carpeta autorizada",
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            Some(&custom_gpt),
+            ChatExecutionOptions {
+                tools_enabled: true,
+                ..ChatExecutionOptions::default()
+            },
+        )
+        .expect("la petición con permiso debe construirse");
+
+        let names = request["execution"]["agent"]["client_tools"]
+            .as_array()
+            .expect("debe ofrecer herramientas")
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            vec!["list_authorized_folders", "read_authorized_file"]
+        );
+        assert_eq!(request["risk"]["data_classification"], "local_only");
+    }
+
+    #[test]
+    fn scheduled_task_tool_requires_explicit_intent_and_gpt_permission() {
+        let custom_gpt = CustomGptContext {
+            custom_gpt_id: "gpt-scheduler".to_owned(),
+            version_id: "gpt-scheduler-v1".to_owned(),
+            name: "Organizador".to_owned(),
+            icon_ref: "briefcase".to_owned(),
+            version_no: 1,
+            instructions: "Ayuda a organizar el trabajo.".to_owned(),
+            tool_permissions: CustomGptToolPermissions {
+                create_scheduled_tasks: "confirm".to_owned(),
+                ..CustomGptToolPermissions::default()
+            },
+            preferred_model: None,
+            execution_profile: None,
+            context_profile: "balanced".to_owned(),
+            api_actions: Vec::new(),
+        };
+        let request = chat_request_with_project_instruction(
+            "conversation",
+            "schedule-key",
+            "Programa un recordatorio mañana a las 10",
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            Some(&custom_gpt),
+            ChatExecutionOptions {
+                tools_enabled: true,
+                ..ChatExecutionOptions::default()
+            },
+        )
+        .expect("la petición de programación debe construirse");
+
+        let names = request["execution"]["agent"]["client_tools"]
+            .as_array()
+            .expect("debe ofrecer la herramienta")
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["create_scheduled_task"]);
+        assert_eq!(request["execution"]["strategy"], "agent");
+        assert_eq!(
+            request["execution"]["agent"]["skills"],
+            json!(["current_datetime"])
+        );
+    }
+
+    #[test]
+    fn external_api_tool_requires_explicit_https_url_and_permission() {
+        let custom_gpt = CustomGptContext {
+            custom_gpt_id: "gpt-api".to_owned(),
+            version_id: "gpt-api-v1".to_owned(),
+            name: "Datos públicos".to_owned(),
+            icon_ref: "data".to_owned(),
+            version_no: 1,
+            instructions: "Consulta datos públicos cuando te lo pidan.".to_owned(),
+            tool_permissions: CustomGptToolPermissions {
+                call_external_apis: "confirm".to_owned(),
+                ..CustomGptToolPermissions::default()
+            },
+            preferred_model: None,
+            execution_profile: None,
+            context_profile: "balanced".to_owned(),
+            api_actions: Vec::new(),
+        };
+        let request = chat_request_with_project_instruction(
+            "conversation",
+            "api-key",
+            "Consulta la API https://api.example.org/v1/weather?q=Arrecife",
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            Some(&custom_gpt),
+            ChatExecutionOptions {
+                tools_enabled: true,
+                ..ChatExecutionOptions::default()
+            },
+        )
+        .expect("la petición debe ofrecer la herramienta");
+        assert_eq!(
+            request["execution"]["agent"]["client_tools"][0]["name"],
+            "call_external_api"
+        );
+        assert_eq!(request["execution"]["preset"], "fast");
+
+        let without_url = chat_request_with_project_instruction(
+            "conversation",
+            "api-key-2",
+            "Explícame qué es una API",
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            Some(&custom_gpt),
+            ChatExecutionOptions {
+                tools_enabled: true,
+                ..ChatExecutionOptions::default()
+            },
+        )
+        .expect("una explicación normal debe seguir funcionando");
+        assert!(without_url["execution"].get("agent").is_none());
+    }
+
+    #[test]
+    fn configured_api_action_has_a_fixed_destination_and_versioned_parameters() {
+        let custom_gpt = CustomGptContext {
+            custom_gpt_id: "gpt-weather".to_owned(),
+            version_id: "gpt-weather-v1".to_owned(),
+            name: "Tiempo".to_owned(),
+            icon_ref: "data".to_owned(),
+            version_no: 1,
+            instructions: "Consulta el tiempo cuando sea útil.".to_owned(),
+            tool_permissions: CustomGptToolPermissions {
+                call_external_apis: "confirm".to_owned(),
+                ..CustomGptToolPermissions::default()
+            },
+            preferred_model: None,
+            execution_profile: None,
+            context_profile: "balanced".to_owned(),
+            api_actions: vec![crate::db::CustomGptApiAction {
+                name: "consultar_tiempo".to_owned(),
+                description: "Consulta el tiempo de una ciudad".to_owned(),
+                url: "https://api.example.org/weather/{city}".to_owned(),
+                query_parameters: Vec::new(),
+                credential_ref: Some("weather_service".to_owned()),
+                auth_mode: "bearer".to_owned(),
+                parameters: vec![
+                    crate::db::CustomGptApiParameter {
+                        name: "city".to_owned(),
+                        value_type: "string".to_owned(),
+                        required: true,
+                        location: "path".to_owned(),
+                        description: Some("Ciudad que se quiere consultar".to_owned()),
+                    },
+                    crate::db::CustomGptApiParameter {
+                        name: "metric".to_owned(),
+                        value_type: "boolean".to_owned(),
+                        required: false,
+                        location: "query".to_owned(),
+                        description: Some("Usar unidades métricas".to_owned()),
+                    },
+                ],
+            }],
+        };
+        let request = chat_request_with_project_instruction(
+            "conversation",
+            "weather-key",
+            "¿Qué tiempo hace en Arrecife?",
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            Some(&custom_gpt),
+            ChatExecutionOptions {
+                tools_enabled: true,
+                ..ChatExecutionOptions::default()
+            },
+        )
+        .expect("la acción configurada debe ofrecerse");
+        let tool = &request["execution"]["agent"]["client_tools"][0];
+        assert_eq!(tool["name"], "api_action_consultar_tiempo");
+        assert_eq!(
+            tool["parameters"]["properties"]["url"]["const"],
+            "https://api.example.org/weather/{city}"
+        );
+        assert_eq!(
+            request["content"]["metadata"]["custom_gpt_api_actions"][0]["parameters"][0]["name"],
+            "city"
+        );
+        assert_eq!(tool["parameters"]["properties"]["city"]["type"], "string");
+        assert_eq!(
+            tool["parameters"]["properties"]["metric"]["type"],
+            "boolean"
+        );
+        assert_eq!(
+            tool["parameters"]["required"],
+            json!(["city", "url", "credential_ref", "auth_mode"])
+        );
+        assert_eq!(
+            tool["parameters"]["properties"]["credential_ref"]["const"],
+            "weather_service"
+        );
+        assert_eq!(
+            tool["parameters"]["properties"]["auth_mode"]["const"],
+            "bearer"
+        );
+        assert!(
+            !request.to_string().contains("weather-secret-value"),
+            "la petición al Broker no debe contener el secreto"
+        );
+        let action = &request["content"]["metadata"]["custom_gpt_api_actions"][0];
+        let valid = configured_api_url(
+            action,
+            &json!({
+                "url": "https://api.example.org/weather/{city}",
+                "credential_ref": "weather_service",
+                "auth_mode": "bearer",
+                "city": "Arrecife",
+                "metric": true
+            }),
+        )
+        .expect("los valores tipados deben formar una URL segura");
+        assert!(valid.contains("/weather/Arrecife"));
+        assert!(valid.contains("metric=true"));
+        assert!(
+            configured_api_url(
+                action,
+                &json!({
+                    "url": "https://evil.example/steal",
+                    "credential_ref": "weather_service",
+                    "auth_mode": "bearer",
+                    "city": "Arrecife"
+                })
+            )
+            .is_err(),
+            "el modelo no puede sustituir el destino fijo"
+        );
+    }
+
+    #[test]
+    fn custom_gpt_context_profiles_have_bounded_distinct_budgets() {
+        let context = |profile: &str| CustomGptContext {
+            custom_gpt_id: "gpt-context".to_owned(),
+            version_id: "gpt-context-v1".to_owned(),
+            name: "Contextual".to_owned(),
+            icon_ref: "research".to_owned(),
+            version_no: 1,
+            instructions: "Usa solo el contexto seleccionado.".to_owned(),
+            tool_permissions: CustomGptToolPermissions::default(),
+            preferred_model: None,
+            execution_profile: None,
+            context_profile: profile.to_owned(),
+            api_actions: Vec::new(),
+        };
+        let focused_context = context("focused");
+        let balanced_context = context("balanced");
+        let broad_context = context("broad");
+        let focused = custom_gpt_context_budget(Some(&focused_context));
+        let balanced = custom_gpt_context_budget(Some(&balanced_context));
+        let broad = custom_gpt_context_budget(Some(&broad_context));
+
+        assert!(focused.recent_messages < balanced.recent_messages);
+        assert!(balanced.recent_messages < broad.recent_messages);
+        assert!(focused.document_characters < balanced.document_characters);
+        assert!(balanced.document_characters < broad.document_characters);
+        assert_eq!(custom_gpt_context_budget(None), balanced);
+    }
+
+    #[test]
+    fn authorized_file_replacement_is_atomic_and_rejects_stale_content() {
+        let root = std::env::temp_dir().join(format!("chatygpt-edit-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).expect("la carpeta temporal debe existir");
+        let file = root.join("notes.txt");
+        fs::write(&file, "versión uno").expect("el archivo debe crearse");
+        let original_hash = format!("{:x}", Sha256::digest("versión uno".as_bytes()));
+
+        let after_hash =
+            replace_bounded_authorized_text(&root, "notes.txt", &original_hash, "versión dos")
+                .expect("el reemplazo vigente debe funcionar");
+        assert_eq!(fs::read_to_string(&file).unwrap(), "versión dos");
+        assert_eq!(
+            after_hash,
+            format!("{:x}", Sha256::digest("versión dos".as_bytes()))
+        );
+
+        let stale = replace_bounded_authorized_text(
+            &root,
+            "notes.txt",
+            &original_hash,
+            "contenido que no debe escribirse",
+        );
+        assert!(matches!(stale, Err(AppError::Conflict(_))));
+        assert_eq!(fs::read_to_string(&file).unwrap(), "versión dos");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn the_preview_block_is_literally_the_one_sent_to_the_broker() {
         let custom_gpt = CustomGptContext {
             custom_gpt_id: "gpt-preview".to_owned(),
@@ -2887,9 +4297,15 @@ mod tests {
             tool_permissions: CustomGptToolPermissions {
                 run_code: "deny".to_owned(),
                 rename_conversation: "confirm".to_owned(),
+                read_authorized_folders: "deny".to_owned(),
+                modify_authorized_files: "deny".to_owned(),
+                create_scheduled_tasks: "deny".to_owned(),
+                call_external_apis: "deny".to_owned(),
             },
             preferred_model: Some("qwen2.5:14b".to_owned()),
             execution_profile: None,
+            context_profile: "balanced".to_owned(),
+            api_actions: Vec::new(),
         };
         let block = custom_gpt_prompt_block(&custom_gpt).expect("el bloque debe construirse");
         let request = chat_request_with_project_instruction(
@@ -2946,6 +4362,8 @@ mod tests {
             tool_permissions: CustomGptToolPermissions::default(),
             preferred_model: None,
             execution_profile: None,
+            context_profile: "balanced".to_owned(),
+            api_actions: Vec::new(),
         };
         let context = [ContextMessage {
             message_id: "current".to_owned(),
@@ -3188,6 +4606,8 @@ mod tests {
             presets: serde_json::Value::Null,
             scheduling_by_preset: serde_json::Value::Null,
             agent_skills: Vec::new(),
+            agent_skills_egress: Vec::new(),
+            task_dependencies: false,
             sandbox_run_code: false,
             file_ingestion: true,
             ingestion_formats: std::collections::HashMap::new(),
@@ -3323,6 +4743,44 @@ mod tests {
         request["output"]["format"] = json!("json");
         let research = apply_deep_research_plan(request, &plan).expect("should build");
         assert_eq!(research["output"]["format"], "markdown");
+    }
+
+    #[test]
+    fn contract_2_8_blocks_research_egress_for_local_data_before_persisting() {
+        let capabilities = BrokerCapabilities {
+            contract_version: "2.8".to_owned(),
+            strategies: vec!["agent".to_owned()],
+            agent_skills: vec!["web_search".to_owned()],
+            agent_skills_egress: vec!["web_search".to_owned(), "fetch_url".to_owned()],
+            client_tool_passthrough: Some(true),
+            ..BrokerCapabilities::default()
+        };
+        let plan = deep_research_plan(&capabilities).expect("plan should be decided");
+        let request = chat_request(
+            "conversation",
+            "local-research-key",
+            "Investiga sin sacar datos del equipo",
+            &[ContextMessage {
+                message_id: "current".to_owned(),
+                role: "user".to_owned(),
+                text: "Investiga sin sacar datos del equipo".to_owned(),
+            }],
+            &[],
+            &[],
+            &[],
+            ChatExecutionOptions {
+                execution_preferences: ConversationExecutionPreferences {
+                    data_classification: "local_only".to_owned(),
+                    ..ConversationExecutionPreferences::default()
+                },
+                ..ChatExecutionOptions::default()
+            },
+        )
+        .expect("base request should build");
+        let error = apply_deep_research_plan(request, &plan)
+            .expect_err("egress must be rejected before the Broker returns 422");
+        assert!(error.to_string().contains("web_search"));
+        assert!(error.to_string().contains("Solo en este equipo"));
     }
 
     /// El plan viaja con el flujo semántico y no vuelve a negociarse.
@@ -3773,6 +5231,25 @@ mod tests {
         assert!(request["execution"].get("preset").is_none());
         assert_eq!(request["risk"]["data_classification"], "public");
         assert_eq!(request["model_requirements"]["max_cost_usd"], 0.5);
+    }
+
+    #[test]
+    fn contract_2_8_adds_the_document_group_only_after_the_batch_is_ready() {
+        let request = json!({
+            "idempotency_key": "question-key",
+            "content": {"prompt": "Pregunta"}
+        });
+        let without_dependency = apply_document_index_dependency(request.clone(), None);
+        assert!(without_dependency.get("depends_on_group").is_none());
+
+        let group = super::DocumentIndexDependency::Group("chatygpt-index-documento".to_owned());
+        let dependent = apply_document_index_dependency(request.clone(), Some(&group));
+        assert_eq!(dependent["depends_on_group"], "chatygpt-index-documento");
+
+        let tasks =
+            super::DocumentIndexDependency::Tasks(vec!["task-a".to_owned(), "task-b".to_owned()]);
+        let dependent = apply_document_index_dependency(request, Some(&tasks));
+        assert_eq!(dependent["depends_on"], json!(["task-a", "task-b"]));
     }
 
     #[test]

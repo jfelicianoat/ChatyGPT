@@ -1,6 +1,6 @@
 # Dependencias de las pruebas de Python.
 #
 # `jsonschema` valida el estado de tarea contra el contrato que publica AI
-# Broker (`contracts/broker/2.7/task-state.response.json`). Es la única
+# Broker (`contracts/broker/2.8/task-state.response.json`). Es la única
 # dependencia externa de las pruebas: el resto usa la biblioteca estándar.
 jsonschema==4.26.0

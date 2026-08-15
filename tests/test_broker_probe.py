@@ -33,7 +33,7 @@ class ContractHandler(BaseHTTPRequestHandler):
             return self.send_json(
                 200,
                 {
-                    "contract_version": "2.7",
+                    "contract_version": "2.8",
                     "derived_data_boundary": True,
                     "work_lanes": ["inference", "ingestion"],
                     "strategies": ["single", "agent"],
@@ -43,6 +43,8 @@ class ContractHandler(BaseHTTPRequestHandler):
                         "tabular": ["csv", "xlsx"],
                     },
                     "sandbox_run_code": False,
+                    "task_dependencies": True,
+                    "agent_skills_egress": ["web_search", "fetch_url"],
                     "long_context_map_reduce": True,
                 },
             )
@@ -89,7 +91,7 @@ class ContractHandler(BaseHTTPRequestHandler):
                                     "queued", "routing", "planning", "resource_planning",
                                     "converting", "chunking", "generating", "proposing", "evaluating",
                                     "debating", "synthesizing", "verifying", "waiting_for_memory",
-                                    "waiting_for_tools",
+                                    "waiting_for_dependencies", "waiting_for_tools",
                                     "completed", "failed", "cancelled",
                                 ]
                             }

@@ -47,9 +47,11 @@ const ATTACHMENT_IMAGE_POLICY_MIGRATION: &str =
 const WORKFLOWS_MIGRATION: &str = include_str!("../../migrations/0020_workflows.sql");
 const SCHEDULED_WORKFLOWS_MIGRATION: &str =
     include_str!("../../migrations/0021_scheduled_workflows.sql");
+const REMOTE_OPERATION_START_METRIC_MIGRATION: &str =
+    include_str!("../../migrations/0022_remote_operation_start_metric.sql");
 const RECOVER_NON_TERMINAL_TASKS: &str =
     include_str!("../../queries/recover_non_terminal_tasks.sql");
-pub const SCHEMA_VERSION: i64 = 21;
+pub const SCHEMA_VERSION: i64 = 22;
 
 #[derive(Clone)]
 pub struct Database {
@@ -295,6 +297,49 @@ pub(crate) fn confirmation_blueprint(
     arguments: &Value,
     conversation_id: Option<&str>,
 ) -> (String, Value, Value, String) {
+    if tool_name.starts_with("api_action_") {
+        let url = arguments
+            .get("url")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let destination = url::Url::parse(url)
+            .ok()
+            .and_then(|parsed| parsed.host_str().map(str::to_owned))
+            .unwrap_or_else(|| "Destino externo no válido".to_owned());
+        let values = arguments
+            .as_object()
+            .map(|object| {
+                object
+                    .iter()
+                    .filter(|(key, _)| {
+                        !matches!(key.as_str(), "url" | "credential_ref" | "auth_mode")
+                    })
+                    .map(|(key, value)| serde_json::json!({"label": key, "value": value}))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        return (
+            "external_api.action".to_owned(),
+            serde_json::json!({"kind": "external_service", "label": destination}),
+            serde_json::json!({
+                "action_label": "Ejecutar una acción API configurada",
+                "data_sent": values,
+                "destination": "external",
+                "destination_label": destination,
+                "scope": "one_time",
+                "scope_label": "Permitir una vez, solo esta ejecución",
+                "credential_label": arguments.get("credential_ref").and_then(Value::as_str)
+            }),
+            format!(
+                "ChatyGPT consultará {url} mediante HTTPS GET y enviará los parámetros visibles. {}La respuesta textual volverá al GPT para este turno.",
+                arguments
+                    .get("credential_ref")
+                    .and_then(Value::as_str)
+                    .map(|alias| format!("Usará la credencial protegida «{alias}» sin mostrarla al modelo. "))
+                    .unwrap_or_default()
+            )
+        );
+    }
     match tool_name {
         "rename_conversation" => {
             let proposed = arguments
@@ -319,6 +364,142 @@ pub(crate) fn confirmation_blueprint(
                 "El título de la conversación se sustituirá por el propuesto. \
                  Es reversible: puedes volver a cambiarlo a mano cuando quieras."
                     .to_owned(),
+            )
+        }
+        "list_authorized_folders" => {
+            let folder = arguments
+                .get("folder_id")
+                .and_then(Value::as_str)
+                .unwrap_or("Solo nombres de carpetas autorizadas");
+            let relative = arguments
+                .get("relative_path")
+                .and_then(Value::as_str)
+                .unwrap_or("Raíz");
+            (
+                "folder.list".to_owned(),
+                serde_json::json!({"kind": "folder", "label": folder}),
+                serde_json::json!({
+                    "action_label": "Listar una carpeta autorizada",
+                    "data_sent": [{"label": "Subcarpeta", "value": relative}],
+                    "destination": "broker_local",
+                    "destination_label": "Broker AI, restringido a modelos locales",
+                    "scope": "one_time",
+                    "scope_label": "Permitir una vez, solo este listado"
+                }),
+                "El modelo verá nombres de archivos y carpetas, pero no rutas absolutas ni contenidos.".to_owned(),
+            )
+        }
+        "read_authorized_file" => {
+            let relative = arguments
+                .get("relative_path")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            (
+                "file.read".to_owned(),
+                serde_json::json!({"kind": "file", "label": relative}),
+                serde_json::json!({
+                    "action_label": "Leer un archivo autorizado",
+                    "data_sent": [{"label": "Archivo relativo", "value": relative}],
+                    "destination": "broker_local",
+                    "destination_label": "Broker AI, restringido a modelos locales",
+                    "scope": "one_time",
+                    "scope_label": "Permitir una vez, solo este archivo"
+                }),
+                "El contenido del archivo se enviará al modelo local para responder a esta petición.".to_owned(),
+            )
+        }
+        "replace_authorized_file" => {
+            let relative = arguments
+                .get("relative_path")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let expected_hash = arguments
+                .get("expected_sha256")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let new_content = arguments
+                .get("content")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            (
+                "file.replace".to_owned(),
+                serde_json::json!({"kind": "file", "label": relative}),
+                serde_json::json!({
+                    "action_label": "Reemplazar el contenido de un archivo autorizado",
+                    "data_sent": [
+                        {"label": "Archivo relativo", "value": relative},
+                        {"label": "Huella esperada", "value": expected_hash},
+                        {"label": "Nuevo tamaño", "value": format!("{} caracteres", new_content.chars().count())}
+                    ],
+                    "destination": "local_file",
+                    "destination_label": "Archivo local dentro de una carpeta autorizada",
+                    "scope": "one_time",
+                    "scope_label": "Permitir una vez, solo este reemplazo"
+                }),
+                "El archivo existente se reemplazará de forma atómica. Si cambió desde que el GPT lo leyó, la operación se rechazará.".to_owned(),
+            )
+        }
+        "call_external_api" => {
+            let url = arguments
+                .get("url")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let destination = url::Url::parse(url)
+                .ok()
+                .and_then(|parsed| parsed.host_str().map(str::to_owned))
+                .unwrap_or_else(|| "Destino externo no válido".to_owned());
+            (
+                "external_api.get".to_owned(),
+                serde_json::json!({"kind": "external_service", "label": destination}),
+                serde_json::json!({
+                    "action_label": "Consultar una API externa",
+                    "data_sent": [{"label": "URL HTTPS completa", "value": url}],
+                    "destination": "external",
+                    "destination_label": destination,
+                    "scope": "one_time",
+                    "scope_label": "Permitir una vez, solo esta consulta GET"
+                }),
+                "ChatyGPT enviará una petición HTTPS GET sin credenciales ni cuerpo. La respuesta textual volverá al modelo para completar este turno.".to_owned(),
+            )
+        }
+        "create_scheduled_task" => {
+            let name = arguments
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let prompt = arguments
+                .get("prompt")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let due_at = arguments
+                .get("due_at")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let timezone = arguments
+                .get("timezone")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            (
+                "scheduled_task.create".to_owned(),
+                serde_json::json!({
+                    "kind": "conversation",
+                    "conversation_id": conversation_id,
+                    "label": "La conversación abierta"
+                }),
+                serde_json::json!({
+                    "action_label": "Crear una tarea programada",
+                    "data_sent": [
+                        {"label": "Nombre", "value": name},
+                        {"label": "Instrucción", "value": prompt},
+                        {"label": "Fecha", "value": due_at},
+                        {"label": "Zona horaria", "value": timezone}
+                    ],
+                    "destination": "local_scheduler",
+                    "destination_label": "Programador local de ChatyGPT y Broker AI al ejecutarse",
+                    "scope": "persistent_once",
+                    "scope_label": "Una ejecución futura; permanecerá activa hasta ejecutarse o cancelarse"
+                }),
+                "La instrucción se enviará automáticamente a Broker AI en la fecha indicada, aunque no vuelvas a confirmarla entonces.".to_owned(),
             )
         }
         other => (
@@ -423,6 +604,170 @@ struct CustomGptConfiguration {
     /// `None` mantiene el comportamiento histórico: manda la configuración del chat.
     #[serde(default)]
     execution_profile: Option<ConversationExecutionPreferences>,
+    /// Presupuesto de contexto propio del GPT. El valor por defecto conserva
+    /// exactamente los límites históricos.
+    #[serde(default = "default_custom_gpt_context_profile")]
+    context_profile: String,
+    /// Acciones GET públicas definidas por la persona y congeladas con la versión.
+    #[serde(default)]
+    api_actions: Vec<CustomGptApiAction>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CustomGptApiAction {
+    pub name: String,
+    pub description: String,
+    pub url: String,
+    /// Formato inicial, conservado solo para leer versiones ya guardadas.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub query_parameters: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parameters: Vec<CustomGptApiParameter>,
+    /// Solo conserva el alias; el secreto vive cifrado fuera de SQLite.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_ref: Option<String>,
+    #[serde(default = "default_api_auth_mode")]
+    pub auth_mode: String,
+}
+
+fn default_api_auth_mode() -> String {
+    "none".to_owned()
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CustomGptApiParameter {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub value_type: String,
+    #[serde(default = "default_required_api_parameter")]
+    pub required: bool,
+    #[serde(default = "default_api_parameter_location")]
+    pub location: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+fn default_required_api_parameter() -> bool {
+    true
+}
+
+fn default_api_parameter_location() -> String {
+    "query".to_owned()
+}
+
+fn validated_custom_gpt_api_actions(
+    actions: &[CustomGptApiAction],
+) -> Result<Vec<CustomGptApiAction>, AppError> {
+    if actions.len() > 10 {
+        return Err(AppError::Validation(
+            "un GPT admite como máximo 10 acciones API".to_owned(),
+        ));
+    }
+    let mut names = HashSet::new();
+    actions.iter().map(|action| {
+        let name = action.name.trim().to_ascii_lowercase();
+        if name.len() < 3 || name.len() > 40 || !name.bytes().enumerate().all(|(index, byte)| {
+            byte.is_ascii_lowercase() || byte == b'_' || (index > 0 && byte.is_ascii_digit())
+        }) || name.starts_with('_') {
+            return Err(AppError::Validation("el nombre de una acción API debe usar entre 3 y 40 letras minúsculas, números o guiones bajos".to_owned()));
+        }
+        if !names.insert(name.clone()) {
+            return Err(AppError::Validation(format!("la acción API {name} está repetida")));
+        }
+        let description = action.description.trim();
+        if description.is_empty() || description.chars().count() > 300 {
+            return Err(AppError::Validation("cada acción API necesita una descripción de hasta 300 caracteres".to_owned()));
+        }
+        let template = action.url.trim();
+        let mut validation_url = template.to_owned();
+        while let Some(start) = validation_url.find('{') {
+            let end = validation_url[start..].find('}').map(|value| start + value).ok_or_else(|| AppError::Validation("la URL contiene una variable de ruta incompleta".to_owned()))?;
+            validation_url.replace_range(start..=end, "placeholder");
+        }
+        let url = crate::research_tools::validate_external_api_url(&validation_url)?;
+        if url.query().is_some() || url.fragment().is_some() {
+            return Err(AppError::Validation("la URL base de una acción API no puede incluir consulta ni fragmento".to_owned()));
+        }
+        if !action.query_parameters.is_empty() && !action.parameters.is_empty() {
+            return Err(AppError::Validation("una acción API no puede mezclar parámetros antiguos y tipados".to_owned()));
+        }
+        let auth_mode = action.auth_mode.trim().to_ascii_lowercase();
+        if !matches!(auth_mode.as_str(), "none" | "bearer" | "api_key") {
+            return Err(AppError::Validation("elige un tipo de autenticación API válido".to_owned()));
+        }
+        let credential_ref = action.credential_ref.as_deref().map(str::trim).filter(|value| !value.is_empty()).map(crate::secrets::validate_api_credential_name).transpose()?;
+        if (auth_mode == "none") != credential_ref.is_none() {
+            return Err(AppError::Validation("la autenticación y el alias de credencial deben configurarse juntos".to_owned()));
+        }
+        let source_parameters = if action.parameters.is_empty() {
+            action.query_parameters.iter().map(|name| CustomGptApiParameter {
+                name: name.clone(), value_type: "string".to_owned(), required: true, location: "query".to_owned(), description: None,
+            }).collect::<Vec<_>>()
+        } else { action.parameters.clone() };
+        if source_parameters.len() > 8 {
+            return Err(AppError::Validation("una acción API admite como máximo 8 parámetros".to_owned()));
+        }
+        let mut parameters = Vec::new();
+        let mut parameter_names = Vec::new();
+        for parameter in source_parameters {
+            let name = parameter.name.trim().to_ascii_lowercase();
+            if name.is_empty() || name.len() > 40 || !name.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_') || parameter_names.contains(&name) {
+                return Err(AppError::Validation("los parámetros API deben ser únicos y usar letras, números o guiones bajos".to_owned()));
+            }
+            if !matches!(parameter.value_type.as_str(), "string" | "number" | "boolean") {
+                return Err(AppError::Validation(format!("el parámetro {name} tiene un tipo no válido")));
+            }
+            if !matches!(parameter.location.as_str(), "query" | "path") {
+                return Err(AppError::Validation(format!("el parámetro {name} tiene una ubicación no válida")));
+            }
+            let marker = format!("{{{name}}}");
+            let occurrences = template.matches(&marker).count();
+            if (parameter.location == "path" && (occurrences != 1 || !parameter.required))
+                || (parameter.location == "query" && occurrences != 0) {
+                return Err(AppError::Validation(format!("la variable de ruta {marker} debe aparecer exactamente una vez y ser obligatoria")));
+            }
+            let description = parameter.description.as_deref().map(str::trim).filter(|value| !value.is_empty()).map(str::to_owned);
+            if description.as_ref().is_some_and(|value| value.chars().count() > 160) {
+                return Err(AppError::Validation(format!("la descripción del parámetro {name} supera 160 caracteres")));
+            }
+            parameter_names.push(name.clone());
+            parameters.push(CustomGptApiParameter { name, value_type: parameter.value_type, required: parameter.required, location: parameter.location, description });
+        }
+        if template.contains('{') || template.contains('}') {
+            for marker in template.match_indices('{').filter_map(|(start, _)| template[start..].find('}').map(|end| &template[start..=start+end])) {
+                if !parameters.iter().any(|parameter| parameter.location == "path" && marker == format!("{{{}}}", parameter.name)) {
+                    return Err(AppError::Validation(format!("la URL contiene una variable no declarada: {marker}")));
+                }
+            }
+        }
+        Ok(CustomGptApiAction { name, description: description.to_owned(), url: template.to_owned(), query_parameters: Vec::new(), parameters, credential_ref, auth_mode })
+    }).collect()
+}
+
+pub(crate) fn validated_custom_gpt_api_action(
+    action: &CustomGptApiAction,
+) -> Result<CustomGptApiAction, AppError> {
+    validated_custom_gpt_api_actions(std::slice::from_ref(action))?
+        .into_iter()
+        .next()
+        .ok_or_else(|| AppError::Validation("la acción API no es válida".to_owned()))
+}
+
+fn default_custom_gpt_context_profile() -> String {
+    "balanced".to_owned()
+}
+
+fn validated_custom_gpt_context_profile(value: Option<&str>) -> Result<String, AppError> {
+    let value = value.unwrap_or("balanced").trim();
+    if matches!(value, "focused" | "balanced" | "broad") {
+        Ok(value.to_owned())
+    } else {
+        Err(AppError::Validation(
+            "elige un nivel de contexto válido para el GPT".to_owned(),
+        ))
+    }
 }
 
 const CUSTOM_GPT_ICONS: &[&str] = &[
@@ -464,6 +809,8 @@ pub struct CustomGptView {
     pub preferred_model: Option<String>,
     /// Perfil versionado. `None` significa que hereda los ajustes del chat.
     pub execution_profile: Option<ConversationExecutionPreferences>,
+    pub context_profile: String,
+    pub api_actions: Vec<CustomGptApiAction>,
     /// Proyecto al que van los chats nuevos que eligen este GPT.
     pub default_project_id: Option<String>,
     pub version_no: i64,
@@ -482,6 +829,8 @@ pub struct CustomGptVersionView {
     pub conversation_starters: Vec<String>,
     pub preferred_model: Option<String>,
     pub execution_profile: Option<ConversationExecutionPreferences>,
+    pub context_profile: String,
+    pub api_actions: Vec<CustomGptApiAction>,
     pub created_at: String,
     /// Verdadero solo para la versión que se usaría ahora mismo.
     pub active: bool,
@@ -495,6 +844,18 @@ pub struct CustomGptVersionView {
 pub struct CustomGptToolPermissions {
     pub run_code: String,
     pub rename_conversation: String,
+    #[serde(default = "default_denied_permission")]
+    pub read_authorized_folders: String,
+    #[serde(default = "default_denied_permission")]
+    pub modify_authorized_files: String,
+    #[serde(default = "default_denied_permission")]
+    pub create_scheduled_tasks: String,
+    #[serde(default = "default_denied_permission")]
+    pub call_external_apis: String,
+}
+
+fn default_denied_permission() -> String {
+    "deny".to_owned()
 }
 
 impl Default for CustomGptToolPermissions {
@@ -502,6 +863,10 @@ impl Default for CustomGptToolPermissions {
         Self {
             run_code: "deny".to_owned(),
             rename_conversation: "deny".to_owned(),
+            read_authorized_folders: "deny".to_owned(),
+            modify_authorized_files: "deny".to_owned(),
+            create_scheduled_tasks: "deny".to_owned(),
+            call_external_apis: "deny".to_owned(),
         }
     }
 }
@@ -511,6 +876,12 @@ impl CustomGptToolPermissions {
         match tool_name {
             "run_code" => self.run_code == "confirm",
             "rename_conversation" => self.rename_conversation == "confirm",
+            "list_authorized_folders" | "read_authorized_file" => {
+                self.read_authorized_folders == "confirm"
+            }
+            "replace_authorized_file" => self.modify_authorized_files == "confirm",
+            "create_scheduled_task" => self.create_scheduled_tasks == "confirm",
+            "call_external_api" => self.call_external_apis == "confirm",
             _ => false,
         }
     }
@@ -527,6 +898,8 @@ struct PortableCustomGpt {
     instructions: String,
     #[serde(default)]
     conversation_starters: Vec<String>,
+    #[serde(default = "default_custom_gpt_context_profile")]
+    context_profile: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     knowledge: Vec<PortableCustomGptKnowledge>,
 }
@@ -572,6 +945,10 @@ pub struct CustomGptContext {
     /// También se congela con la versión para que una tarea sea reproducible.
     #[serde(default)]
     pub execution_profile: Option<ConversationExecutionPreferences>,
+    #[serde(default = "default_custom_gpt_context_profile")]
+    pub context_profile: String,
+    #[serde(default)]
+    pub api_actions: Vec<CustomGptApiAction>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -902,12 +1279,35 @@ fn validated_custom_gpt_tool_permissions(
             "Renombrar conversación",
             permissions.rename_conversation.as_str(),
         ),
+        (
+            "Leer carpetas autorizadas",
+            permissions.read_authorized_folders.as_str(),
+        ),
+        (
+            "Modificar archivos autorizados",
+            permissions.modify_authorized_files.as_str(),
+        ),
+        (
+            "Crear tareas programadas",
+            permissions.create_scheduled_tasks.as_str(),
+        ),
+        (
+            "Consultar APIs externas",
+            permissions.call_external_apis.as_str(),
+        ),
     ] {
         if !matches!(effect, "deny" | "confirm") {
             return Err(AppError::Validation(format!(
                 "el permiso «{label}» debe estar denegado o requerir confirmación"
             )));
         }
+    }
+    if permissions.modify_authorized_files == "confirm"
+        && permissions.read_authorized_folders != "confirm"
+    {
+        return Err(AppError::Validation(
+            "modificar archivos requiere también permiso para leer carpetas autorizadas".to_owned(),
+        ));
     }
     Ok(permissions.clone())
 }
@@ -1010,6 +1410,8 @@ pub struct ConversationMessage {
     pub consensus_synthesized: Option<bool>,
     pub consensus_warnings: Vec<String>,
     pub arbiter_failure_count: i64,
+    pub execution_warnings: Vec<String>,
+    pub unsupported_citation_urls: Vec<String>,
     pub sources: Vec<ConversationSource>,
     pub created_at: String,
 }
@@ -1181,6 +1583,8 @@ pub struct WorkflowNode {
     pub preferred_model: Option<String>,
     #[serde(default)]
     pub execution_profile: Option<ConversationExecutionPreferences>,
+    #[serde(default = "default_custom_gpt_context_profile")]
+    pub context_profile: String,
     /// Identificadores del conocimiento textual activo al publicar.
     /// Se resuelven de nuevo al ejecutar para respetar una revocación posterior.
     #[serde(default)]
@@ -1416,12 +1820,19 @@ impl Database {
             transaction.commit()?;
         }
         let current: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if current < SCHEMA_VERSION {
+        if current < 21 {
             let transaction = connection.transaction()?;
             if current < 20 {
                 transaction.execute_batch(WORKFLOWS_MIGRATION)?;
             }
             transaction.execute_batch(SCHEDULED_WORKFLOWS_MIGRATION)?;
+            transaction.pragma_update(None, "user_version", 21)?;
+            transaction.commit()?;
+        }
+        let current: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        if current < SCHEMA_VERSION {
+            let transaction = connection.transaction()?;
+            transaction.execute_batch(REMOTE_OPERATION_START_METRIC_MIGRATION)?;
             transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             transaction.commit()?;
         }
@@ -1849,6 +2260,7 @@ impl Database {
                     custom_gpt_instructions: None,
                     preferred_model: None,
                     execution_profile: None,
+                    context_profile: "balanced".to_owned(),
                     custom_gpt_memory_ids: Vec::new(),
                     custom_gpt_attachment_ids: Vec::new(),
                     instruction: None,
@@ -1867,6 +2279,7 @@ impl Database {
                     custom_gpt_instructions: None,
                     preferred_model: None,
                     execution_profile: None,
+                    context_profile: "balanced".to_owned(),
                     custom_gpt_memory_ids: Vec::new(),
                     custom_gpt_attachment_ids: Vec::new(),
                     instruction: None,
@@ -2043,6 +2456,12 @@ impl Database {
                 node.custom_gpt_instructions = Some(context.instructions);
                 node.preferred_model = context.preferred_model;
                 node.execution_profile = context.execution_profile;
+                node.context_profile = context.context_profile.clone();
+                let (memory_limit, memory_characters) = match context.context_profile.as_str() {
+                    "focused" => (5, 2_000),
+                    "broad" => (30, 16_000),
+                    _ => (20, 8_000),
+                };
                 let mut used_characters = 0_usize;
                 node.custom_gpt_memory_ids = self
                     .custom_gpt_knowledge(custom_gpt_id)?
@@ -2050,9 +2469,9 @@ impl Database {
                     .filter(|item| item.enabled)
                     .filter(|item| {
                         used_characters += item.content.chars().count();
-                        used_characters <= 8_000
+                        used_characters <= memory_characters
                     })
-                    .take(20)
+                    .take(memory_limit)
                     .map(|item| item.id)
                     .collect();
                 node.custom_gpt_attachment_ids = self
@@ -2724,7 +3143,7 @@ impl Database {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(dead_code, clippy::too_many_arguments)]
     pub fn create_custom_gpt_with_starters(
         &self,
         name: &str,
@@ -2746,6 +3165,7 @@ impl Database {
             preferred_model,
             default_project_id,
             execution_profile,
+            None,
         )
     }
 
@@ -2761,6 +3181,37 @@ impl Database {
         preferred_model: Option<&str>,
         default_project_id: Option<&str>,
         execution_profile: Option<&ConversationExecutionPreferences>,
+        context_profile: Option<&str>,
+    ) -> Result<CustomGptView, AppError> {
+        self.create_custom_gpt_with_api_actions(
+            name,
+            description,
+            icon_ref,
+            instructions,
+            conversation_starters,
+            tool_permissions,
+            preferred_model,
+            default_project_id,
+            execution_profile,
+            context_profile,
+            &[],
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_custom_gpt_with_api_actions(
+        &self,
+        name: &str,
+        description: Option<&str>,
+        icon_ref: Option<&str>,
+        instructions: &str,
+        conversation_starters: &[String],
+        tool_permissions: &CustomGptToolPermissions,
+        preferred_model: Option<&str>,
+        default_project_id: Option<&str>,
+        execution_profile: Option<&ConversationExecutionPreferences>,
+        context_profile: Option<&str>,
+        api_actions: &[CustomGptApiAction],
     ) -> Result<CustomGptView, AppError> {
         let (name, description, instructions) =
             validated_custom_gpt_fields(name, description, instructions)?;
@@ -2771,6 +3222,8 @@ impl Database {
         if let Some(profile) = execution_profile {
             validate_execution_preferences(profile)?;
         }
+        let context_profile = validated_custom_gpt_context_profile(context_profile)?;
+        let api_actions = validated_custom_gpt_api_actions(api_actions)?;
         let custom_gpt_id = format!("gpt_{}", Uuid::new_v4().simple());
         let version_id = format!("gpt_version_{}", Uuid::new_v4().simple());
         let configuration = CustomGptConfiguration {
@@ -2780,8 +3233,14 @@ impl Database {
             conversation_starters,
             preferred_model,
             tools_enabled: tool_permissions.requires_confirmation("run_code")
-                || tool_permissions.requires_confirmation("rename_conversation"),
+                || tool_permissions.requires_confirmation("rename_conversation")
+                || tool_permissions.requires_confirmation("read_authorized_file")
+                || tool_permissions.requires_confirmation("replace_authorized_file")
+                || tool_permissions.requires_confirmation("create_scheduled_task")
+                || tool_permissions.requires_confirmation("call_external_api"),
             execution_profile: execution_profile.cloned(),
+            context_profile,
+            api_actions,
         };
         let configuration_json = serde_json::to_string(&configuration)
             .map_err(|error| AppError::Validation(error.to_string()))?;
@@ -2809,6 +3268,22 @@ impl Database {
             (
                 "rename_conversation",
                 tool_permissions.rename_conversation.as_str(),
+            ),
+            (
+                "read_authorized_folders",
+                tool_permissions.read_authorized_folders.as_str(),
+            ),
+            (
+                "modify_authorized_files",
+                tool_permissions.modify_authorized_files.as_str(),
+            ),
+            (
+                "create_scheduled_tasks",
+                tool_permissions.create_scheduled_tasks.as_str(),
+            ),
+            (
+                "call_external_apis",
+                tool_permissions.call_external_apis.as_str(),
             ),
         ] {
             transaction.execute(
@@ -2858,7 +3333,7 @@ impl Database {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(dead_code, clippy::too_many_arguments)]
     pub fn update_custom_gpt_with_starters(
         &self,
         custom_gpt_id: &str,
@@ -2871,7 +3346,8 @@ impl Database {
         default_project_id: Option<&str>,
         execution_profile: Option<&ConversationExecutionPreferences>,
     ) -> Result<CustomGptView, AppError> {
-        let icon_ref = self.custom_gpt_view(custom_gpt_id)?.icon_ref;
+        let current = self.custom_gpt_view(custom_gpt_id)?;
+        let icon_ref = current.icon_ref;
         self.update_custom_gpt_with_icon(
             custom_gpt_id,
             name,
@@ -2883,10 +3359,11 @@ impl Database {
             preferred_model,
             default_project_id,
             execution_profile,
+            Some(&current.context_profile),
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(dead_code, clippy::too_many_arguments)]
     pub fn update_custom_gpt_with_icon(
         &self,
         custom_gpt_id: &str,
@@ -2899,6 +3376,39 @@ impl Database {
         preferred_model: Option<&str>,
         default_project_id: Option<&str>,
         execution_profile: Option<&ConversationExecutionPreferences>,
+        context_profile: Option<&str>,
+    ) -> Result<CustomGptView, AppError> {
+        self.update_custom_gpt_with_api_actions(
+            custom_gpt_id,
+            name,
+            description,
+            icon_ref,
+            instructions,
+            conversation_starters,
+            tool_permissions,
+            preferred_model,
+            default_project_id,
+            execution_profile,
+            context_profile,
+            &[],
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_custom_gpt_with_api_actions(
+        &self,
+        custom_gpt_id: &str,
+        name: &str,
+        description: Option<&str>,
+        icon_ref: Option<&str>,
+        instructions: &str,
+        conversation_starters: &[String],
+        tool_permissions: &CustomGptToolPermissions,
+        preferred_model: Option<&str>,
+        default_project_id: Option<&str>,
+        execution_profile: Option<&ConversationExecutionPreferences>,
+        context_profile: Option<&str>,
+        api_actions: &[CustomGptApiAction],
     ) -> Result<CustomGptView, AppError> {
         let (name, description, instructions) =
             validated_custom_gpt_fields(name, description, instructions)?;
@@ -2909,6 +3419,8 @@ impl Database {
         if let Some(profile) = execution_profile {
             validate_execution_preferences(profile)?;
         }
+        let context_profile = validated_custom_gpt_context_profile(context_profile)?;
+        let api_actions = validated_custom_gpt_api_actions(api_actions)?;
         let version_id = format!("gpt_version_{}", Uuid::new_v4().simple());
         let configuration = CustomGptConfiguration {
             schema_version: 2,
@@ -2917,8 +3429,14 @@ impl Database {
             conversation_starters,
             preferred_model,
             tools_enabled: tool_permissions.requires_confirmation("run_code")
-                || tool_permissions.requires_confirmation("rename_conversation"),
+                || tool_permissions.requires_confirmation("rename_conversation")
+                || tool_permissions.requires_confirmation("read_authorized_file")
+                || tool_permissions.requires_confirmation("replace_authorized_file")
+                || tool_permissions.requires_confirmation("create_scheduled_task")
+                || tool_permissions.requires_confirmation("call_external_api"),
             execution_profile: execution_profile.cloned(),
+            context_profile,
+            api_actions,
         };
         let configuration_json = serde_json::to_string(&configuration)
             .map_err(|error| AppError::Validation(error.to_string()))?;
@@ -2961,6 +3479,22 @@ impl Database {
                 "rename_conversation",
                 tool_permissions.rename_conversation.as_str(),
             ),
+            (
+                "read_authorized_folders",
+                tool_permissions.read_authorized_folders.as_str(),
+            ),
+            (
+                "modify_authorized_files",
+                tool_permissions.modify_authorized_files.as_str(),
+            ),
+            (
+                "create_scheduled_tasks",
+                tool_permissions.create_scheduled_tasks.as_str(),
+            ),
+            (
+                "call_external_apis",
+                tool_permissions.call_external_apis.as_str(),
+            ),
         ] {
             transaction.execute(
                 "INSERT INTO gpt_tool_permissions(
@@ -3002,6 +3536,26 @@ impl Database {
                       SELECT permission.effect FROM gpt_tool_permissions permission
                       WHERE permission.gpt_version_id = version.id
                         AND permission.tool_name = 'rename_conversation'
+                    ), 'deny'),
+                    COALESCE((
+                      SELECT permission.effect FROM gpt_tool_permissions permission
+                      WHERE permission.gpt_version_id = version.id
+                        AND permission.tool_name = 'read_authorized_folders'
+                    ), 'deny'),
+                    COALESCE((
+                      SELECT permission.effect FROM gpt_tool_permissions permission
+                      WHERE permission.gpt_version_id = version.id
+                        AND permission.tool_name = 'modify_authorized_files'
+                    ), 'deny'),
+                    COALESCE((
+                      SELECT permission.effect FROM gpt_tool_permissions permission
+                      WHERE permission.gpt_version_id = version.id
+                        AND permission.tool_name = 'create_scheduled_tasks'
+                    ), 'deny'),
+                    COALESCE((
+                      SELECT permission.effect FROM gpt_tool_permissions permission
+                      WHERE permission.gpt_version_id = version.id
+                        AND permission.tool_name = 'call_external_apis'
                     ), 'deny')
              FROM custom_gpts gpt
              JOIN gpt_versions version ON version.id = gpt.active_version_id
@@ -3021,6 +3575,10 @@ impl Database {
                     row.get::<_, Option<String>>(7)?,
                     row.get::<_, String>(8)?,
                     row.get::<_, String>(9)?,
+                    row.get::<_, String>(10)?,
+                    row.get::<_, String>(11)?,
+                    row.get::<_, String>(12)?,
+                    row.get::<_, String>(13)?,
                 ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -3037,6 +3595,10 @@ impl Database {
                     default_project_id,
                     run_code,
                     rename_conversation,
+                    read_authorized_folders,
+                    modify_authorized_files,
+                    create_scheduled_tasks,
+                    call_external_apis,
                 )| {
                     let configuration: CustomGptConfiguration =
                         serde_json::from_str(&configuration_json).map_err(|error| {
@@ -3054,9 +3616,15 @@ impl Database {
                         tool_permissions: CustomGptToolPermissions {
                             run_code,
                             rename_conversation,
+                            read_authorized_folders,
+                            modify_authorized_files,
+                            create_scheduled_tasks,
+                            call_external_apis,
                         },
                         preferred_model: configuration.preferred_model,
                         execution_profile: configuration.execution_profile,
+                        context_profile: configuration.context_profile,
+                        api_actions: configuration.api_actions,
                         default_project_id,
                         version_no,
                         created_at,
@@ -3100,6 +3668,7 @@ impl Database {
             source.preferred_model.as_deref(),
             source.default_project_id.as_deref(),
             source.execution_profile.as_ref(),
+            Some(&source.context_profile),
         )?;
         self.connect()?.execute(
             "INSERT INTO audit_events(event_type, actor, payload_json)
@@ -3136,6 +3705,26 @@ impl Database {
                       WHERE permission.gpt_version_id = version.id
                         AND permission.tool_name = 'rename_conversation'
                     ), 'deny'),
+                    COALESCE((
+                      SELECT permission.effect FROM gpt_tool_permissions permission
+                      WHERE permission.gpt_version_id = version.id
+                        AND permission.tool_name = 'read_authorized_folders'
+                    ), 'deny'),
+                    COALESCE((
+                      SELECT permission.effect FROM gpt_tool_permissions permission
+                      WHERE permission.gpt_version_id = version.id
+                        AND permission.tool_name = 'modify_authorized_files'
+                    ), 'deny'),
+                    COALESCE((
+                      SELECT permission.effect FROM gpt_tool_permissions permission
+                      WHERE permission.gpt_version_id = version.id
+                        AND permission.tool_name = 'create_scheduled_tasks'
+                    ), 'deny'),
+                    COALESCE((
+                      SELECT permission.effect FROM gpt_tool_permissions permission
+                      WHERE permission.gpt_version_id = version.id
+                        AND permission.tool_name = 'call_external_apis'
+                    ), 'deny'),
                     (SELECT COUNT(*) FROM broker_tasks task
                      WHERE task.gpt_version_id = version.id)
              FROM gpt_versions version
@@ -3162,13 +3751,19 @@ impl Database {
                     conversation_starters: configuration.conversation_starters,
                     preferred_model: configuration.preferred_model,
                     execution_profile: configuration.execution_profile,
+                    context_profile: configuration.context_profile,
+                    api_actions: configuration.api_actions,
                     created_at: row.get(3)?,
                     active: row.get(4)?,
                     tool_permissions: CustomGptToolPermissions {
                         run_code: row.get(5)?,
                         rename_conversation: row.get(6)?,
+                        read_authorized_folders: row.get(7)?,
+                        modify_authorized_files: row.get(8)?,
+                        create_scheduled_tasks: row.get(9)?,
+                        call_external_apis: row.get(10)?,
                     },
-                    task_count: row.get(7)?,
+                    task_count: row.get(11)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -3315,6 +3910,7 @@ impl Database {
             icon_ref: view.icon_ref,
             instructions: view.instructions,
             conversation_starters: view.conversation_starters,
+            context_profile: view.context_profile,
             knowledge: included,
         })
         .map_err(|error| AppError::Validation(error.to_string()))?;
@@ -3413,6 +4009,7 @@ impl Database {
             None,
             None,
             None,
+            Some(&portable.context_profile),
         )?;
         let connection = self.connect()?;
         let transaction = connection.unchecked_transaction()?;
@@ -3471,6 +4068,8 @@ impl Database {
             tool_permissions: view.tool_permissions,
             preferred_model: view.preferred_model,
             execution_profile: view.execution_profile,
+            context_profile: view.context_profile,
+            api_actions: view.api_actions,
         })
     }
 
@@ -3492,6 +4091,26 @@ impl Database {
                           SELECT permission.effect FROM gpt_tool_permissions permission
                           WHERE permission.gpt_version_id = version.id
                             AND permission.tool_name = 'rename_conversation'
+                        ), 'deny'),
+                        COALESCE((
+                          SELECT permission.effect FROM gpt_tool_permissions permission
+                          WHERE permission.gpt_version_id = version.id
+                            AND permission.tool_name = 'read_authorized_folders'
+                        ), 'deny'),
+                        COALESCE((
+                          SELECT permission.effect FROM gpt_tool_permissions permission
+                          WHERE permission.gpt_version_id = version.id
+                            AND permission.tool_name = 'modify_authorized_files'
+                        ), 'deny'),
+                        COALESCE((
+                          SELECT permission.effect FROM gpt_tool_permissions permission
+                          WHERE permission.gpt_version_id = version.id
+                            AND permission.tool_name = 'create_scheduled_tasks'
+                        ), 'deny'),
+                        COALESCE((
+                          SELECT permission.effect FROM gpt_tool_permissions permission
+                          WHERE permission.gpt_version_id = version.id
+                            AND permission.tool_name = 'call_external_apis'
                         ), 'deny')
                  FROM conversations conversation
                  JOIN custom_gpts gpt
@@ -3511,6 +4130,10 @@ impl Database {
                         row.get::<_, String>(4)?,
                         row.get::<_, String>(5)?,
                         row.get::<_, String>(6)?,
+                        row.get::<_, String>(7)?,
+                        row.get::<_, String>(8)?,
+                        row.get::<_, String>(9)?,
+                        row.get::<_, String>(10)?,
                     ))
                 },
             )
@@ -3524,6 +4147,10 @@ impl Database {
                 configuration_json,
                 run_code,
                 rename_conversation,
+                read_authorized_folders,
+                modify_authorized_files,
+                create_scheduled_tasks,
+                call_external_apis,
             )| {
                 let configuration: CustomGptConfiguration =
                     serde_json::from_str(&configuration_json).map_err(|error| {
@@ -3541,9 +4168,15 @@ impl Database {
                     tool_permissions: CustomGptToolPermissions {
                         run_code,
                         rename_conversation,
+                        read_authorized_folders,
+                        modify_authorized_files,
+                        create_scheduled_tasks,
+                        call_external_apis,
                     },
                     preferred_model: configuration.preferred_model,
                     execution_profile: configuration.execution_profile,
+                    context_profile: configuration.context_profile,
+                    api_actions: configuration.api_actions,
                 })
             },
         )
@@ -4294,9 +4927,19 @@ impl Database {
         id.map(|id| self.memory_search(&id)).transpose()
     }
 
+    #[allow(dead_code)]
     pub fn active_memories_for_conversation(
         &self,
         conversation_id: &str,
+    ) -> Result<Vec<MemoryItemView>, AppError> {
+        self.active_memories_for_conversation_with_limits(conversation_id, 20, 8_000)
+    }
+
+    pub fn active_memories_for_conversation_with_limits(
+        &self,
+        conversation_id: &str,
+        maximum_items: usize,
+        character_budget: usize,
     ) -> Result<Vec<MemoryItemView>, AppError> {
         let overview = self.memory_overview()?;
         let (project_id, custom_gpt_id): (Option<String>, Option<String>) =
@@ -4330,9 +4973,9 @@ impl Database {
             .into_iter()
             .filter(|item| {
                 total_chars += item.content.chars().count();
-                total_chars <= 8_000
+                total_chars <= character_budget
             })
-            .take(20)
+            .take(maximum_items)
             .collect())
     }
 
@@ -5338,6 +5981,7 @@ impl Database {
         })
     }
 
+    #[allow(dead_code)]
     pub fn register_attachment(
         &self,
         conversation_id: &str,
@@ -5358,6 +6002,7 @@ impl Database {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn register_attachment_with_image_policy(
         &self,
         conversation_id: &str,
@@ -5480,6 +6125,7 @@ impl Database {
         self.attachment_view(&attachment_id)
     }
 
+    #[allow(dead_code)]
     pub fn register_custom_gpt_attachment(
         &self,
         custom_gpt_id: &str,
@@ -5500,6 +6146,7 @@ impl Database {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn register_custom_gpt_attachment_with_image_policy(
         &self,
         custom_gpt_id: &str,
@@ -6405,6 +7052,7 @@ impl Database {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn next_attachment_chunk_for_embedding(
         &self,
         attachment_id: &str,
@@ -6463,6 +7111,88 @@ impl Database {
             .map_err(AppError::from)
     }
 
+    /// Devuelve de una vez todos los fragmentos que aún necesitan una tarea de
+    /// embedding. Preparar el lote completo antes de enviar su primera tarea es
+    /// una precondición del contrato 2.8: `depends_on_group` solo ve las tareas
+    /// que ya existen cuando la dependiente es reclamada.
+    pub fn attachment_chunks_for_embedding(
+        &self,
+        attachment_id: &str,
+        retry_failed: bool,
+    ) -> Result<Vec<AttachmentChunkEmbeddingInput>, AppError> {
+        let connection = self.connect()?;
+        let mut statement = connection.prepare(
+            "SELECT chunk.id, chunk.content_text, chunk.content_sha256
+             FROM attachment_chunks chunk
+             JOIN attachments attachment ON attachment.id = chunk.attachment_id
+             WHERE chunk.attachment_id = ?1
+               AND attachment.context_status = 'ready'
+               AND NOT EXISTS(
+                 SELECT 1 FROM embedding_records embedding
+                 WHERE embedding.source_type = 'attachment_chunk'
+                   AND embedding.source_id = chunk.id
+                   AND embedding.content_sha256 = chunk.content_sha256
+               )
+               AND NOT EXISTS(
+                 SELECT 1 FROM broker_tasks task
+                 WHERE json_extract(task.request_json, '$.content.metadata.source_type') = 'attachment_chunk'
+                   AND json_extract(task.request_json, '$.content.metadata.source_id') = chunk.id
+                   AND json_extract(task.request_json, '$.content.metadata.content_sha256') = chunk.content_sha256
+                   AND (
+                     task.local_state IN ('created', 'submitting', 'polling', 'recovery_pending')
+                     OR (?2 = 0 AND task.local_state IN ('terminal', 'orphaned'))
+                   )
+               )
+             ORDER BY chunk.ordinal",
+        )?;
+        let chunks = statement
+            .query_map(params![attachment_id, retry_failed], |row| {
+                Ok(AttachmentChunkEmbeddingInput {
+                    id: row.get(0)?,
+                    text: row.get(1)?,
+                    content_sha256: row.get(2)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(chunks)
+    }
+
+    pub fn attachment_embedding_tasks(
+        &self,
+        attachment_ids: &[String],
+    ) -> Result<Vec<BrokerTaskRecord>, AppError> {
+        let connection = self.connect()?;
+        let mut task_ids = Vec::new();
+        for attachment_id in attachment_ids {
+            let mut statement = connection.prepare(
+                "SELECT task.id
+                 FROM broker_tasks task
+                 JOIN attachment_chunks chunk
+                   ON chunk.id = json_extract(task.request_json, '$.content.metadata.source_id')
+                 WHERE chunk.attachment_id = ?1
+                   AND json_extract(task.request_json, '$.content.metadata.source_type') = 'attachment_chunk'
+                   AND json_extract(task.request_json, '$.content.metadata.content_sha256') = chunk.content_sha256
+                   AND (
+                     task.local_state IN ('created', 'submitting', 'polling', 'recovery_pending')
+                     OR (
+                       task.remote_task_id IS NOT NULL
+                       AND task.remote_status IN ('failed', 'cancelled')
+                     )
+                   )
+                 ORDER BY chunk.ordinal, task.created_at",
+            )?;
+            task_ids.extend(
+                statement
+                    .query_map(params![attachment_id], |row| row.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()?,
+            );
+        }
+        task_ids
+            .iter()
+            .map(|task_id| self.task_record(task_id))
+            .collect()
+    }
+
     pub fn attachments_needing_semantic_index(&self) -> Result<Vec<String>, AppError> {
         let connection = self.connect()?;
         let mut statement = connection.prepare(
@@ -6485,22 +7215,6 @@ impl Database {
             .query_map([], |row| row.get::<_, String>(0))?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(ids)
-    }
-
-    pub fn attachment_for_embedding_task(&self, task_id: &str) -> Result<Option<String>, AppError> {
-        self.connect()?
-            .query_row(
-                "SELECT chunk.attachment_id
-                 FROM broker_tasks task
-                 JOIN attachment_chunks chunk
-                   ON chunk.id = json_extract(task.request_json, '$.content.metadata.source_id')
-                 WHERE task.id = ?1
-                   AND json_extract(task.request_json, '$.content.metadata.source_type') = 'attachment_chunk'",
-                params![task_id],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(AppError::from)
     }
 
     pub fn attachments_have_semantic_index(
@@ -7083,9 +7797,18 @@ impl Database {
             .map_err(AppError::from)
     }
 
+    #[allow(dead_code)]
     pub fn semantic_memory_matches(
         &self,
         workflow_id: &str,
+    ) -> Result<Vec<SemanticMemoryMatch>, AppError> {
+        self.semantic_memory_matches_with_limit(workflow_id, 5)
+    }
+
+    pub fn semantic_memory_matches_with_limit(
+        &self,
+        workflow_id: &str,
+        maximum_items: usize,
     ) -> Result<Vec<SemanticMemoryMatch>, AppError> {
         let overview = self.memory_overview()?;
         let connection = self.connect()?;
@@ -7200,7 +7923,7 @@ impl Database {
                 .partial_cmp(&left.score)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-        matches.truncate(5);
+        matches.truncate(maximum_items);
         Ok(matches)
     }
 
@@ -7966,7 +8689,9 @@ impl Database {
                     json_extract(bt.result_json, '$.long_context'),
                     json_extract(bt.result_json, '$.consensus.synthesized'),
                     json_extract(bt.result_json, '$.consensus.warnings'),
-                    json_extract(bt.result_json, '$.arbiter_failures')
+                    json_extract(bt.result_json, '$.arbiter_failures'),
+                    json_extract(bt.result_json, '$.warnings'),
+                    json_extract(bt.result_json, '$.agent.citations.unsupported')
              FROM messages m
              LEFT JOIN message_parts mp ON mp.message_id = m.id AND mp.ordinal = 0
              LEFT JOIN broker_tasks bt ON bt.id = m.broker_task_id
@@ -7985,6 +8710,8 @@ impl Database {
                 let consensus_synthesized: Option<i64> = row.get(17)?;
                 let consensus_warnings_json: Option<String> = row.get(18)?;
                 let arbiter_failures_json: Option<String> = row.get(19)?;
+                let execution_warnings_json: Option<String> = row.get(20)?;
+                let unsupported_citations_json: Option<String> = row.get(21)?;
                 let consensus_warnings = consensus_warnings_json
                     .and_then(|value| serde_json::from_str::<Value>(&value).ok())
                     .and_then(|value| value.as_array().cloned())
@@ -7996,6 +8723,15 @@ impl Database {
                     .and_then(|value| serde_json::from_str::<Value>(&value).ok())
                     .and_then(|value| value.as_array().map(|failures| failures.len() as i64))
                     .unwrap_or(0);
+                let string_list = |serialized: Option<String>| {
+                    serialized
+                        .and_then(|value| serde_json::from_str::<Value>(&value).ok())
+                        .and_then(|value| value.as_array().cloned())
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter_map(|value| value.as_str().map(str::to_owned))
+                        .collect::<Vec<_>>()
+                };
                 Ok(ConversationMessage {
                     id: row.get(0)?,
                     role: row.get(1)?,
@@ -8022,6 +8758,8 @@ impl Database {
                     consensus_synthesized: consensus_synthesized.map(|value| value != 0),
                     consensus_warnings,
                     arbiter_failure_count,
+                    execution_warnings: string_list(execution_warnings_json),
+                    unsupported_citation_urls: string_list(unsupported_citations_json),
                     sources: Vec::new(),
                     created_at: row.get(9)?,
                 })
@@ -10050,6 +10788,171 @@ impl Database {
         Ok(())
     }
 
+    /// Autoriza una carpeta para que un GPT personal pueda solicitar lecturas.
+    /// La concesión es independiente de la escritura y conserva permisos previos.
+    pub fn authorize_folder_for_read(
+        &self,
+        folder: &Path,
+        display_name: &str,
+    ) -> Result<(), AppError> {
+        let key = folder_key(folder);
+        let connection = self.connect()?;
+        let existing: Option<String> = connection
+            .query_row(
+                "SELECT permissions_json FROM authorized_folders WHERE canonical_path = ?1",
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let mut permissions = existing
+            .as_deref()
+            .and_then(|value| serde_json::from_str::<Value>(value).ok())
+            .and_then(|value| value.as_object().cloned())
+            .unwrap_or_default();
+        permissions.insert("read".to_owned(), Value::Bool(true));
+        permissions.insert("purpose".to_owned(), Value::String("gpt_read".to_owned()));
+        connection.execute(
+            "INSERT INTO authorized_folders(
+                id, canonical_path, display_name, permissions_json
+             ) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(canonical_path) DO UPDATE SET
+                display_name = excluded.display_name,
+                permissions_json = excluded.permissions_json,
+                granted_at = datetime('now'),
+                revoked_at = NULL",
+            params![
+                format!("folder_{}", Uuid::new_v4().simple()),
+                key,
+                display_name,
+                Value::Object(permissions).to_string()
+            ],
+        )?;
+        connection.execute(
+            "INSERT INTO audit_events(event_type, actor, payload_json)
+             VALUES ('authorized_folder.read_granted', 'user', '{}')",
+            [],
+        )?;
+        Ok(())
+    }
+
+    /// Autoriza modificaciones confirmadas dentro de una carpeta. Modificar
+    /// implica poder leer primero la versión y su huella para evitar pérdidas.
+    pub fn authorize_folder_for_modify(
+        &self,
+        folder: &Path,
+        display_name: &str,
+    ) -> Result<(), AppError> {
+        let key = folder_key(folder);
+        let connection = self.connect()?;
+        let existing: Option<String> = connection
+            .query_row(
+                "SELECT permissions_json FROM authorized_folders WHERE canonical_path = ?1",
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let mut permissions = existing
+            .as_deref()
+            .and_then(|value| serde_json::from_str::<Value>(value).ok())
+            .and_then(|value| value.as_object().cloned())
+            .unwrap_or_default();
+        permissions.insert("read".to_owned(), Value::Bool(true));
+        permissions.insert("modify".to_owned(), Value::Bool(true));
+        permissions.insert("purpose".to_owned(), Value::String("gpt_modify".to_owned()));
+        connection.execute(
+            "INSERT INTO authorized_folders(
+                id, canonical_path, display_name, permissions_json
+             ) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(canonical_path) DO UPDATE SET
+                display_name = excluded.display_name,
+                permissions_json = excluded.permissions_json,
+                granted_at = datetime('now'),
+                revoked_at = NULL",
+            params![
+                format!("folder_{}", Uuid::new_v4().simple()),
+                key,
+                display_name,
+                Value::Object(permissions).to_string()
+            ],
+        )?;
+        connection.execute(
+            "INSERT INTO audit_events(event_type, actor, payload_json)
+             VALUES ('authorized_folder.modify_granted', 'user', '{}')",
+            [],
+        )?;
+        Ok(())
+    }
+
+    /// Resuelve una concesión de lectura por su identificador opaco.
+    pub fn authorized_folder_for_read(
+        &self,
+        folder_id: &str,
+    ) -> Result<(PathBuf, String), AppError> {
+        let row = self
+            .connect()?
+            .query_row(
+                "SELECT canonical_path, display_name, permissions_json
+                 FROM authorized_folders
+                 WHERE id = ?1 AND revoked_at IS NULL",
+                params![folder_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .optional()?
+            .ok_or_else(|| AppError::NotFound("carpeta autorizada no disponible".to_owned()))?;
+        let readable = serde_json::from_str::<Value>(&row.2)
+            .ok()
+            .and_then(|value| value.get("read").and_then(Value::as_bool))
+            .unwrap_or(false);
+        if !readable {
+            return Err(AppError::Conflict(
+                "la carpeta no tiene permiso de lectura para GPTs".to_owned(),
+            ));
+        }
+        Ok((PathBuf::from(row.0), row.1))
+    }
+
+    pub fn authorized_folder_for_modify(
+        &self,
+        folder_id: &str,
+    ) -> Result<(PathBuf, String), AppError> {
+        let folder = self
+            .list_authorized_folders()?
+            .into_iter()
+            .find(|folder| folder.id == folder_id && folder.revoked_at.is_none())
+            .ok_or_else(|| AppError::NotFound("carpeta autorizada no disponible".to_owned()))?;
+        if folder.permissions.get("modify").and_then(Value::as_bool) != Some(true) {
+            return Err(AppError::Conflict(
+                "la carpeta no tiene permiso para modificar archivos".to_owned(),
+            ));
+        }
+        Ok((PathBuf::from(folder.path), folder.display_name))
+    }
+
+    pub fn record_authorized_file_modified(
+        &self,
+        folder_id: &str,
+        before_sha256: &str,
+        after_sha256: &str,
+    ) -> Result<(), AppError> {
+        self.connect()?.execute(
+            "INSERT INTO audit_events(event_type, actor, payload_json)
+             VALUES ('authorized_file.modified', 'tool', ?1)",
+            params![serde_json::json!({
+                "folder_id": folder_id,
+                "before_sha256": before_sha256,
+                "after_sha256": after_sha256
+            })
+            .to_string()],
+        )?;
+        Ok(())
+    }
+
     pub fn list_authorized_folders(&self) -> Result<Vec<AuthorizedFolderView>, AppError> {
         let connection = self.connect()?;
         let mut statement = connection.prepare(
@@ -10071,6 +10974,17 @@ impl Database {
             })?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(folders)
+    }
+
+    pub fn list_read_authorized_folders(&self) -> Result<Vec<AuthorizedFolderView>, AppError> {
+        Ok(self
+            .list_authorized_folders()?
+            .into_iter()
+            .filter(|folder| {
+                folder.revoked_at.is_none()
+                    && folder.permissions.get("read").and_then(Value::as_bool) == Some(true)
+            })
+            .collect())
     }
 
     /// Revoca una carpeta: las exportaciones posteriores exigirán volver a
@@ -10199,6 +11113,68 @@ impl Database {
         schedule_expression: &str,
         confirmed: bool,
     ) -> Result<ScheduledTaskView, AppError> {
+        let id = format!("scheduled_{}", Uuid::new_v4().simple());
+        self.create_scheduled_task_with_id(
+            &id,
+            name,
+            conversation_id,
+            prompt,
+            due_at,
+            timezone,
+            schedule_expression,
+            confirmed,
+            "user",
+        )
+    }
+
+    /// Crea una tarea propuesta por una herramienta de forma idempotente.
+    /// Repetir la misma confirmación tras un cierre inesperado devuelve la tarea
+    /// original en lugar de programar dos ejecuciones.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_scheduled_task_from_tool(
+        &self,
+        tool_call_id: &str,
+        name: &str,
+        conversation_id: &str,
+        prompt: &str,
+        due_at: &str,
+        timezone: &str,
+    ) -> Result<ScheduledTaskView, AppError> {
+        let digest = format!("{:x}", Sha256::digest(tool_call_id.as_bytes()));
+        let id = format!("scheduled_tool_{}", &digest[..32]);
+        if let Some(existing) = self
+            .list_scheduled_tasks()?
+            .into_iter()
+            .find(|task| task.id == id)
+        {
+            return Ok(existing);
+        }
+        self.create_scheduled_task_with_id(
+            &id,
+            name,
+            conversation_id,
+            prompt,
+            due_at,
+            timezone,
+            "once",
+            true,
+            "tool",
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn create_scheduled_task_with_id(
+        &self,
+        id: &str,
+        name: &str,
+        conversation_id: &str,
+        prompt: &str,
+        due_at: &str,
+        timezone: &str,
+        schedule_expression: &str,
+        confirmed: bool,
+        actor: &str,
+    ) -> Result<ScheduledTaskView, AppError> {
         if !confirmed {
             return Err(AppError::Validation(
                 "activar una tarea programada requiere confirmación explícita".to_owned(),
@@ -10234,7 +11210,6 @@ impl Database {
                 "la recurrencia programada no es válida".to_owned(),
             ));
         }
-        let id = format!("scheduled_{}", Uuid::new_v4().simple());
         let payload = serde_json::json!({
             "conversation_id": conversation_id,
             "prompt": prompt
@@ -10260,8 +11235,9 @@ impl Database {
         )?;
         transaction.execute(
             "INSERT INTO audit_events(event_type, actor, conversation_id, payload_json)
-             VALUES ('scheduled_task.created', 'user', ?1, ?2)",
+             VALUES ('scheduled_task.created', ?1, ?2, ?3)",
             params![
+                actor,
                 conversation_id,
                 serde_json::json!({
                     "scheduled_task_id": id,
@@ -11359,13 +12335,14 @@ fn select_global_document_chunks(
 #[cfg(test)]
 mod tests {
     use super::{
-        markdown_web_sources, validated_preferred_model, ContextMessage,
+        confirmation_blueprint, markdown_web_sources, validated_preferred_model, ContextMessage,
         ConversationExecutionPreferences, CustomGptToolPermissions, Database, ToolOutcomeRecord,
-        WorkflowEdge, WorkflowNode, INITIAL_MIGRATION, SCHEMA_VERSION,
+        WorkflowEdge, WorkflowNode, INITIAL_MIGRATION, PERFORMANCE_SAMPLES_MIGRATION,
+        REMOTE_OPERATION_START_METRIC_MIGRATION, SCHEMA_VERSION,
     };
     use crate::broker::TaskState;
     use crate::error::AppError;
-    use rusqlite::params;
+    use rusqlite::{params, Connection};
     use serde_json::Value;
     use sha2::{Digest, Sha256};
     use uuid::Uuid;
@@ -11387,6 +12364,25 @@ mod tests {
         ] {
             let _ = std::fs::remove_file(candidate);
         }
+    }
+
+    #[test]
+    fn api_confirmation_reveals_the_alias_but_never_treats_it_as_sent_data() {
+        let (_, _, disclosure, consequences) = confirmation_blueprint(
+            "api_action_private_status",
+            &serde_json::json!({
+                "url": "https://api.example.org/status",
+                "credential_ref": "private_service",
+                "auth_mode": "bearer",
+                "detail": "summary"
+            }),
+            Some("conversation"),
+        );
+        assert_eq!(disclosure["credential_label"], "private_service");
+        assert_eq!(disclosure["data_sent"].as_array().unwrap().len(), 1);
+        assert_eq!(disclosure["data_sent"][0]["label"], "detail");
+        assert!(consequences.contains("private_service"));
+        assert!(!disclosure.to_string().contains("bearer"));
     }
 
     /// Investigación profunda y recuperación semántica ya conviven.
@@ -11680,6 +12676,39 @@ mod tests {
     }
 
     #[test]
+    fn remote_start_metric_migration_preserves_existing_measurements() {
+        let connection = Connection::open_in_memory().expect("SQLite temporal debe abrir");
+        connection
+            .execute_batch(PERFORMANCE_SAMPLES_MIGRATION)
+            .expect("el esquema anterior debe crearse");
+        connection
+            .execute(
+                "INSERT INTO performance_samples(metric, duration_ms) VALUES ('app_start', 850)",
+                [],
+            )
+            .expect("la muestra anterior debe guardarse");
+
+        connection
+            .execute_batch(REMOTE_OPERATION_START_METRIC_MIGRATION)
+            .expect("la ampliación del vocabulario debe ser atómica");
+        let preserved: i64 = connection
+            .query_row(
+                "SELECT duration_ms FROM performance_samples WHERE metric = 'app_start'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("la muestra previa debe sobrevivir");
+        assert_eq!(preserved, 850);
+        connection
+            .execute(
+                "INSERT INTO performance_samples(metric, duration_ms) \
+                 VALUES ('remote_operation_start', 75)",
+                [],
+            )
+            .expect("la métrica nueva debe quedar admitida");
+    }
+
+    #[test]
     fn performance_report_only_judges_metrics_that_were_executed() {
         let database = test_database();
 
@@ -11687,7 +12716,7 @@ mod tests {
         let empty = database
             .performance_report()
             .expect("el informe vacío debe poder consultarse");
-        assert_eq!(empty.metrics.len(), 4);
+        assert_eq!(empty.metrics.len(), 5);
         assert_eq!(empty.total_samples, 0);
         assert_eq!(empty.sample_limit, 200);
         for summary in &empty.metrics {
@@ -11910,7 +12939,7 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .expect("permission matrix should load");
-        assert_eq!(permission_count, 4);
+        assert_eq!(permission_count, 12);
         assert_eq!(non_denied_count, 0);
         let feature_enabled: bool = connection
             .query_row(
@@ -12027,6 +13056,10 @@ mod tests {
         let permissions = CustomGptToolPermissions {
             run_code: "confirm".to_owned(),
             rename_conversation: "deny".to_owned(),
+            read_authorized_folders: "deny".to_owned(),
+            modify_authorized_files: "deny".to_owned(),
+            create_scheduled_tasks: "deny".to_owned(),
+            call_external_apis: "deny".to_owned(),
         };
         let created = database
             .create_custom_gpt_with_starters(
@@ -12112,6 +13145,10 @@ mod tests {
                 &CustomGptToolPermissions {
                     run_code: "deny".to_owned(),
                     rename_conversation: "confirm".to_owned(),
+                    read_authorized_folders: "deny".to_owned(),
+                    modify_authorized_files: "deny".to_owned(),
+                    create_scheduled_tasks: "deny".to_owned(),
+                    call_external_apis: "deny".to_owned(),
                 },
                 Some("qwen2.5:14b"),
                 None,
@@ -12191,6 +13228,10 @@ mod tests {
                 &CustomGptToolPermissions {
                     run_code: "confirm".to_owned(),
                     rename_conversation: "confirm".to_owned(),
+                    read_authorized_folders: "deny".to_owned(),
+                    modify_authorized_files: "deny".to_owned(),
+                    create_scheduled_tasks: "deny".to_owned(),
+                    call_external_apis: "deny".to_owned(),
                 },
                 Some("qwen2.5:14b"),
                 None,
@@ -12250,6 +13291,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
             )
             .expect("a catalog icon should be accepted");
         assert_eq!(created.icon_ref, "research");
@@ -12263,6 +13305,7 @@ mod tests {
                 "Build and verify the solution.",
                 &[],
                 &CustomGptToolPermissions::default(),
+                None,
                 None,
                 None,
                 None,
@@ -12308,12 +13351,73 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
             ),
             Err(AppError::Validation(_))
         ));
         assert!(matches!(
             database.import_custom_gpt_json(
                 r#"{"schemaVersion":1,"name":"Invalid icon","iconRef":"../../icon.png","instructions":"Do not save this."}"#
+            ),
+            Err(AppError::Validation(_))
+        ));
+        cleanup(&database);
+    }
+
+    #[test]
+    fn custom_gpt_context_profile_is_versioned_portable_and_validated() {
+        let database = test_database();
+        let created = database
+            .create_custom_gpt_with_icon(
+                "Documental",
+                None,
+                Some("research"),
+                "Responde desde el contexto.",
+                &[],
+                &CustomGptToolPermissions::default(),
+                None,
+                None,
+                None,
+                Some("broad"),
+            )
+            .expect("a broad profile should be accepted");
+        assert_eq!(created.context_profile, "broad");
+
+        let updated = database
+            .update_custom_gpt_with_icon(
+                &created.id,
+                &created.name,
+                None,
+                Some("research"),
+                &created.instructions,
+                &[],
+                &CustomGptToolPermissions::default(),
+                None,
+                None,
+                None,
+                Some("focused"),
+            )
+            .expect("the context profile should create a new version");
+        assert_eq!(updated.context_profile, "focused");
+        let history = database.list_custom_gpt_versions(&created.id).unwrap();
+        assert_eq!(history[0].context_profile, "focused");
+        assert_eq!(history[1].context_profile, "broad");
+
+        let exported = database.export_custom_gpt_json(&created.id).unwrap();
+        let imported = database.import_custom_gpt_json(&exported).unwrap();
+        assert_eq!(imported.context_profile, "focused");
+        assert!(matches!(
+            database.create_custom_gpt_with_icon(
+                "Inválido",
+                None,
+                None,
+                "No importa.",
+                &[],
+                &CustomGptToolPermissions::default(),
+                None,
+                None,
+                None,
+                Some("unlimited"),
             ),
             Err(AppError::Validation(_))
         ));
@@ -13059,6 +14163,7 @@ mod tests {
             custom_gpt_instructions: None,
             preferred_model: None,
             execution_profile: None,
+            context_profile: "balanced".to_owned(),
             custom_gpt_memory_ids: Vec::new(),
             custom_gpt_attachment_ids: Vec::new(),
             instruction: None,
@@ -13693,7 +14798,14 @@ mod tests {
                 },
                 "arbiter_failures": [
                     {"model": "revisor-prueba", "code": "PROVIDER_UNAVAILABLE", "message": "offline"}
-                ]
+                ],
+                "warnings": ["Una dependencia falló; la tarea continuó"],
+                "agent": {
+                    "citations": {
+                        "cited": 2,
+                        "unsupported": ["https://example.invalid/no-consultada"]
+                    }
+                }
             },
             "error": null
         }))
@@ -13746,6 +14858,14 @@ mod tests {
             ["Se entregó la mejor propuesta disponible"]
         );
         assert_eq!(assistant.arbiter_failure_count, 1);
+        assert_eq!(
+            assistant.execution_warnings,
+            ["Una dependencia falló; la tarea continuó"]
+        );
+        assert_eq!(
+            assistant.unsupported_citation_urls,
+            ["https://example.invalid/no-consultada"]
+        );
         assert_eq!(
             assistant.sources[0].source_attachment_id.as_deref(),
             Some(attachment.id.as_str())
@@ -15841,7 +16961,7 @@ mod tests {
     }
 
     #[test]
-    fn document_embedding_queue_is_sequential_and_skips_failed_chunks() {
+    fn document_embedding_batch_is_complete_and_retries_only_failed_chunks() {
         let database = test_database();
         let conversation = database
             .create_conversation("Cola semántica", None)
@@ -15865,6 +16985,10 @@ mod tests {
                 ],
             )
             .expect("chunks should be stored");
+        let complete_batch = database
+            .attachment_chunks_for_embedding(&attachment.id, false)
+            .expect("the complete batch should load before submission");
+        assert_eq!(complete_batch.len(), 2);
         let first = database
             .next_attachment_chunk_for_embedding(&attachment.id, false)
             .expect("queue should load")
@@ -16066,6 +17190,38 @@ mod tests {
             )
             .expect("audit event should be queryable");
         assert!(audited);
+        cleanup(&database);
+    }
+
+    #[test]
+    fn tool_scheduled_task_is_idempotent_for_the_same_tool_call() {
+        let database = test_database();
+        let conversation = database
+            .create_conversation("Agenda del GPT", None)
+            .expect("conversation should be created");
+        let first = database
+            .create_scheduled_task_from_tool(
+                "tool-call-42",
+                "Revisión",
+                &conversation.id,
+                "Resume el estado del proyecto.",
+                "2099-01-01T10:00:00.000Z",
+                "Atlantic/Canary",
+            )
+            .expect("the tool schedule should be created");
+        let repeated = database
+            .create_scheduled_task_from_tool(
+                "tool-call-42",
+                "Revisión",
+                &conversation.id,
+                "Resume el estado del proyecto.",
+                "2099-01-01T10:00:00.000Z",
+                "Atlantic/Canary",
+            )
+            .expect("replaying the confirmation should be safe");
+
+        assert_eq!(first.id, repeated.id);
+        assert_eq!(database.list_scheduled_tasks().unwrap().len(), 1);
         cleanup(&database);
     }
 

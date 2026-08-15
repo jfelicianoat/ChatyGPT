@@ -46,12 +46,14 @@ describe("búfer de muestras", () => {
     buffer.push("conversation_open", 120);
     buffer.push("conversation_open", 180);
     buffer.push("conversation_search", 40);
-    expect(buffer.size).toBe(3);
+    buffer.push("remote_operation_start", 75);
+    expect(buffer.size).toBe(4);
 
     const batches = buffer.drain();
     expect(batches).toEqual([
       { metric: "conversation_open", durationsMs: [120, 180] },
-      { metric: "conversation_search", durationsMs: [40] }
+      { metric: "conversation_search", durationsMs: [40] },
+      { metric: "remote_operation_start", durationsMs: [75] }
     ]);
     // Vaciar es definitivo: un segundo envío no puede duplicar muestras.
     expect(buffer.size).toBe(0);

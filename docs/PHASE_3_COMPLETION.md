@@ -78,15 +78,13 @@ Python en verde; clippy sin avisos. La cobertura de líneas de Rust queda en
 
 ## Lo que sigue faltando en la Fase 3
 
-- **Funciones definidas por el cliente**: sigue existiendo una única herramienta
-  codificada (`rename_conversation`). El encargo pide que cada GPT pueda definir
-  las suyas, lo que exige un modelo de validación y confirmación propio.
-- **Matriz de permisos**: sigue con 2 capacidades de las 8 del encargo. Las
-  restantes (ejecutar scripts, leer carpetas autorizadas, modificar archivos,
-  llamar APIs externas, crear tareas programadas) no se han añadido a propósito:
-  declarar permisos para herramientas que no existen sería teatro de seguridad.
-  Ahora que las carpetas autorizadas están activas, «leer carpetas» es el
-  siguiente candidato razonable.
-- **Límites y configuración avanzada de contexto por GPT**: el icono y el perfil
-  de ejecución ya están versionados, pero todavía no existe un presupuesto de
-  contexto propio más granular que las opciones generales del perfil.
+- **Funciones definidas por la persona**: existen herramientas de cliente
+  acotadas y confirmables para renombrar, leer y modificar archivos y programar
+  una tarea. Sigue pendiente un creador seguro de esquemas de función arbitrarios.
+- **Matriz de permisos**: Código aislado, renombrado, lectura, modificación y
+  programación ya tienen permisos efectivos. Sigue pendiente llamar a APIs
+  externas elegidas por la persona, que requerirá almacén seguro de credenciales,
+  lista de destinos y confirmación de los datos enviados.
+- **Contexto por GPT**: ya ofrece perfiles Enfocado, Equilibrado y Amplio,
+  versionados y aplicados a historial, memoria y documentos. Una futura opción
+  avanzada podría exponer números concretos sin debilitar los topes de seguridad.

@@ -61,6 +61,8 @@ pub struct BrokerDiagnostic {
     pub derived_data_boundary: Option<bool>,
     pub work_lanes: Vec<String>,
     pub agent_skills: Vec<String>,
+    pub agent_skills_egress: Vec<String>,
+    pub task_dependencies: Option<bool>,
     pub sandbox_run_code: Option<bool>,
     pub file_ingestion: Option<bool>,
     pub ingestion_formats: HashMap<String, Vec<String>>,
@@ -72,7 +74,7 @@ pub struct BrokerDiagnostic {
 
 /// Extrae únicamente la parte accionable y no sensible de un rechazo HTTP.
 ///
-/// Los errores 2.7 publican `code`, `message` y, para 422, una lista `fields`.
+/// Los errores 2.8 publican `code`, `message` y, para 422, una lista `fields`.
 /// No incluimos `input`: puede contener el prompt o datos del usuario.
 fn rejection_message(status: StatusCode, bytes: &[u8]) -> String {
     let Ok(body) = serde_json::from_slice::<Value>(bytes) else {
@@ -267,6 +269,22 @@ impl BrokerClient {
         })
     }
 
+    async fn decode_task_state(
+        operation: &str,
+        expected_task_id: &str,
+        response: reqwest::Response,
+    ) -> Result<TaskState, AppError> {
+        let value = Self::decode::<Value>(operation, response).await?;
+        TaskState::from_contract_value(value, expected_task_id).map_err(|message| {
+            logging::error(
+                "broker.task_state_contract_mismatch",
+                None,
+                &[("operation", logging::code(operation))],
+            );
+            AppError::BrokerContract(message)
+        })
+    }
+
     pub async fn capabilities(&self) -> Result<BrokerCapabilities, AppError> {
         let response = self
             .authorize(self.http.get(self.endpoint("/api/v1/capabilities")?))
@@ -416,7 +434,7 @@ impl BrokerClient {
             .send()
             .await
             .map_err(|error| transport_failure("get_task", error))?;
-        Self::decode("get_task", response).await
+        Self::decode_task_state("get_task", task_id, response).await
     }
 
     pub async fn cancel_task(&self, task_id: &str) -> Result<TaskState, AppError> {
@@ -426,7 +444,7 @@ impl BrokerClient {
             .send()
             .await
             .map_err(|error| transport_failure("cancel_task", error))?;
-        Self::decode("cancel_task", response).await
+        Self::decode_task_state("cancel_task", task_id, response).await
     }
 
     pub async fn submit_tool_results(
@@ -440,7 +458,7 @@ impl BrokerClient {
             .send()
             .await
             .map_err(|error| transport_failure("submit_tool_results", error))?;
-        Self::decode("submit_tool_results", response).await
+        Self::decode_task_state("submit_tool_results", task_id, response).await
     }
 
     /// Diagnostica el Broker y deja constancia del resultado, no de su mensaje.
@@ -478,6 +496,8 @@ impl BrokerClient {
                     derived_data_boundary: None,
                     work_lanes: vec![],
                     agent_skills: vec![],
+                    agent_skills_egress: vec![],
+                    task_dependencies: None,
                     sandbox_run_code: None,
                     file_ingestion: None,
                     ingestion_formats: HashMap::new(),
@@ -503,6 +523,8 @@ impl BrokerClient {
                     derived_data_boundary: Some(capabilities.derived_data_boundary),
                     work_lanes: capabilities.work_lanes,
                     agent_skills: capabilities.agent_skills,
+                    agent_skills_egress: capabilities.agent_skills_egress,
+                    task_dependencies: Some(capabilities.task_dependencies),
                     sandbox_run_code: Some(capabilities.sandbox_run_code),
                     file_ingestion: Some(capabilities.file_ingestion),
                     ingestion_formats: capabilities.ingestion_formats,
@@ -525,6 +547,8 @@ impl BrokerClient {
                     derived_data_boundary: None,
                     work_lanes: vec![],
                     agent_skills: vec![],
+                    agent_skills_egress: vec![],
+                    task_dependencies: None,
                     sandbox_run_code: None,
                     file_ingestion: None,
                     ingestion_formats: HashMap::new(),
@@ -547,6 +571,8 @@ impl BrokerClient {
                 derived_data_boundary: None,
                 work_lanes: vec![],
                 agent_skills: vec![],
+                agent_skills_egress: vec![],
+                task_dependencies: None,
                 sandbox_run_code: None,
                 file_ingestion: None,
                 ingestion_formats: HashMap::new(),
@@ -570,6 +596,8 @@ impl BrokerClient {
                 derived_data_boundary: None,
                 work_lanes: vec![],
                 agent_skills: vec![],
+                agent_skills_egress: vec![],
+                task_dependencies: None,
                 sandbox_run_code: None,
                 file_ingestion: None,
                 ingestion_formats: HashMap::new(),
@@ -591,7 +619,7 @@ pub struct PollPolicy {
 impl Default for PollPolicy {
     fn default() -> Self {
         Self {
-            // Contrato 2.7: el intervalo recomendado para tareas es 2–5 s.
+            // Contrato 2.8: el intervalo recomendado para tareas es 2–5 s.
             initial_ms: 2_000,
             maximum_ms: 5_000,
         }
@@ -612,7 +640,9 @@ impl PollPolicy {
 
 #[cfg(test)]
 mod tests {
-    use super::simulated::{accepted_file, file_state, ScriptedResponse, SimulatedBroker};
+    use super::simulated::{
+        accepted_file, file_state, task_state, ScriptedResponse, SimulatedBroker,
+    };
     use super::{AppError, BrokerClient, PollPolicy};
     use serde_json::json;
 
@@ -648,11 +678,13 @@ mod tests {
         ready.always(
             "GET /api/v1/capabilities",
             ScriptedResponse::ok(json!({
-                "contract_version": "2.7",
+                "contract_version": "2.8",
                 "derived_data_boundary": true,
                 "work_lanes": ["inference", "ingestion"],
                 "strategies": ["single", "agent"],
                 "agent_skills": ["web_search"],
+                "agent_skills_egress": ["web_search", "fetch_url"],
+                "task_dependencies": true,
                 "sandbox_run_code": true,
                 "file_ingestion": true,
                 "ingestion_formats": {"pdf": [".pdf"], "text": [".txt", ".md"]},
@@ -662,11 +694,13 @@ mod tests {
         );
         let diagnostic = block_on(client_for(&ready).diagnose());
         assert!(diagnostic.reachable && diagnostic.ready);
-        assert_eq!(diagnostic.contract_version.as_deref(), Some("2.7"));
+        assert_eq!(diagnostic.contract_version.as_deref(), Some("2.8"));
         assert!(diagnostic.capabilities_verified);
         assert_eq!(diagnostic.strategies, ["single", "agent"]);
         assert_eq!(diagnostic.ingestion_formats["pdf"], [".pdf"]);
         assert_eq!(diagnostic.sandbox_run_code, Some(true));
+        assert_eq!(diagnostic.task_dependencies, Some(true));
+        assert_eq!(diagnostic.agent_skills_egress, ["web_search", "fetch_url"]);
         assert_eq!(diagnostic.max_active_workflows, Some(2));
         assert_eq!(diagnostic.message, "Broker AI está listo");
 
@@ -727,6 +761,48 @@ mod tests {
     }
 
     #[test]
+    fn task_state_is_validated_before_polling_can_use_it() {
+        let simulated = SimulatedBroker::start();
+        simulated.script(
+            "GET /api/v1/tasks/{id}",
+            ScriptedResponse::ok(task_state("task-valid", "generating", None)),
+        );
+        simulated.script(
+            "GET /api/v1/tasks/{id}",
+            ScriptedResponse::ok(json!({
+                "task_id": "task-invalid",
+                "kind": "inference",
+                "status": "waiting_for_tools",
+                "request_id": "request-invalid",
+                "created_at": "2026-08-14T10:00:00Z",
+                "updated_at": "2026-08-14T10:00:01Z",
+                "execution_strategy": "agent",
+                "execution_preset": "fast",
+                "selection_mode": "auto",
+                "progress": {
+                    "phase": "waiting_for_tools",
+                    "invocations_completed": 1,
+                    "invocations_total": 1,
+                    "agent_iteration": 1,
+                    "agent_max_iterations": 6
+                },
+                "result": {"status": "waiting_for_tools"},
+                "error": null
+            })),
+        );
+        let client = client_for(&simulated);
+
+        let valid = block_on(client.get_task("task-valid"))
+            .expect("un estado completo debe llegar al polling");
+        assert_eq!(valid.task_id, "task-valid");
+
+        let error = block_on(client.get_task("task-invalid"))
+            .expect_err("un estado sin llamadas pendientes no debe llegar al polling");
+        assert!(matches!(error, AppError::BrokerContract(_)));
+        assert!(error.to_string().contains("pending_tool_calls"));
+    }
+
+    #[test]
     fn contract_errors_expose_safe_field_paths_and_authentication_guidance() {
         let fields = super::rejection_message(
             reqwest::StatusCode::UNPROCESSABLE_ENTITY,
@@ -760,7 +836,7 @@ mod tests {
         let simulated = SimulatedBroker::start();
         simulated.always(
             "GET /api/v1/capabilities",
-            ScriptedResponse::ok(json!({"contract_version": "2.7"})),
+            ScriptedResponse::ok(json!({"contract_version": "2.8"})),
         );
         let client = client_for(&simulated);
 

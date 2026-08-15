@@ -1,6 +1,6 @@
 """El estado de tarea que ChatyGPT asume, validado contra el contrato del Broker.
 
-`contracts/broker/2.7/task-state.response.json` es copia literal del esquema que
+`contracts/broker/2.8/task-state.response.json` conserva el núcleo del esquema que
 publica AI Broker (`tests/fixtures/broker_task_state_response.schema.json`). No
 se edita aquí: si el Broker cambia, se vuelve a copiar y estas pruebas dicen qué
 se rompe.
@@ -25,7 +25,7 @@ from jsonschema import Draft202012Validator
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCHEMA_PATH = ROOT / "contracts" / "broker" / "2.7" / "task-state.response.json"
+SCHEMA_PATH = ROOT / "contracts" / "broker" / "2.8" / "task-state.response.json"
 
 
 def load_validator() -> Draft202012Validator:
@@ -79,7 +79,7 @@ class TaskStateContractTests(unittest.TestCase):
         """El identificador delata una copia editada por nuestra parte."""
         schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
         self.assertEqual(
-            "https://ai-broker.local/contracts/broker/2.7/task-state.response.json",
+            "https://ai-broker.local/contracts/broker/2.8/task-state.response.json",
             schema["$id"],
         )
 
@@ -90,6 +90,18 @@ class TaskStateContractTests(unittest.TestCase):
             inference_state(
                 status="completed",
                 result={"result_markdown": "La normativa exige contrato previo."},
+            )
+        )
+
+    def test_dependency_wait_is_non_terminal_contract_state(self) -> None:
+        self.assert_valid(
+            inference_state(
+                status="waiting_for_dependencies",
+                progress={
+                    "phase": "waiting_for_dependencies",
+                    "invocations_completed": 0,
+                    "invocations_total": 1,
+                },
             )
         )
 

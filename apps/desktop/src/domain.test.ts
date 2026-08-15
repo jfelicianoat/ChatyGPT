@@ -28,6 +28,7 @@ import {
   projectFilesAvailableToConversation,
   shouldApplyContextLoad,
   shouldFollowConversationScroll,
+  progressiveConversationWindow,
   shouldOfferSandboxForPrompt,
   shouldRefreshSandboxDiagnostic,
   sandboxUnavailableGuidance,
@@ -44,7 +45,7 @@ import {
   type ScheduledTaskView
 } from "./domain";
 
-describe("contrato 2.7 del Broker", () => {
+describe("contrato 2.8 del Broker", () => {
   it("normaliza y limita el selector a los formatos de ingesta anunciados", () => {
     expect(brokerAttachmentExtensions({
       reachable: true,
@@ -422,6 +423,18 @@ describe("conversation scroll following", () => {
       })
     ).toBe(false);
   });
+
+  it("renders recent messages first and reveals history without reordering it", () => {
+    const messages = Array.from({ length: 125 }, (_, index) => index + 1);
+    const initial = progressiveConversationWindow(messages, 80);
+    expect(initial.hiddenCount).toBe(45);
+    expect(initial.visibleItems[0]).toBe(46);
+    expect(initial.visibleItems.at(-1)).toBe(125);
+
+    const expanded = progressiveConversationWindow(messages, 130);
+    expect(expanded.hiddenCount).toBe(0);
+    expect(expanded.visibleItems).toEqual(messages);
+  });
 });
 
 describe("memory editor interaction", () => {
@@ -514,6 +527,13 @@ describe("Broker 2.6 task presentation", () => {
       ...task("waiting_for_memory"),
       progress: { phase: "waiting_for_memory" }
     })).toEqual({ label: "Esperando memoria disponible" });
+  });
+
+  it("explains the non-terminal dependency wait introduced by contract 2.8", () => {
+    expect(taskProgressSummary({
+      ...task("waiting_for_dependencies"),
+      progress: { phase: "waiting_for_dependencies" }
+    })).toEqual({ label: "Esperando a que termine el índice documental" });
   });
 
   it("explains whether a Broker failure is worth retrying", () => {
@@ -815,7 +835,9 @@ describe("historial de versiones de un GPT", () => {
     executionProfile: null,
     createdAt: "2026-08-01T09:00:00Z",
     active: false,
-    toolPermissions: { runCode: "deny", renameConversation: "deny" },
+    toolPermissions: { runCode: "deny", renameConversation: "deny", readAuthorizedFolders: "deny", modifyAuthorizedFiles: "deny", createScheduledTasks: "deny", callExternalApis: "deny" },
+    apiActions: [],
+    contextProfile: "balanced",
     taskCount: 0,
     ...overrides
   });

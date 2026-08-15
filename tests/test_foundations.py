@@ -10,7 +10,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATION = ROOT / "apps" / "desktop" / "src-tauri" / "migrations" / "0001_initial.sql"
-CONTRACT = ROOT / "contracts" / "broker" / "2.7" / "single-task.request.json"
+CONTRACT = ROOT / "contracts" / "broker" / "2.8" / "single-task.request.json"
 RECOVERY_QUERY = (
     ROOT
     / "apps"

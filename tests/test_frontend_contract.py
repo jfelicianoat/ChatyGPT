@@ -23,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 LIB_RS = ROOT / "apps" / "desktop" / "src-tauri" / "src" / "lib.rs"
 PLATFORM_TS = ROOT / "apps" / "desktop" / "src" / "platform.ts"
 APP_TSX = ROOT / "apps" / "desktop" / "src" / "App.tsx"
+WORKFLOW_STUDIO_TSX = ROOT / "apps" / "desktop" / "src" / "WorkflowStudio.tsx"
 
 # Tipos que Tauri inyecta al invocar: no viajan desde el frontend.
 INJECTED_TYPES = ("State<", "AppHandle", "Window", "WebviewWindow")
@@ -227,19 +228,23 @@ class DestructiveConfirmationTests(unittest.TestCase):
         return balanced_block(source, brace, "{", "}")
 
     def test_confirmation_is_asked_before_it_is_asserted(self) -> None:
-        app_source = APP_TSX.read_text(encoding="utf-8")
+        frontend_sources = [
+            APP_TSX.read_text(encoding="utf-8"),
+            WORKFLOW_STUDIO_TSX.read_text(encoding="utf-8"),
+        ]
         unconfirmed = []
         for method in self.platform_methods_that_assert_confirmation():
             call_sites = [
-                match.start()
-                for match in re.finditer(rf"platform\.{method}\(", app_source)
+                (source, match.start())
+                for source in frontend_sources
+                for match in re.finditer(rf"platform\.{method}\(", source)
             ]
             self.assertTrue(
                 call_sites,
                 f"platform.{method} afirma una confirmación pero nadie lo llama",
             )
-            for position in call_sites:
-                body = self.enclosing_function_body(app_source, position).lower()
+            for source, position in call_sites:
+                body = self.enclosing_function_body(source, position).lower()
                 if not any(marker in body for marker in self.CONFIRMATION_MARKERS):
                     unconfirmed.append(method)
         self.assertEqual(

@@ -3,6 +3,7 @@ import type {
   BootstrapReport,
   AttachmentView,
   AuditEventView,
+  ApiCredentialStatus,
   AuthorizedFolderView,
   BrokerCredentialStatus,
   BrokerDiagnostic,
@@ -16,6 +17,8 @@ import type {
   CustomGptPreview,
   CustomGptVersionView,
   CustomGptView,
+  CustomGptApiActionPreview,
+  CustomGptApiActionTestResult,
   ExportPathSelection,
   ExportReport,
   LocalTaskSnapshot,
@@ -79,6 +82,18 @@ export const platform = {
   },
   clearBrokerCredential(): Promise<BrokerCredentialStatus> {
     return invoke<BrokerCredentialStatus>("clear_broker_credential", {
+      confirmed: true
+    });
+  },
+  listApiCredentials(): Promise<ApiCredentialStatus[]> {
+    return invoke<ApiCredentialStatus[]>("list_api_credentials");
+  },
+  setApiCredential(name: string, secret: string): Promise<ApiCredentialStatus[]> {
+    return invoke<ApiCredentialStatus[]>("set_api_credential", { name, secret });
+  },
+  clearApiCredential(name: string): Promise<ApiCredentialStatus[]> {
+    return invoke<ApiCredentialStatus[]>("clear_api_credential", {
+      name,
       confirmed: true
     });
   },
@@ -400,6 +415,12 @@ export const platform = {
   listProjects(): Promise<ProjectSummary[]> {
     return invoke<ProjectSummary[]>("list_projects");
   },
+  pickGptReadFolder(): Promise<AuthorizedFolderView | null> {
+    return invoke<AuthorizedFolderView | null>("pick_gpt_read_folder");
+  },
+  pickGptModifyFolder(): Promise<AuthorizedFolderView | null> {
+    return invoke<AuthorizedFolderView | null>("pick_gpt_modify_folder");
+  },
   createScheduledWorkflow(
     name: string,
     workflowId: string,
@@ -475,7 +496,9 @@ export const platform = {
     toolPermissions: CustomGptView["toolPermissions"],
     preferredModel: string | null,
     defaultProjectId: string | null,
-    executionProfile: CustomGptView["executionProfile"]
+    executionProfile: CustomGptView["executionProfile"],
+    contextProfile: CustomGptView["contextProfile"]
+    ,apiActions: CustomGptView["apiActions"]
   ): Promise<CustomGptView> {
     return invoke<CustomGptView>("create_custom_gpt", {
       name,
@@ -486,7 +509,9 @@ export const platform = {
       toolPermissions,
       preferredModel,
       defaultProjectId,
-      executionProfile
+      executionProfile,
+      contextProfile
+      ,apiActions
     });
   },
   listCustomGptVersions(customGptId: string): Promise<CustomGptVersionView[]> {
@@ -505,6 +530,25 @@ export const platform = {
   previewCustomGpt(customGptId: string): Promise<CustomGptPreview> {
     return invoke<CustomGptPreview>("preview_custom_gpt", { customGptId });
   },
+  previewCustomGptApiAction(
+    action: CustomGptView["apiActions"][number],
+    sampleValues: Record<string, string | number | boolean>
+  ): Promise<CustomGptApiActionPreview> {
+    return invoke<CustomGptApiActionPreview>("preview_custom_gpt_api_action", {
+      action,
+      sampleValues
+    });
+  },
+  testCustomGptApiAction(
+    action: CustomGptView["apiActions"][number],
+    sampleValues: Record<string, string | number | boolean>
+  ): Promise<CustomGptApiActionTestResult> {
+    return invoke<CustomGptApiActionTestResult>("test_custom_gpt_api_action", {
+      action,
+      sampleValues,
+      confirmed: true
+    });
+  },
   duplicateCustomGpt(customGptId: string): Promise<CustomGptView> {
     return invoke<CustomGptView>("duplicate_custom_gpt", {
       customGptId,
@@ -521,7 +565,9 @@ export const platform = {
     toolPermissions: CustomGptView["toolPermissions"],
     preferredModel: string | null,
     defaultProjectId: string | null,
-    executionProfile: CustomGptView["executionProfile"]
+    executionProfile: CustomGptView["executionProfile"],
+    contextProfile: CustomGptView["contextProfile"]
+    ,apiActions: CustomGptView["apiActions"]
   ): Promise<CustomGptView> {
     return invoke<CustomGptView>("update_custom_gpt", {
       customGptId,
@@ -533,7 +579,9 @@ export const platform = {
       toolPermissions,
       preferredModel,
       defaultProjectId,
-      executionProfile
+      executionProfile,
+      contextProfile
+      ,apiActions
     });
   },
   pickCustomGptImportPath(): Promise<string | null> {

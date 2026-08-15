@@ -36,12 +36,12 @@ La evidencia procede del código local (`app/main.py`, `app/schemas.py`,
 
 | Capacidad | Estado | Evidencia local |
 |---|---|---|
-| Contrato | Revisado estáticamente | contrato cliente 2.7 y comprobación reproducible de OpenAPI |
+| Contrato | Revisado estáticamente | contrato cliente 2.8 y comprobación reproducible de OpenAPI |
 | Crear tarea | Revisado estáticamente | `POST /api/v1/tasks`, 202 o 200 por idempotencia |
 | Consultar tarea | Revisado estáticamente | `GET /api/v1/tasks/{task_id}` |
 | Cancelar | Revisado estáticamente | `DELETE /api/v1/tasks/{task_id}` |
 | Reanudar tools | Revisado estáticamente | `POST /api/v1/tasks/{task_id}/tool_results` |
-| Estados | Revisado estáticamente | `waiting_for_memory` continúa sondeándose y se explica como espera recuperable; solo `completed`, `failed` y `cancelled` son terminales |
+| Estados | Revisado estáticamente | `waiting_for_memory` y `waiting_for_dependencies` continúan sondeándose y se explican como esperas recuperables; solo `completed`, `failed` y `cancelled` son terminales |
 | Ingesta | Revisado estáticamente | `POST /api/v1/files`, polling y Markdown |
 | Modelos/capacidades | Revisado estáticamente | endpoints `/models`, `/models/availability`, `/models/context`, `/capabilities` |
 | Embeddings | Revisado estáticamente | `inference_kind=embedding`, estrategia `single`, salida JSON |
@@ -49,7 +49,7 @@ La evidencia procede del código local (`app/main.py`, `app/schemas.py`,
 | Idempotencia | Revisado estáticamente | `idempotency_key` + hash; conflicto HTTP 409 |
 | Sandbox | Revisado estáticamente | `run_code` opt-in y `SANDBOX_DISABLED` si no está habilitado |
 | OpenAPI real | Verificado manualmente (alcance) | endpoint consultado por el probe en A9 |
-| Integración real | Pendiente de repetir con 2.7 | ejecutar el diagnóstico con el Broker actualizado y su token en memoria |
+| Integración real | Pendiente de repetir con 2.8 | ejecutar el diagnóstico con el Broker actualizado y su token en memoria |
 
 La semántica de cancelación observada es una solicitud de cancelación. No se
 presupone que una operación remota en curso termine de forma instantánea.
@@ -63,7 +63,7 @@ React (vista y estado efímero)
 Rust application core
   ├─ casos de uso y permisos
   ├─ scheduler de polling / leases
-  ├─ adaptador AI Broker 2.7
+  ├─ adaptador AI Broker 2.8
   ├─ repositorios SQLite
   ├─ exportador atómico al vault
   └─ gestor del sidecar Python
@@ -131,7 +131,7 @@ ChatyGPT/
 │           └─ lib.rs            # composition root y comandos
 ├─ contracts/
 │  ├─ broker/2.6/                # compatibilidad histórica
-│  └─ broker/2.7/                # fixtures contractuales vigentes
+│  └─ broker/2.8/                # fixtures contractuales vigentes
 ├─ docs/
 ├─ packages/                     # reservado para contratos UI compartidos
 ├─ services/
@@ -191,6 +191,10 @@ Decisiones de ciclo de vida:
 - **Implementado en el slice durable:** persistir `broker_task` antes de `POST`.
 - **Implementado:** polling con backoff, jitter y clasificación de errores.
 - **Implementado:** cancelación como solicitud, sin prometer inmediatez.
+- **Implementado y verificado:** validación del núcleo contractual de cada
+  estado remoto antes de persistirlo, incluida correspondencia de `task_id`,
+  progreso, llamadas pendientes y errores reintentables; tolera extensiones
+  aditivas y fases intermedias futuras.
 - Pendiente: fixture automatizado desde el binario Tauri y lease multiworker.
 
 ### 0C. Recuperación
@@ -386,8 +390,9 @@ snapshot lo materializa como fuente `custom_gpt`. En los turnos con recuperació
 semántica, esa copia se guarda antes de solicitar el embedding y se reutiliza al
 crear la tarea de chat: editar el GPT durante la búsqueda no cambia el turno.
 La configuración del GPT no activa herramientas automáticamente. Cada versión
-materializa una matriz en `gpt_tool_permissions` para `run_code` y
-`rename_conversation`, con efectos `deny` o `confirm`. La ausencia de una fila
+materializa una matriz en `gpt_tool_permissions` para `run_code`,
+`rename_conversation`, acceso autorizado a archivos y
+`create_scheduled_tasks`, con efectos `deny` o `confirm`. La ausencia de una fila
 equivale a denegación. `confirm` solo permite ofrecer la capacidad: Código
 aislado conserva el consentimiento de un turno y Renombrar conversación conserva
 la aprobación individual de la llamada.
@@ -396,6 +401,19 @@ La matriz se copia dentro del snapshot del GPT al preparar la tarea. ChatyGPT la
 comprueba al construir la petición y de nuevo antes de ejecutar una herramienta
 devuelta por el Broker. Una edición posterior no puede ampliar los permisos de
 una tarea antigua.
+
+Un GPT solo recibe `create_scheduled_task` cuando el permiso está en `confirm`,
+las herramientas están activas y el mensaje pide expresamente una fecha u hora.
+La llamada no acepta una conversación elegida por el modelo: queda limitada al
+chat actual, muestra nombre, instrucción, fecha y zona horaria antes de confirmar
+y crea una tarea `once`. Su ID deriva de `tool_call_id`, de modo que repetir una
+confirmación tras un cierre inesperado no duplica la automatización.
+
+La lectura y modificación de archivos usan concesiones de carpeta separadas.
+El modelo solo maneja identificadores opacos y rutas relativas. Leer un texto
+devuelve su SHA-256; reemplazarlo exige esa misma huella, vuelve a comprobarla y
+rechaza cambios concurrentes antes de realizar una escritura atómica. No se
+crean ni borran archivos y cada operación se confirma por separado.
 
 La misma configuración versionada conserva hasta seis iniciadores de
 conversación. Son ayudas de interfaz: al pulsarlos solo rellenan el compositor,
@@ -408,6 +426,12 @@ y comunica los elementos sensibles, desactivados y documentales que dejó fuera.
 La importación rechaza campos desconocidos, archivos mayores de 256 KB y
 versiones no compatibles; siempre crea un GPT local nuevo, con sus capacidades
 denegadas y todo conocimiento recibido desactivado hasta la revisión humana.
+
+El perfil de contexto del GPT también forma parte de la versión. `focused`,
+`balanced` y `broad` aplican presupuestos cerrados sobre ventana reciente,
+memoria y fragmentos documentales. La ausencia del campo en una versión antigua
+equivale a `balanced`, preservando los límites históricos. Los flujos congelan
+el perfil al publicar y la petición registra el valor efectivo en sus metadatos.
 
 El conocimiento textual propio de un GPT reutiliza `memory_items.custom_gpt_id`,
 pero no forma parte de `memory_overview`: la memoria global y de proyecto sigue
@@ -464,6 +488,14 @@ tablas, citas y bloques de código son visuales, mientras que el HTML incluido e
 una respuesta se muestra como texto y solo los enlaces HTTP(S) sin credenciales
 se convierten en enlaces externos. La persistencia, el contexto enviado al
 Broker y las exportaciones siguen utilizando el Markdown original.
+
+Las conversaciones largas aplican además una ventana progresiva de presentación:
+al abrirlas se renderizan los 80 mensajes más recientes y la persona puede
+incorporar el historial anterior en bloques de hasta 50. Al anteponer un bloque
+se conserva la posición visual; el seguimiento automático de respuestas nuevas
+sigue obedeciendo a si la persona permanecía al final del chat. Este corte reduce
+el número de elementos React y el coste de pintura, pero no pagina todavía la
+lectura de SQLite: `get_conversation` continúa devolviendo el historial completo.
 
 La captura de pantalla se inicia únicamente desde un gesto explícito del usuario
 mediante `getDisplayMedia`, por lo que WebView2 presenta su selector de pantalla
@@ -662,6 +694,10 @@ envía por lotes cada cinco segundos, de modo que medir no se convierte en un
 coste de rendimiento. El arranque se cuenta desde que la vista web empieza a
 cargar hasta que hay navegación y primera conversación en pantalla: no incluye
 la creación del proceso ni de WebView2, que el frontend no puede observar. La
+quinta métrica mide el envío confirmado hasta el primer fotograma que muestra
+**Preparando y guardando el mensaje…**; no espera la aceptación HTTP ni la
+respuesta del modelo, por lo que representa únicamente la reacción visible de
+la aplicación. La
 respuesta de la interfaz procede de la API de Event Timing filtrada por
 `interactionId`, cuyo umbral mínimo de 16 ms deja fuera las interacciones más
 rápidas; los percentiles resultantes son por tanto un límite superior y nunca
@@ -697,7 +733,7 @@ propia interfaz.
    llamada con su identificador, su nombre y sus argumentos ya deserializados
    —que es el detalle por subtarea— y `progress.agent_iteration` dice por qué
    vuelta del bucle va. El contrato queda fijado en
-   `contracts/broker/2.7/task-state.response.json`, copia literal del esquema
+   `contracts/broker/2.8/task-state.response.json`, copia del núcleo estable del esquema
    que publica el Broker, y validado por
    `tests/test_broker_task_state_contract.py`.
 4. Confirmar modelos mínimos disponibles para el smoke test sin coste cloud.

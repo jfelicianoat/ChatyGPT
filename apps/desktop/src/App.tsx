@@ -30,6 +30,7 @@ import {
   isTerminalTask,
   memoryUpdateNotice,
   projectFilesAvailableToConversation,
+  progressiveConversationWindow,
   shouldApplyContextLoad,
   shouldFollowConversationScroll,
   shouldOfferSandboxForPrompt,
@@ -50,6 +51,7 @@ import {
   type BrokerCredentialStatus,
   type AttachmentView,
   type AuditEventView,
+  type ApiCredentialStatus,
   type AuthorizedFolderView,
   type BrokerDiagnostic,
   type ContextSnapshotView,
@@ -59,9 +61,12 @@ import {
   type ComposerErrorGuidance,
   type ConversationView,
   type CustomGptPreview,
+  type CustomGptApiAction,
   type CustomGptIcon,
   type CustomGptVersionView,
   type CustomGptView,
+  type CustomGptApiActionPreview,
+  type CustomGptApiActionTestResult,
   type LocalTaskSnapshot,
   type MemoryItemView,
   type MemoryOverview,
@@ -160,8 +165,12 @@ type ScreenCapturePreview = CapturedScreenFrame & {
 
 type WorkspaceDestination = "chats" | "projects" | "gpts" | "workflows" | "automations" | "settings";
 
+const INITIAL_VISIBLE_MESSAGES = 80;
+const EARLIER_MESSAGE_PAGE_SIZE = 50;
+
 export function App() {
   const messageListRef = useRef<HTMLDivElement>(null);
+  const prependScrollRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const activeModalRef = useRef<HTMLElement>(null);
@@ -276,6 +285,10 @@ export function App() {
   const [workspaceDestination, setWorkspaceDestination] =
     useState<WorkspaceDestination>("chats");
   const [conversation, setConversation] = useState<Loadable<ConversationView> | null>(null);
+  const [messageWindow, setMessageWindow] = useState({
+    conversationId: null as string | null,
+    limit: INITIAL_VISIBLE_MESSAGES
+  });
   const [contextInspectorOpen, setContextInspectorOpen] = useState(true);
   const [activeTurn, setActiveTurn] = useState<Loadable<LocalTaskSnapshot> | null>(null);
   const [activeTurnConversationId, setActiveTurnConversationId] = useState<string | null>(null);
@@ -338,9 +351,22 @@ export function App() {
   const [customGptStartersText, setCustomGptStartersText] = useState("");
   const [customGptRunCodePermission, setCustomGptRunCodePermission] = useState(false);
   const [customGptRenamePermission, setCustomGptRenamePermission] = useState(false);
+  const [customGptFolderReadPermission, setCustomGptFolderReadPermission] = useState(false);
+  const [customGptFileModifyPermission, setCustomGptFileModifyPermission] = useState(false);
+  const [customGptSchedulePermission, setCustomGptSchedulePermission] = useState(false);
+  const [customGptExternalApiPermission, setCustomGptExternalApiPermission] = useState(false);
+  const [customGptApiActions, setCustomGptApiActions] = useState<CustomGptView["apiActions"]>([]);
+  const [customGptApiSamples, setCustomGptApiSamples] = useState<Record<number, Record<string, string>>>({});
+  const [customGptApiPreviews, setCustomGptApiPreviews] = useState<Record<number, { value?: CustomGptApiActionPreview; error?: string }>>({});
+  const [customGptApiTests, setCustomGptApiTests] = useState<Record<number, { loading?: boolean; value?: CustomGptApiActionTestResult; error?: string }>>({});
+  const [apiCredentials, setApiCredentials] = useState<Loadable<ApiCredentialStatus[]>>({ state: "loading" });
+  const [apiCredentialDrafts, setApiCredentialDrafts] = useState<Record<number, string>>({});
+  const [apiCredentialBusy, setApiCredentialBusy] = useState<number | null>(null);
   const [customGptPreferredModel, setCustomGptPreferredModel] = useState("");
   const [customGptDefaultProject, setCustomGptDefaultProject] = useState("");
   const [customGptOwnExecution, setCustomGptOwnExecution] = useState(false);
+  const [customGptContextProfile, setCustomGptContextProfile] =
+    useState<CustomGptView["contextProfile"]>("balanced");
   const [customGptDataClassification, setCustomGptDataClassification] =
     useState<ConversationExecutionPreferences["dataClassification"]>("internal");
   const [customGptStrategy, setCustomGptStrategy] =
@@ -402,6 +428,15 @@ export function App() {
     (currentTurn?.state === "ready" && isTaskBlockingConversation(currentTurn.value));
   const currentProgress =
     currentTurn?.state === "ready" ? taskProgressSummary(currentTurn.value) : null;
+  const openConversationId = conversation?.state === "ready" ? conversation.value.id : null;
+  const effectiveMessageLimit =
+    messageWindow.conversationId === openConversationId
+      ? messageWindow.limit
+      : INITIAL_VISIBLE_MESSAGES;
+  const progressiveMessages =
+    conversation?.state === "ready"
+      ? progressiveConversationWindow(conversation.value.messages, effectiveMessageLimit)
+      : { visibleItems: [], hiddenCount: 0 };
   const selectedCustomGpt =
     conversation?.state === "ready" &&
     customGpts.state === "ready" &&
@@ -429,10 +464,28 @@ export function App() {
       : "";
 
   useLayoutEffect(() => {
+    const pending = prependScrollRef.current;
+    const messageList = messageListRef.current;
+    if (!pending || !messageList) return;
+    messageList.scrollTop =
+      pending.scrollTop + Math.max(0, messageList.scrollHeight - pending.scrollHeight);
+    prependScrollRef.current = null;
+  }, [effectiveMessageLimit]);
+
+  useLayoutEffect(() => {
     const messageList = messageListRef.current;
     if (!messageList || !followConversationScrollRef.current) return;
     messageList.scrollTop = messageList.scrollHeight;
   }, [conversationScrollSignal]);
+
+  useEffect(() => {
+    if (messageWindow.conversationId === openConversationId) return;
+    prependScrollRef.current = null;
+    setMessageWindow({
+      conversationId: openConversationId,
+      limit: INITIAL_VISIBLE_MESSAGES
+    });
+  }, [openConversationId, messageWindow.conversationId]);
 
   useEffect(
     () => () => {
@@ -599,6 +652,11 @@ export function App() {
     } catch (error) {
       setBrokerCredential({ state: "error", message: describeError(error) });
     }
+    try {
+      setApiCredentials({ state: "ready", value: await platform.listApiCredentials() });
+    } catch (error) {
+      setApiCredentials({ state: "error", message: describeError(error) });
+    }
   };
 
   const saveBrokerCredential = async () => {
@@ -647,7 +705,7 @@ export function App() {
     // es una decisión de la persona, no un trámite que el frontend dé por hecho.
     if (
       !window.confirm(
-        "¿Revocar la autorización de escritura de esta carpeta? Las próximas exportaciones volverán a pedir permiso."
+        "¿Revocar todos los permisos de esta carpeta? Las próximas exportaciones, lecturas o modificaciones volverán a pedir autorización."
       )
     ) {
       return;
@@ -795,6 +853,11 @@ export function App() {
         } catch (error) {
           setAuthorizedFolders({ state: "error", message: describeError(error) });
         }
+        try {
+          setApiCredentials({ state: "ready", value: await platform.listApiCredentials() });
+        } catch (error) {
+          setApiCredentials({ state: "error", message: describeError(error) });
+        }
         if (items[0]) {
           await loadConversation(items[0].id, true);
         }
@@ -878,6 +941,16 @@ export function App() {
       window.clearInterval(timer);
       void flush();
     };
+  }, [bootstrap.state, conversation === null]);
+
+  /** Al volver a Inicio/Ajustes, relee las muestras ya persistidas. */
+  useEffect(() => {
+    if (bootstrap.state !== "ready" || conversation !== null) return;
+    platform.getPerformanceReport()
+      .then((value) => setPerformanceReport({ state: "ready", value }))
+      .catch((error) =>
+        setPerformanceReport({ state: "error", message: describeError(error) })
+      );
   }, [bootstrap.state, conversation === null]);
 
   useEffect(() => {
@@ -1692,9 +1765,19 @@ export function App() {
     setCustomGptStartersText("");
     setCustomGptRunCodePermission(false);
     setCustomGptRenamePermission(false);
+    setCustomGptFolderReadPermission(false);
+    setCustomGptFileModifyPermission(false);
+    setCustomGptSchedulePermission(false);
+    setCustomGptExternalApiPermission(false);
+    setCustomGptApiActions([]);
+    setCustomGptApiSamples({});
+    setCustomGptApiPreviews({});
+    setCustomGptApiTests({});
+    setApiCredentialDrafts({});
     setCustomGptPreferredModel("");
     setCustomGptDefaultProject("");
     setCustomGptOwnExecution(false);
+    setCustomGptContextProfile("balanced");
     setCustomGptDataClassification("internal");
     setCustomGptStrategy("single");
     setCustomGptPreset("fast");
@@ -1791,9 +1874,25 @@ export function App() {
     setCustomGptStartersText(item.conversationStarters.join("\n"));
     setCustomGptRunCodePermission(item.toolPermissions.runCode === "confirm");
     setCustomGptRenamePermission(item.toolPermissions.renameConversation === "confirm");
+    setCustomGptFolderReadPermission(item.toolPermissions.readAuthorizedFolders === "confirm");
+    setCustomGptFileModifyPermission(item.toolPermissions.modifyAuthorizedFiles === "confirm");
+    setCustomGptSchedulePermission(item.toolPermissions.createScheduledTasks === "confirm");
+    setCustomGptExternalApiPermission(item.toolPermissions.callExternalApis === "confirm");
+    setCustomGptApiActions((item.apiActions ?? []).map((action) => ({
+      ...action,
+      authMode: action.authMode ?? "none",
+      parameters: action.parameters.length > 0
+        ? action.parameters
+        : (action.queryParameters ?? []).map((name) => ({ name, type: "string" as const, required: true, location: "query" as const }))
+    })));
+    setCustomGptApiSamples({});
+    setCustomGptApiPreviews({});
+    setCustomGptApiTests({});
+    setApiCredentialDrafts({});
     setCustomGptPreferredModel(item.preferredModel ?? "");
     setCustomGptDefaultProject(item.defaultProjectId ?? "");
     setCustomGptOwnExecution(item.executionProfile !== null);
+    setCustomGptContextProfile(item.contextProfile ?? "balanced");
     setCustomGptDataClassification(item.executionProfile?.dataClassification ?? "internal");
     setCustomGptStrategy(item.executionProfile?.strategy ?? "single");
     setCustomGptPreset(item.executionProfile?.preset ?? "fast");
@@ -1842,11 +1941,17 @@ export function App() {
             conversationStarters,
             {
               runCode: customGptRunCodePermission ? "confirm" : "deny",
-              renameConversation: customGptRenamePermission ? "confirm" : "deny"
+              renameConversation: customGptRenamePermission ? "confirm" : "deny",
+              readAuthorizedFolders: customGptFolderReadPermission ? "confirm" : "deny",
+              modifyAuthorizedFiles: customGptFileModifyPermission ? "confirm" : "deny",
+              createScheduledTasks: customGptSchedulePermission ? "confirm" : "deny",
+              callExternalApis: customGptExternalApiPermission ? "confirm" : "deny"
             },
             customGptPreferredModel.trim() || null,
             customGptDefaultProject || null,
-            executionProfile
+            executionProfile,
+            customGptContextProfile
+            ,customGptApiActions
           )
         : await platform.createCustomGpt(
             customGptName,
@@ -1856,11 +1961,17 @@ export function App() {
             conversationStarters,
             {
               runCode: customGptRunCodePermission ? "confirm" : "deny",
-              renameConversation: customGptRenamePermission ? "confirm" : "deny"
+              renameConversation: customGptRenamePermission ? "confirm" : "deny",
+              readAuthorizedFolders: customGptFolderReadPermission ? "confirm" : "deny",
+              modifyAuthorizedFiles: customGptFileModifyPermission ? "confirm" : "deny",
+              createScheduledTasks: customGptSchedulePermission ? "confirm" : "deny",
+              callExternalApis: customGptExternalApiPermission ? "confirm" : "deny"
             },
             customGptPreferredModel.trim() || null,
             customGptDefaultProject || null,
-            executionProfile
+            executionProfile,
+            customGptContextProfile
+            ,customGptApiActions
           );
       setCustomGpts({ state: "ready", value: await platform.listCustomGpts() });
       setCustomGptNotice(
@@ -2234,6 +2345,144 @@ export function App() {
     }
   };
 
+  const apiActionSampleValues = (actionIndex: number) => {
+    const action = customGptApiActions[actionIndex];
+    const raw = customGptApiSamples[actionIndex] ?? {};
+    const sampleValues: Record<string, string | number | boolean> = {};
+    for (const parameter of action.parameters) {
+      const value = raw[parameter.name];
+      if (!parameter.required && !value?.trim()) continue;
+      if (parameter.type === "number") {
+        const parsed = Number(value);
+        if (!Number.isFinite(parsed)) {
+          setCustomGptApiPreviews((current) => ({ ...current, [actionIndex]: { error: `${parameter.name} debe ser un número.` } }));
+          return null;
+        }
+        sampleValues[parameter.name] = parsed;
+      } else if (parameter.type === "boolean") {
+        sampleValues[parameter.name] = value === "true";
+      } else {
+        sampleValues[parameter.name] = value ?? "";
+      }
+    }
+    return sampleValues;
+  };
+
+  const previewApiAction = async (actionIndex: number) => {
+    const action = customGptApiActions[actionIndex];
+    const sampleValues = apiActionSampleValues(actionIndex);
+    if (!sampleValues) return;
+    try {
+      const value = await platform.previewCustomGptApiAction(action, sampleValues);
+      setCustomGptApiPreviews((current) => ({ ...current, [actionIndex]: { value } }));
+    } catch (error) {
+      setCustomGptApiPreviews((current) => ({ ...current, [actionIndex]: { error: describeError(error) } }));
+    }
+  };
+
+  const testApiAction = async (actionIndex: number) => {
+    const action = customGptApiActions[actionIndex];
+    const sampleValues = apiActionSampleValues(actionIndex);
+    if (!sampleValues) return;
+    let preview: CustomGptApiActionPreview;
+    try {
+      preview = await platform.previewCustomGptApiAction(action, sampleValues);
+      setCustomGptApiPreviews((current) => ({ ...current, [actionIndex]: { value: preview } }));
+    } catch (error) {
+      setCustomGptApiTests((current) => ({ ...current, [actionIndex]: { error: describeError(error) } }));
+      return;
+    }
+    const dataSummary = preview.dataSent.length === 0
+      ? "No se enviarán parámetros."
+      : `Se enviarán ${preview.dataSent.length} parámetro(s).`;
+    const credentialSummary = (action.authMode ?? "none") === "none"
+      ? "No se usará ninguna credencial."
+      : `Se usará la credencial protegida «${action.credentialRef}». Su valor no se mostrará ni se enviará al modelo.`;
+    if (!window.confirm(
+      `¿Conectar ahora con ${preview.destination}?\n\n${dataSummary}\n${credentialSummary}\nMétodo: ${preview.method}\n\nEsta prueba abre la API una sola vez y no contacta con Broker AI.`
+    )) return;
+    setCustomGptApiTests((current) => ({ ...current, [actionIndex]: { loading: true } }));
+    try {
+      const value = await platform.testCustomGptApiAction(action, sampleValues);
+      setCustomGptApiTests((current) => ({ ...current, [actionIndex]: { value } }));
+    } catch (error) {
+      setCustomGptApiTests((current) => ({ ...current, [actionIndex]: { error: describeError(error) } }));
+    }
+  };
+
+  const saveApiCredential = async (actionIndex: number) => {
+    const action = customGptApiActions[actionIndex];
+    const name = action.credentialRef?.trim() ?? "";
+    const secret = apiCredentialDrafts[actionIndex]?.trim() ?? "";
+    if (!name || !secret) {
+      setCustomGptApiTests((current) => ({
+        ...current,
+        [actionIndex]: { error: "Indica un alias y pega la clave antes de guardarla." }
+      }));
+      return;
+    }
+    setApiCredentialBusy(actionIndex);
+    try {
+      setApiCredentials({ state: "ready", value: await platform.setApiCredential(name, secret) });
+      setApiCredentialDrafts((current) => ({ ...current, [actionIndex]: "" }));
+      setCustomGptApiTests((current) => ({
+        ...current,
+        [actionIndex]: { error: undefined }
+      }));
+    } catch (error) {
+      setCustomGptApiTests((current) => ({ ...current, [actionIndex]: { error: describeError(error) } }));
+    } finally {
+      setApiCredentialBusy(null);
+    }
+  };
+
+  const removeApiCredential = async (actionIndex: number) => {
+    const name = customGptApiActions[actionIndex].credentialRef?.trim();
+    if (!name || !window.confirm(`¿Retirar la credencial protegida «${name}» de este equipo? Las acciones que la usen dejarán de funcionar hasta que vuelvas a guardarla.`)) return;
+    setApiCredentialBusy(actionIndex);
+    try {
+      setApiCredentials({ state: "ready", value: await platform.clearApiCredential(name) });
+    } catch (error) {
+      setCustomGptApiTests((current) => ({ ...current, [actionIndex]: { error: describeError(error) } }));
+    } finally {
+      setApiCredentialBusy(null);
+    }
+  };
+
+  const authorizeGptReadFolder = async () => {
+    setFolderBusy("new-read-folder");
+    try {
+      const selected = await platform.pickGptReadFolder();
+      if (selected) {
+        setAuthorizedFolders({
+          state: "ready",
+          value: await platform.listAuthorizedFolders()
+        });
+      }
+    } catch (error) {
+      setAuthorizedFolders({ state: "error", message: describeError(error) });
+    } finally {
+      setFolderBusy(null);
+    }
+  };
+
+  const authorizeGptModifyFolder = async () => {
+    setFolderBusy("new-modify-folder");
+    try {
+      const selected = await platform.pickGptModifyFolder();
+      if (selected) {
+        setAuthorizedFolders({
+          state: "ready",
+          value: await platform.listAuthorizedFolders()
+        });
+      }
+    } catch (error) {
+      setAuthorizedFolders({ state: "error", message: describeError(error) });
+    } finally {
+      setFolderBusy(null);
+    }
+  };
+
   const openWorkspaceDestination = (destination: WorkspaceDestination) => {
     setWorkspaceDestination(destination);
     setConversation(null);
@@ -2310,8 +2559,28 @@ export function App() {
     }
   };
 
+  const revealEarlierMessages = () => {
+    if (conversation?.state !== "ready" || progressiveMessages.hiddenCount === 0) return;
+    const messageList = messageListRef.current;
+    if (messageList) {
+      prependScrollRef.current = {
+        scrollHeight: messageList.scrollHeight,
+        scrollTop: messageList.scrollTop
+      };
+    }
+    followConversationScrollRef.current = false;
+    setMessageWindow({
+      conversationId: conversation.value.id,
+      limit: Math.min(
+        conversation.value.messages.length,
+        effectiveMessageLimit + EARLIER_MESSAGE_PAGE_SIZE
+      )
+    });
+  };
+
   const sendTurn = async (sandboxOverride?: boolean, skipSandboxSuggestion = false) => {
     if (!canSend || conversation?.state !== "ready") return;
+    const visibleStartBeganAt = performance.now();
     setComposerError(null);
     const conversationId = conversation.value.id;
     const text = draft;
@@ -2368,6 +2637,14 @@ export function App() {
     setDraft("");
     setActiveTurn({ state: "loading" });
     setActiveTurnConversationId(conversationId);
+    const afterPaint = () => {
+      recordSample("remote_operation_start", performance.now() - visibleStartBeganAt);
+    };
+    if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(afterPaint);
+    } else {
+      window.setTimeout(afterPaint, 0);
+    }
     try {
       const attachmentIds = [...draftAttachmentIds];
       const task = await platform.sendChatTurn(
@@ -3470,6 +3747,15 @@ export function App() {
                 >
                   ＋
                 </button>
+                <button
+                  className="secondary"
+                  disabled={folderBusy === "new-modify-folder"}
+                  onClick={() => void authorizeGptModifyFolder()}
+                >
+                  {folderBusy === "new-modify-folder"
+                    ? "Abriendo selector…"
+                    : "Autorizar carpeta para modificar"}
+                </button>
               </div>
               <button
                 className={`project-link ${selectedProjectId === null ? "active" : ""}`}
@@ -3688,11 +3974,8 @@ export function App() {
           )}
         </header>
 
-        <main
-          className={`content ${conversation?.state === "ready" ? "conversation-content" : "home-content"}`}
-          id="main-content"
-          tabIndex={-1}
-        >
+        <main id="main-content" tabIndex={-1}
+          className={`content ${conversation?.state === "ready" ? "conversation-content" : "home-content"}`}>
           {exportNotice && <p className="export-notice">{exportNotice}</p>}
           {bootstrap.state === "ready" &&
             !recoveryNoticeDismissed &&
@@ -3763,7 +4046,15 @@ export function App() {
                     )}
                   </div>
                 )}
-                {conversation.value.messages.map((message) => (
+                {progressiveMessages.hiddenCount > 0 && (
+                  <div className="earlier-messages">
+                    <button className="secondary" onClick={revealEarlierMessages}>
+                      Mostrar {Math.min(EARLIER_MESSAGE_PAGE_SIZE, progressiveMessages.hiddenCount)} mensajes anteriores
+                    </button>
+                    <small>{progressiveMessages.hiddenCount} mensajes anteriores todavía ocultos</small>
+                  </div>
+                )}
+                {progressiveMessages.visibleItems.map((message) => (
                   <article key={message.id} className={`message ${message.role}`}>
                     <span className="message-role">
                       {message.role === "user" ? "Tú" : "ChatyGPT"}
@@ -3790,6 +4081,14 @@ export function App() {
                             <small>
                               No requiere ninguna acción: conserva su turno y continuará sola
                               cuando haya memoria disponible.
+                            </small>
+                          )}
+                        {currentTurn?.state === "ready" &&
+                          (currentTurn.value.progress.phase === "waiting_for_dependencies" ||
+                            currentTurn.value.remoteStatus === "waiting_for_dependencies") && (
+                            <small>
+                              La pregunta ya está encolada y empezará sola cuando termine el lote
+                              de indexación documental existente.
                             </small>
                           )}
                       </div>
@@ -3888,6 +4187,26 @@ export function App() {
                           {(message.consensusWarnings?.length ?? 0) > 0 && (
                             <small>{message.consensusWarnings?.join(" · ")}</small>
                           )}
+                        </div>
+                      )}
+                    {message.role === "assistant" &&
+                      (message.executionWarnings?.length ?? 0) > 0 && (
+                        <div className="consensus-warning" role="status">
+                          <strong>La respuesta se generó con advertencias</strong>
+                          <span>
+                            El Broker continuó, pero alguna dependencia no terminó como se esperaba.
+                          </span>
+                          <small>{message.executionWarnings?.join(" · ")}</small>
+                        </div>
+                      )}
+                    {message.role === "assistant" &&
+                      (message.unsupportedCitationUrls?.length ?? 0) > 0 && (
+                        <div className="consensus-warning" role="status">
+                          <strong>Hay enlaces que el agente no llegó a consultar</strong>
+                          <span>
+                            Comprueba estas referencias antes de confiar en ellas:
+                          </span>
+                          <small>{message.unsupportedCitationUrls?.join(" · ")}</small>
                         </div>
                       )}
                     {message.role === "assistant" &&
@@ -4805,6 +5124,11 @@ export function App() {
                     </button>
                   </div>
                 </div>
+                {currentTurn?.state === "loading" && (
+                  <p className="composer-status" role="status">
+                    <span aria-hidden="true" /> Preparando y guardando el mensaje…
+                  </p>
+                )}
                 {currentTurn?.state === "error" && (
                   <p className="error">{currentTurn.message}</p>
                 )}
@@ -5062,6 +5386,16 @@ export function App() {
                           : "compatibilidad explícita"}
                       </span>
                       <span>
+                        Dependencias entre tareas: {broker.value.taskDependencies
+                          ? "disponibles"
+                          : "no anunciadas"}
+                      </span>
+                      {(broker.value.agentSkillsEgress?.length ?? 0) > 0 && (
+                        <span>
+                          Herramientas con salida a Internet: {broker.value.agentSkillsEgress?.join(", ")}
+                        </span>
+                      )}
+                      <span>
                         Documentos largos: {broker.value.longContextMapReduce
                           ? "map-reduce disponible"
                           : "sin map-reduce"}
@@ -5279,12 +5613,20 @@ export function App() {
                 <div>
                   <span className="kicker">Permisos locales</span>
                   <h3 id="folders-heading">Carpetas autorizadas</h3>
-                  <p>
-                    ChatyGPT solo escribe en carpetas que hayas elegido en un selector de
-                    Windows. Al revocar una, la siguiente exportación volverá a pedirte el
-                    destino. Los archivos ya guardados no se tocan.
+                    <p>
+                    La escritura y la lectura para GPTs son permisos distintos. Leer siempre
+                    requiere una confirmación adicional en el chat y usa modelos locales.
                   </p>
                 </div>
+                <button
+                  className="secondary"
+                  disabled={folderBusy === "new-read-folder"}
+                  onClick={() => void authorizeGptReadFolder()}
+                >
+                  {folderBusy === "new-read-folder"
+                    ? "Abriendo selector…"
+                    : "Autorizar carpeta para lectura"}
+                </button>
                 {authorizedFolders.state === "loading" && <small>Cargando permisos…</small>}
                 {authorizedFolders.state === "error" && (
                   <small role="alert">{authorizedFolders.message}</small>
@@ -6327,6 +6669,246 @@ export function App() {
                         <small>Puede proponer un título; tendrás que aprobarlo.</small>
                       </span>
                     </label>
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={customGptFolderReadPermission}
+                        onChange={(event) =>
+                          setCustomGptFolderReadPermission(event.target.checked)}
+                        disabled={customGptBusy}
+                      />
+                      <span>
+                        Leer carpetas autorizadas
+                        <small>Puede listar y leer texto; confirmarás cada operación.</small>
+                      </span>
+                    </label>
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={customGptFileModifyPermission}
+                        onChange={(event) => {
+                          setCustomGptFileModifyPermission(event.target.checked);
+                          if (event.target.checked) setCustomGptFolderReadPermission(true);
+                        }}
+                        disabled={customGptBusy}
+                      />
+                      <span>
+                        Modificar archivos autorizados
+                        <small>Solo reemplaza texto existente y confirmarás cada cambio.</small>
+                      </span>
+                    </label>
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={customGptSchedulePermission}
+                        onChange={(event) =>
+                          setCustomGptSchedulePermission(event.target.checked)}
+                        disabled={customGptBusy}
+                      />
+                      <span>
+                        Crear tareas programadas
+                        <small>Puede proponer una ejecución futura; confirmarás antes de activarla.</small>
+                      </span>
+                    </label>
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={customGptExternalApiPermission}
+                        onChange={(event) =>
+                          setCustomGptExternalApiPermission(event.target.checked)}
+                        disabled={customGptBusy}
+                      />
+                      <span>
+                        Consultar APIs externas
+                        <small>Solo HTTPS GET público; puede usar una credencial protegida y confirmarás cada URL.</small>
+                      </span>
+                    </label>
+                    {customGptExternalApiPermission && (
+                      <div className="custom-gpt-api-actions">
+                        <strong>Acciones API configuradas</strong>
+                        <small>
+                          Define destinos reutilizables. Los parámetros se enviarán como consulta y verás una confirmación cada vez.
+                        </small>
+                        {customGptApiActions.map((action, index) => (
+                          <div className="custom-gpt-api-action" key={`${action.name}-${index}`}>
+                            <label>
+                              <span>Nombre interno</span>
+                              <input value={action.name} placeholder="consultar_tiempo" maxLength={40}
+                                onChange={(event) => setCustomGptApiActions((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, name: event.target.value } : item))} />
+                            </label>
+                            <label>
+                              <span>Descripción</span>
+                              <input value={action.description} placeholder="Consulta la previsión pública de una ciudad" maxLength={300}
+                                onChange={(event) => setCustomGptApiActions((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, description: event.target.value } : item))} />
+                            </label>
+                            <label>
+                              <span>URL HTTPS fija</span>
+                              <input value={action.url} placeholder="https://api.example.com/weather" spellCheck={false}
+                                onChange={(event) => setCustomGptApiActions((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, url: event.target.value } : item))} />
+                            </label>
+                            <section className="custom-gpt-api-credential" aria-label={`Autenticación de ${action.name || `la acción ${index + 1}`}`}>
+                              <div className="custom-gpt-api-credential-heading">
+                                <strong>Autenticación</strong>
+                                <small>La clave se cifra en este equipo y nunca se entrega al modelo.</small>
+                              </div>
+                              <label>
+                                <span>Tipo</span>
+                                <select
+                                  aria-label={`Tipo de autenticación de la acción ${index + 1}`}
+                                  value={action.authMode ?? "none"}
+                                  onChange={(event) => {
+                                    const authMode = event.currentTarget.value as CustomGptApiAction["authMode"];
+                                    setCustomGptApiActions((current) => current.map((item, itemIndex) =>
+                                      itemIndex === index
+                                        ? { ...item, authMode, credentialRef: authMode === "none" ? undefined : item.credentialRef }
+                                        : item
+                                    ));
+                                  }}
+                                >
+                                  <option value="none">Sin credencial</option>
+                                  <option value="bearer">Token Bearer</option>
+                                  <option value="api_key">Clave API (X-API-Key)</option>
+                                </select>
+                              </label>
+                              {(action.authMode ?? "none") !== "none" && (
+                                <>
+                                  <label>
+                                    <span>Alias de la credencial</span>
+                                    <input
+                                      value={action.credentialRef ?? ""}
+                                      list={`api-credential-aliases-${index}`}
+                                      placeholder="mi_servicio"
+                                      maxLength={40}
+                                      spellCheck={false}
+                                      autoComplete="off"
+                                      onChange={(event) => setCustomGptApiActions((current) => current.map((item, itemIndex) =>
+                                        itemIndex === index ? { ...item, credentialRef: event.target.value.toLowerCase() } : item
+                                      ))}
+                                    />
+                                    <datalist id={`api-credential-aliases-${index}`}>
+                                      {apiCredentials.state === "ready" && apiCredentials.value.map((credential) => (
+                                        <option value={credential.name} key={credential.name} />
+                                      ))}
+                                    </datalist>
+                                    <small>Entre 3 y 40 caracteres: empieza por letra y usa minúsculas, números o guion bajo.</small>
+                                  </label>
+                                  <label>
+                                    <span>Clave o token</span>
+                                    <input
+                                      type="password"
+                                      value={apiCredentialDrafts[index] ?? ""}
+                                      placeholder="Pega aquí la clave para guardarla"
+                                      autoComplete="new-password"
+                                      onChange={(event) => setApiCredentialDrafts((current) => ({ ...current, [index]: event.target.value }))}
+                                    />
+                                    <small>Por seguridad, ChatyGPT no vuelve a mostrar una clave guardada.</small>
+                                  </label>
+                                  <div className="custom-gpt-api-credential-actions">
+                                    <button
+                                      type="button"
+                                      className="ghost"
+                                      disabled={apiCredentialBusy === index || !(action.credentialRef?.trim()) || !(apiCredentialDrafts[index]?.trim())}
+                                      onClick={() => void saveApiCredential(index)}
+                                    >
+                                      {apiCredentialBusy === index ? "Guardando…" : "Guardar credencial"}
+                                    </button>
+                                    {apiCredentials.state === "ready" && apiCredentials.value.some((credential) => credential.name === action.credentialRef?.trim()) && (
+                                      <>
+                                        <span className="custom-gpt-api-credential-saved" role="status">Guardada y cifrada</span>
+                                        <button
+                                          type="button"
+                                          className="ghost danger"
+                                          disabled={apiCredentialBusy === index}
+                                          onClick={() => void removeApiCredential(index)}
+                                        >
+                                          Retirar del equipo
+                                        </button>
+                                      </>
+                                    )}
+                                  </div>
+                                </>
+                              )}
+                            </section>
+                            <div className="custom-gpt-api-parameters">
+                              <strong>Parámetros</strong>
+                              {action.parameters.map((parameter, parameterIndex) => (
+                                <div className="custom-gpt-api-parameter" key={`${parameter.name}-${parameterIndex}`}>
+                                  <input aria-label={`Nombre del parámetro ${parameterIndex + 1}`} value={parameter.name} placeholder="city" maxLength={40}
+                                    onChange={(event) => setCustomGptApiActions((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, parameters: item.parameters.map((value, valueIndex) => valueIndex === parameterIndex ? { ...value, name: event.target.value } : value) } : item))} />
+                                  <select aria-label={`Tipo del parámetro ${parameterIndex + 1}`} value={parameter.type}
+                                    onChange={(event) => setCustomGptApiActions((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, parameters: item.parameters.map((value, valueIndex) => valueIndex === parameterIndex ? { ...value, type: event.target.value as typeof value.type } : value) } : item))}>
+                                    <option value="string">Texto</option><option value="number">Número</option><option value="boolean">Sí / no</option>
+                                  </select>
+                                  <select aria-label={`Ubicación del parámetro ${parameterIndex + 1}`} value={parameter.location}
+                                    onChange={(event) => setCustomGptApiActions((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, parameters: item.parameters.map((value, valueIndex) => valueIndex === parameterIndex ? { ...value, location: event.target.value as typeof value.location, required: event.target.value === "path" ? true : value.required } : value) } : item))}>
+                                    <option value="query">Consulta</option><option value="path">Ruta</option>
+                                  </select>
+                                  <label><input type="checkbox" checked={parameter.required}
+                                    disabled={parameter.location === "path"}
+                                    onChange={(event) => setCustomGptApiActions((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, parameters: item.parameters.map((value, valueIndex) => valueIndex === parameterIndex ? { ...value, required: event.target.checked } : value) } : item))} /> Obligatorio</label>
+                                  <input aria-label={`Explicación del parámetro ${parameterIndex + 1}`} value={parameter.description ?? ""} placeholder="Ciudad que se quiere consultar" maxLength={160}
+                                    onChange={(event) => setCustomGptApiActions((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, parameters: item.parameters.map((value, valueIndex) => valueIndex === parameterIndex ? { ...value, description: event.target.value } : value) } : item))} />
+                                  <button type="button" className="ghost danger" onClick={() => setCustomGptApiActions((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, parameters: item.parameters.filter((_, valueIndex) => valueIndex !== parameterIndex) } : item))}>Quitar</button>
+                                </div>
+                              ))}
+                              <button type="button" className="ghost" disabled={action.parameters.length >= 8}
+                                onClick={() => setCustomGptApiActions((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, parameters: [...item.parameters, { name: "", type: "string", required: true, location: "query", description: "" }] } : item))}>+ Añadir parámetro</button>
+                            </div>
+                            <div className="custom-gpt-api-tester">
+                              <strong>Previsualizar llamada</strong>
+                              <small>No conecta con la API ni genera coste.</small>
+                              <div className="custom-gpt-api-samples">
+                                {action.parameters.map((parameter) => (
+                                  <label key={parameter.name || "parameter"}>
+                                    <span>{parameter.name || "Parámetro sin nombre"}{parameter.required ? " *" : ""}</span>
+                                    {parameter.type === "boolean" ? (
+                                      <select value={customGptApiSamples[index]?.[parameter.name] ?? "false"}
+                                        onChange={(event) => setCustomGptApiSamples((current) => ({ ...current, [index]: { ...current[index], [parameter.name]: event.target.value } }))}>
+                                        <option value="false">No</option><option value="true">Sí</option>
+                                      </select>
+                                    ) : (
+                                      <input type={parameter.type === "number" ? "number" : "text"}
+                                        value={customGptApiSamples[index]?.[parameter.name] ?? ""}
+                                        onChange={(event) => setCustomGptApiSamples((current) => ({ ...current, [index]: { ...current[index], [parameter.name]: event.target.value } }))} />
+                                    )}
+                                  </label>
+                                ))}
+                              </div>
+                              <div className="custom-gpt-api-test-actions">
+                                <button type="button" className="ghost" onClick={() => void previewApiAction(index)}>Previsualizar</button>
+                                <button type="button" className="ghost" disabled={customGptApiTests[index]?.loading}
+                                  onClick={() => void testApiAction(index)}>
+                                  {customGptApiTests[index]?.loading ? "Probando…" : "Probar conexión"}
+                                </button>
+                              </div>
+                              {customGptApiPreviews[index]?.error && <p className="error" role="alert">{customGptApiPreviews[index].error}</p>}
+                              {customGptApiPreviews[index]?.value && (
+                                <div className="custom-gpt-api-preview" role="status">
+                                  <span>{customGptApiPreviews[index].value?.method} · {customGptApiPreviews[index].value?.destination}</span>
+                                  <code>{customGptApiPreviews[index].value?.finalUrl}</code>
+                                  <small>{customGptApiPreviews[index].value?.dataSent.length ?? 0} dato(s) aparecerán en la confirmación.</small>
+                                </div>
+                              )}
+                              {customGptApiTests[index]?.error && <p className="error" role="alert">{customGptApiTests[index].error}</p>}
+                              {customGptApiTests[index]?.value && (
+                                <div className="custom-gpt-api-test-result" role="status">
+                                  <strong>Respuesta HTTP {customGptApiTests[index].value?.status}</strong>
+                                  <span>{customGptApiTests[index].value?.destination} · {customGptApiTests[index].value?.durationMs} ms</span>
+                                  {customGptApiTests[index].value?.contentType && <small>{customGptApiTests[index].value?.contentType}</small>}
+                                  <pre>{customGptApiTests[index].value?.body || "La API respondió sin contenido."}</pre>
+                                  {customGptApiTests[index].value?.truncated && <small>Vista recortada por seguridad.</small>}
+                                </div>
+                              )}
+                            </div>
+                            <button type="button" className="ghost danger" onClick={() => setCustomGptApiActions((current) => current.filter((_, itemIndex) => itemIndex !== index))}>Quitar acción</button>
+                          </div>
+                        ))}
+                        <button type="button" className="ghost" disabled={customGptApiActions.length >= 10}
+                          onClick={() => setCustomGptApiActions((current) => [...current, { name: "", description: "", url: "https://", parameters: [], authMode: "none" }])}>
+                          + Añadir acción API
+                        </button>
+                      </div>
+                    )}
                   </fieldset>
                   <fieldset className="custom-gpt-preferences">
                     <legend>Preferencias de ejecución</legend>
@@ -6360,6 +6942,24 @@ export function App() {
                     <small>
                       Solo se aplica a los chats que aún no pertenecen a ningún
                       proyecto; nunca mueve una conversación ya clasificada.
+                    </small>
+                    <label htmlFor="custom-gpt-context-profile">Cantidad de contexto</label>
+                    <select
+                      id="custom-gpt-context-profile"
+                      value={customGptContextProfile}
+                      onChange={(event) =>
+                        setCustomGptContextProfile(
+                          event.target.value as CustomGptView["contextProfile"]
+                        )}
+                      disabled={customGptBusy}
+                    >
+                      <option value="focused">Enfocado · menos contexto y respuestas más directas</option>
+                      <option value="balanced">Equilibrado · recomendado</option>
+                      <option value="broad">Amplio · más historial y documentos</option>
+                    </select>
+                    <small>
+                      Controla cuánto historial, conocimiento y fragmentos documentales puede
+                      recibir este GPT. No cambia el tamaño de los archivos originales.
                     </small>
                     <label className="custom-gpt-own-execution">
                       <input
@@ -6528,6 +7128,29 @@ export function App() {
                                   : "denegado"}
                               </span>
                               <span>
+                                Carpetas: {item.toolPermissions.readAuthorizedFolders === "confirm"
+                                  ? "confirmar cada lectura"
+                                  : "denegado"}
+                              </span>
+                              <span>
+                                Modificar archivos: {item.toolPermissions.modifyAuthorizedFiles === "confirm"
+                                  ? "confirmar cada cambio"
+                                  : "denegado"}
+                              </span>
+                              <span>
+                                Programar: {item.toolPermissions.createScheduledTasks === "confirm"
+                                  ? "confirmar cada tarea"
+                                  : "denegado"}
+                              </span>
+                              <span>
+                                APIs externas: {item.toolPermissions.callExternalApis === "confirm"
+                                  ? "confirmar cada consulta"
+                                  : "denegado"}
+                              </span>
+                              {item.apiActions.length > 0 && (
+                                <span>Acciones API: {item.apiActions.length}</span>
+                              )}
+                              <span>
                                 Ejecución: {item.executionProfile
                                   ? item.executionProfile.strategy === "mixture_of_agents"
                                     ? `varios modelos · ${item.executionProfile.preset === "slow" ? "profunda" : "rápida"}`
@@ -6535,6 +7158,13 @@ export function App() {
                                       ? "decide el Broker"
                                       : "una respuesta"
                                   : "ajustes del chat"}
+                              </span>
+                              <span>
+                                Contexto: {item.contextProfile === "focused"
+                                  ? "enfocado"
+                                  : item.contextProfile === "broad"
+                                    ? "amplio"
+                                    : "equilibrado"}
                               </span>
                             </div>
                           </div>
@@ -6635,6 +7265,13 @@ export function App() {
                                                 ? "decide el Broker"
                                                 : "una respuesta"
                                             : "ajustes del chat"}
+                                        </span>
+                                        <span>
+                                          Contexto: {version.contextProfile === "focused"
+                                            ? "enfocado"
+                                            : version.contextProfile === "broad"
+                                              ? "amplio"
+                                              : "equilibrado"}
                                         </span>
                                         <small>{version.instructions}</small>
                                       </div>
@@ -7353,6 +7990,32 @@ export function App() {
                     <dd>
                       {customGptPreview.value.toolPermissions.renameConversation === "confirm"
                         ? "Puede proponerlo, con tu confirmación"
+                        : "Denegado"}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Cantidad de contexto</dt>
+                    <dd>
+                      {customGptPreview.value.contextProfile === "focused"
+                        ? "Enfocado · hasta 6 mensajes, 5 recuerdos y 4 fragmentos"
+                        : customGptPreview.value.contextProfile === "broad"
+                          ? "Amplio · hasta 20 mensajes, 30 recuerdos y 12 fragmentos"
+                          : "Equilibrado · hasta 12 mensajes, 20 recuerdos y 8 fragmentos"}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Tareas programadas</dt>
+                    <dd>
+                      {customGptPreview.value.toolPermissions.createScheduledTasks === "confirm"
+                        ? "Puede proponerlas, con tu confirmación"
+                        : "Denegado"}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>APIs externas</dt>
+                    <dd>
+                      {customGptPreview.value.toolPermissions.callExternalApis === "confirm"
+                        ? "HTTPS GET, con tu confirmación para cada URL"
                         : "Denegado"}
                     </dd>
                   </div>
