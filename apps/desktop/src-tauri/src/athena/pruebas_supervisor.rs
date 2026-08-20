@@ -633,3 +633,122 @@ fn al_reconectar_las_peticiones_vivas_vuelven_completas() {
     assert_eq!(pendiente.argumentos.len(), 1);
     assert_eq!(pendiente.argumentos[0].valor, "pytest -q");
 }
+
+#[test]
+fn un_run_jerarquico_dibuja_su_plan_antes_de_ejecutarlo() {
+    // El grafo se anuncia entero al empezar. Descubrirlo tarea a tarea dejaría a
+    // quien mira sin saber cuánto queda.
+    let mut vista = base();
+
+    vista.aplicar(&evento("graph.started", None, json!({"tasks": 4})));
+
+    assert_eq!(vista.fase, Some(FaseRun::Running));
+    assert!(vista
+        .actividad
+        .iter()
+        .any(|linea| linea.contains("4 tareas")));
+}
+
+#[test]
+fn una_tarea_del_grafo_lleva_su_rol_y_sus_dependencias() {
+    // Con las dependencias se puede dibujar un grafo; sin ellas, sólo una lista.
+    // Y vienen de Athena: la interfaz no infiere ninguna.
+    let mut vista = base();
+
+    vista.aplicar(&evento(
+        "task.started",
+        Some("T02"),
+        json!({
+            "task_id": "T02",
+            "role": "coder",
+            "goal": "arreglar calc.add",
+            "dependencies": ["T01"]
+        }),
+    ));
+
+    let tarea = vista.tareas.first().expect("la tarea se registra");
+    assert_eq!(tarea.id, "T02");
+    assert_eq!(tarea.rol, "coder");
+    assert_eq!(tarea.nombre, "arreglar calc.add");
+    assert_eq!(tarea.dependencias, vec!["T01".to_owned()]);
+    assert_eq!(tarea.estado, EstadoTarea::Running);
+}
+
+#[test]
+fn reentregar_el_inicio_de_una_tarea_no_la_duplica() {
+    // Una reconexión puede repetir el evento, y una tarea duplicada en la vista
+    // se lee como trabajo duplicado.
+    let mut vista = base();
+    let inicio = evento(
+        "task.started",
+        Some("T01"),
+        json!({"task_id": "T01", "goal": "mirar"}),
+    );
+
+    vista.aplicar(&inicio);
+    vista.aplicar(&inicio);
+
+    assert_eq!(vista.tareas.len(), 1);
+}
+
+#[test]
+fn los_ficheros_de_una_tarea_son_ficheros_del_run() {
+    // Si no subieran, la vista diría que no se tocó nada mientras el grafo
+    // cambiaba medio repositorio.
+    let mut vista = base();
+    vista.aplicar(&evento(
+        "task.started",
+        Some("T01"),
+        json!({"task_id": "T01"}),
+    ));
+
+    vista.aplicar(&evento(
+        "task.completed",
+        Some("T01"),
+        json!({"task_id": "T01", "summary": "hecho", "files_changed": ["calc.py"]}),
+    ));
+
+    let tarea = vista.tareas.first().expect("la tarea sigue ahí");
+    assert_eq!(tarea.estado, EstadoTarea::Completed);
+    assert_eq!(tarea.detalle.as_deref(), Some("hecho"));
+    assert_eq!(vista.ficheros_modificados, vec!["calc.py".to_owned()]);
+}
+
+#[test]
+fn una_tarea_fallida_se_marca_sin_tumbar_el_plan() {
+    let mut vista = base();
+    vista.aplicar(&evento(
+        "task.started",
+        Some("T01"),
+        json!({"task_id": "T01"}),
+    ));
+
+    vista.aplicar(&evento(
+        "task.failed",
+        Some("T01"),
+        json!({"task_id": "T01", "summary": "no compila"}),
+    ));
+
+    assert_eq!(vista.tareas[0].estado, EstadoTarea::Failed);
+    assert_ne!(vista.fase, Some(FaseRun::Failed), "una tarea no es el plan");
+}
+
+#[test]
+fn el_plan_termina_por_su_propio_evento() {
+    let mut vista = base();
+    vista.aplicar(&evento("graph.started", None, json!({"tasks": 1})));
+
+    vista.aplicar(&evento("graph.completed", None, json!({})));
+
+    assert_eq!(vista.fase, Some(FaseRun::Completed));
+    assert!(vista.permisos.is_empty());
+}
+
+#[test]
+fn cancelar_el_plan_no_se_confunde_con_que_falle() {
+    let mut vista = base();
+
+    vista.aplicar(&evento("graph.cancelled", None, json!({})));
+
+    assert_eq!(vista.fase, Some(FaseRun::Cancelled));
+}

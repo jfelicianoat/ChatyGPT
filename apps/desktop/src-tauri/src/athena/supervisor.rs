@@ -116,6 +116,17 @@ pub struct TareaVista {
     pub llamadas_herramienta: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detalle: Option<String>,
+    /// Especialista al que Athena asignó la tarea. Vacío cuando el run no es
+    /// jerárquico, que es la mayoría de las veces.
+    #[serde(default)]
+    pub rol: String,
+    /// Tareas de las que ésta depende. Es lo que permite dibujar el grafo en vez
+    /// de una lista, y viene de Athena: la interfaz no infiere ninguna.
+    #[serde(default)]
+    pub dependencias: Vec<String>,
+    /// Ficheros que la tarea cambió, según su propia evidencia.
+    #[serde(default)]
+    pub ficheros: Vec<String>,
 }
 
 /// Uso de una herramienta.
@@ -253,6 +264,65 @@ impl ProyeccionRun {
     }
 
     /// Aplica un mensaje del flujo. Es el único camino por el que cambia.
+    /// Registra una tarea que empieza, o la actualiza si ya estaba.
+    ///
+    /// Idempotente porque una reconexión puede reentregar el evento, y una tarea
+    /// duplicada en la vista se lee como trabajo duplicado.
+    fn tarea_empieza(&mut self, carga: &BTreeMap<String, Value>, correlacion: Option<&str>) {
+        let id = match texto(carga, "task_id").or_else(|| correlacion.map(str::to_owned)) {
+            Some(valor) => valor,
+            None => return,
+        };
+        let rol = texto(carga, "role").unwrap_or_default();
+        let objetivo = texto(carga, "goal").unwrap_or_else(|| id.clone());
+        if let Some(existente) = self.tareas.iter_mut().find(|tarea| tarea.id == id) {
+            existente.estado = EstadoTarea::Running;
+            return;
+        }
+        self.tareas.push(TareaVista {
+            id,
+            nombre: objetivo,
+            estado: EstadoTarea::Running,
+            iteraciones: None,
+            llamadas_herramienta: None,
+            detalle: None,
+            rol,
+            dependencias: lista(carga, "dependencies"),
+            ficheros: Vec::new(),
+        });
+    }
+
+    /// Cierra una tarea con lo que su evidencia dice, no con lo que dijo el modelo.
+    fn tarea_termina(
+        &mut self,
+        carga: &BTreeMap<String, Value>,
+        correlacion: Option<&str>,
+        completada: bool,
+    ) {
+        let id = match texto(carga, "task_id").or_else(|| correlacion.map(str::to_owned)) {
+            Some(valor) => valor,
+            None => return,
+        };
+        let ficheros = lista(carga, "files_changed");
+        let resumen = texto(carga, "summary");
+        if let Some(tarea) = self.tareas.iter_mut().find(|tarea| tarea.id == id) {
+            tarea.estado = if completada {
+                EstadoTarea::Completed
+            } else {
+                EstadoTarea::Failed
+            };
+            tarea.detalle = resumen;
+            tarea.ficheros = ficheros.clone();
+        }
+        // Los ficheros de una tarea son ficheros del run: si no subieran, la
+        // vista diría que no se tocó nada mientras el grafo cambiaba medio repo.
+        for fichero in ficheros {
+            if !self.ficheros_modificados.contains(&fichero) {
+                self.ficheros_modificados.push(fichero);
+            }
+        }
+    }
+
     /// Devuelve una petición de permiso concreta, si sigue en pie.
     pub fn permiso(&self, request_id: &str) -> Option<&PermisoVista> {
         self.permisos
@@ -356,6 +426,37 @@ impl ProyeccionRun {
                 self.registrar_error(carga, None);
                 self.anotar("El agente ha fallado");
             }
+            // El nivel de grafo. Un run jerárquico anuncia su plan antes de
+            // ejecutarlo, y cada tarea se sigue por separado: la vista puede
+            // dibujar el plan entero desde el principio en vez de descubrirlo.
+            "graph.started" => {
+                self.fase = Some(FaseRun::Running);
+                if let Some(total) = carga.get("tasks").and_then(Value::as_u64) {
+                    self.anotar(&format!("Plan preparado: {total} tareas"));
+                }
+            }
+            "graph.completed" => {
+                self.fase = Some(FaseRun::Completed);
+                self.permisos.clear();
+                self.anotar("El plan terminó");
+            }
+            "graph.failed" => {
+                self.fase = Some(FaseRun::Failed);
+                self.permisos.clear();
+                self.registrar_error(carga, None);
+                self.anotar("El plan falló");
+            }
+            "graph.cancelled" => {
+                self.fase = Some(FaseRun::Cancelled);
+                self.permisos.clear();
+                self.anotar("El plan fue cancelado");
+            }
+            "task.started" => self.tarea_empieza(carga, evento.correlation_id.as_deref()),
+            "task.completed" | "task.failed" => self.tarea_termina(
+                carga,
+                evento.correlation_id.as_deref(),
+                evento.name == "task.completed",
+            ),
             "agent.cancelled" => {
                 self.fase = Some(FaseRun::Cancelled);
                 // Las preguntas de un run cancelado se retiran: contestarlas ya
@@ -558,6 +659,11 @@ impl ProyeccionRun {
                 iteraciones: numero(carga, "max_iterations"),
                 llamadas_herramienta: numero(carga, "tool_calls"),
                 detalle,
+                // Un subagente suelto no pertenece a un grafo: no tiene rol
+                // asignado por un plan ni dependencias que dibujar.
+                rol: rol.clone(),
+                dependencias: Vec::new(),
+                ficheros: Vec::new(),
             });
             recortar(&mut self.tareas);
         }
@@ -711,6 +817,11 @@ fn tareas_de(memoria: &Value) -> Vec<TareaVista> {
                 iteraciones: None,
                 llamadas_herramienta: None,
                 detalle: None,
+                // Un paso del plan de trabajo del propio loop no es una tarea de
+                // un grafo: no tiene rol ni dependencias que dibujar.
+                rol: String::new(),
+                dependencias: Vec::new(),
+                ficheros: Vec::new(),
             })
         })
         .collect()

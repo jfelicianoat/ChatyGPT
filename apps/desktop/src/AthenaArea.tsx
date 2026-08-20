@@ -24,6 +24,10 @@ import {
   mensajeServicio,
   motivoBloqueoPermiso,
   nombreEstadoTarea,
+  nombreRol,
+  ordenarPlan,
+  progresoPlan,
+  simboloTarea,
   nombreFase,
   nombreVerificacion,
   permisoActivo,
@@ -402,13 +406,36 @@ export function AthenaArea({ carpetas }: Props) {
           ) : null}
 
           {run.tareas.length > 0 ? (
-            <section aria-label="Tareas">
-              <h4>Tareas</h4>
-              <ul>
-                {run.tareas.map((tarea) => (
-                  <li key={tarea.id}>
-                    <span>{tarea.nombre}</span> — {nombreEstadoTarea(tarea.estado)}
-                    {tarea.detalle ? <em> · {tarea.detalle}</em> : null}
+            <section className="athena-plan" aria-label="Plan">
+              <h4>
+                Plan{" "}
+                <small className="athena-nota">{progresoPlan(run.tareas)}</small>
+              </h4>
+              {/* Sangrado por dependencia, no por orden de llegada: un plan leído
+                  como lista no dice qué esperaba a qué. */}
+              <ul className="athena-tareas">
+                {ordenarPlan(run.tareas).map(({ tarea, nivel }) => (
+                  <li
+                    key={tarea.id}
+                    data-estado={tarea.estado}
+                    style={{ marginLeft: `${nivel * 18}px` }}
+                  >
+                    <span className="athena-marca" aria-hidden="true">
+                      {simboloTarea(tarea.estado)}
+                    </span>
+                    <span className="athena-tarea-nombre">{tarea.nombre}</span>
+                    {tarea.rol ? (
+                      <span className="athena-rol">{nombreRol(tarea.rol)}</span>
+                    ) : null}
+                    <span className="athena-nota"> {nombreEstadoTarea(tarea.estado)}</span>
+                    {tarea.detalle ? (
+                      <p className="athena-motivo">{tarea.detalle}</p>
+                    ) : null}
+                    {tarea.ficheros.length > 0 ? (
+                      <p className="athena-nota">
+                        Tocó: {tarea.ficheros.join(", ")}
+                      </p>
+                    ) : null}
                   </li>
                 ))}
               </ul>

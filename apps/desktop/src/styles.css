@@ -1433,3 +1433,22 @@ body {
 :root[data-theme="dark"] .athena-decision button { border-color: #51493e; background: #211e1a; color: #ded6cc; }
 :root[data-theme="dark"] .athena-decision button:first-child { border-color: #a07c3c; background: #e4b965; color: #2b241a; }
 :root[data-theme="dark"] .athena-aviso { border-color: #a07c3c; background: #33291b; color: #f2d39c; }
+
+/* Plan jerárquico. El sangrado lo pone el componente a partir de las
+   dependencias que publicó Athena; aquí sólo se le da forma legible. */
+.athena-plan h4 { margin: 0 0 10px; font-size: 16px; }
+.athena-tareas { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.athena-tareas li { border-left: 2px solid #ddd7cd; padding: 2px 0 2px 10px; }
+.athena-tareas li[data-estado="running"] { border-left-color: #e7bd68; }
+.athena-tareas li[data-estado="completed"] { border-left-color: #7f9d84; }
+.athena-tareas li[data-estado="failed"] { border-left-color: #c07a6a; }
+.athena-marca { display: inline-block; width: 16px; font-family: ui-monospace, Consolas, monospace; }
+.athena-tarea-nombre { font-weight: 600; font-size: 14px; }
+.athena-rol { margin-left: 8px; border-radius: 99px; background: #eee9df; padding: 2px 8px; color: #7a7167; font-size: 11px; }
+.athena-tareas p { margin: 3px 0 0 16px; }
+
+:root[data-theme="dark"] .athena-tareas li { border-left-color: #4a433a; }
+:root[data-theme="dark"] .athena-tareas li[data-estado="running"] { border-left-color: #e4b965; }
+:root[data-theme="dark"] .athena-tareas li[data-estado="completed"] { border-left-color: #6f8a74; }
+:root[data-theme="dark"] .athena-tareas li[data-estado="failed"] { border-left-color: #a86a5c; }
+:root[data-theme="dark"] .athena-rol { background: #33291b; color: #cfc4b5; }

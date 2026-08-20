@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { AthenaEstadoArea, AthenaPermiso, AthenaRun } from "./domain";
+import type { AthenaEstadoArea, AthenaPermiso, AthenaRun, AthenaTarea } from "./domain";
 import {
   debeSeguirSondeando,
   esFaseTerminal,
@@ -8,6 +8,10 @@ import {
   mensajeServicio,
   motivoBloqueoPermiso,
   nombreEstadoTarea,
+  nombreRol,
+  ordenarPlan,
+  progresoPlan,
+  simboloTarea,
   nombreFase,
   nombreRiesgo,
   nombreVerificacion,
@@ -311,5 +315,98 @@ describe("cómo se presenta la petición", () => {
 
   it("dice «sin tiempo» cuando el plazo se agotó", () => {
     expect(tiempoRestante(permiso({ segundosRestantes: 0, caducado: true }))).toBe("sin tiempo");
+  });
+});
+
+describe("el plan como grafo", () => {
+  function tarea(
+    id: string,
+    parcial: Partial<AthenaTarea> = {}
+  ): AthenaTarea {
+    return {
+      id,
+      nombre: `hacer ${id}`,
+      estado: "pending",
+      rol: "coder",
+      dependencias: [],
+      ficheros: [],
+      ...parcial
+    };
+  }
+
+  it("coloca cada tarea bajo aquello que la precede", () => {
+    // Un plan leído como lista no dice qué esperaba a qué, que es justo lo que
+    // distingue un grafo de una cola.
+    const plan = ordenarPlan([
+      tarea("check", { dependencias: ["api", "storage"] }),
+      tarea("survey"),
+      tarea("api", { dependencias: ["survey"] }),
+      tarea("storage", { dependencias: ["survey"] })
+    ]);
+
+    const niveles = new Map(plan.map(({ tarea: item, nivel }) => [item.id, nivel]));
+    expect(niveles.get("survey")).toBe(0);
+    expect(niveles.get("api")).toBe(1);
+    expect(niveles.get("storage")).toBe(1);
+    expect(niveles.get("check")).toBe(2);
+  });
+
+  it("dibuja primero lo que puede empezar antes", () => {
+    const plan = ordenarPlan([
+      tarea("segunda", { dependencias: ["primera"] }),
+      tarea("primera")
+    ]);
+
+    expect(plan.map(({ tarea: item }) => item.id)).toEqual(["primera", "segunda"]);
+  });
+
+  it("una dependencia que no está en el plan no hunde la vista", () => {
+    // Puede pasar al reconectar a mitad: la instantánea trae unas tareas y no
+    // otras. Dibujar de más es mejor que no dibujar nada.
+    const plan = ordenarPlan([tarea("huerfana", { dependencias: ["fantasma"] })]);
+
+    expect(plan).toHaveLength(1);
+    expect(plan[0].nivel).toBe(0);
+  });
+
+  it("un ciclo no cuelga la interfaz", () => {
+    // El grafo se validó antes de ejecutarse, así que esto no debería llegar
+    // aquí. Una vista que se cuelga es peor que una que dibuja mal.
+    const plan = ordenarPlan([
+      tarea("a", { dependencias: ["b"] }),
+      tarea("b", { dependencias: ["a"] })
+    ]);
+
+    expect(plan).toHaveLength(2);
+  });
+
+  it("un run sin plan no dibuja ninguno", () => {
+    expect(ordenarPlan([])).toEqual([]);
+    expect(progresoPlan([])).toBe("");
+  });
+
+  it("cuenta lo terminado sobre el total", () => {
+    const progreso = progresoPlan([
+      tarea("a", { estado: "completed" }),
+      tarea("b", { estado: "running" }),
+      tarea("c")
+    ]);
+
+    expect(progreso).toBe("1 de 3");
+  });
+
+  it("marca cada estado de forma distinguible", () => {
+    const marcas = new Set(
+      (["completed", "running", "failed", "pending"] as const).map(simboloTarea)
+    );
+
+    expect(marcas.size).toBe(4);
+  });
+
+  it("traduce el especialista y deja pasar lo que no conoce", () => {
+    expect(nombreRol("explorer")).toBe("Explorador");
+    expect(nombreRol("verifier")).toBe("Verificador");
+    expect(nombreRol("")).toBe("");
+    expect(nombreRol("analista")).toBe("analista");
   });
 });

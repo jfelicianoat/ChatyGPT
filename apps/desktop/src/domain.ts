@@ -1681,6 +1681,12 @@ export type AthenaTarea = {
   iteraciones?: number;
   llamadasHerramienta?: number;
   detalle?: string;
+  /** Especialista asignado por Athena. Vacío cuando el run no es jerárquico. */
+  rol: string;
+  /** Tareas de las que ésta depende, tal y como las publicó Athena. */
+  dependencias: string[];
+  /** Ficheros que esta tarea cambió, según su propia evidencia. */
+  ficheros: string[];
 };
 
 export type AthenaHerramienta = {
