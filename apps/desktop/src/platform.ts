@@ -1,5 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  AthenaEstadoArea,
+  AthenaResumenRun,
+  AthenaRun,
   BootstrapReport,
   AttachmentView,
   AuditEventView,
@@ -778,5 +781,50 @@ export const platform = {
   },
   retryAttachmentSemanticIndex(attachmentId: string): Promise<AttachmentView> {
     return invoke<AttachmentView>("retry_attachment_semantic_index", { attachmentId });
+  },
+
+  // -- Área de Athena ------------------------------------------------------
+  //
+  // El token de Athena nunca llega hasta aquí: se guarda con una orden y solo
+  // se consulta su estado. La interfaz no conoce ni la URL ni la credencial.
+
+  getAthenaStatus(): Promise<AthenaEstadoArea> {
+    return invoke<AthenaEstadoArea>("get_athena_status");
+  },
+  setAthenaCredential(token: string): Promise<BrokerCredentialStatus> {
+    return invoke<BrokerCredentialStatus>("set_athena_credential", { token });
+  },
+  clearAthenaCredential(confirmed: boolean): Promise<BrokerCredentialStatus> {
+    return invoke<BrokerCredentialStatus>("clear_athena_credential", { confirmed });
+  },
+  startAthenaRun(
+    objective: string,
+    folderId: string,
+    writes?: string,
+    execution?: string
+  ): Promise<string> {
+    return invoke<string>("start_athena_run", { objective, folderId, writes, execution });
+  },
+  getAthenaRun(runId: string): Promise<AthenaRun> {
+    return invoke<AthenaRun>("get_athena_run", { runId });
+  },
+  listAthenaRecoveryRuns(): Promise<AthenaResumenRun[]> {
+    return invoke<AthenaResumenRun[]>("list_athena_recovery_runs");
+  },
+  /** Runs que seguían abiertos al cerrar ChatyGPT, ya re-enganchados. */
+  listAthenaTrackedRuns(): Promise<AthenaRun[]> {
+    return invoke<AthenaRun[]>("list_athena_tracked_runs");
+  },
+  cancelAthenaRun(runId: string): Promise<void> {
+    return invoke<void>("cancel_athena_run", { runId });
+  },
+  resumeAthenaRun(runId: string, folderId: string): Promise<void> {
+    return invoke<void>("resume_athena_run", { runId, folderId });
+  },
+  resolveAthenaPermission(runId: string, requestId: string, allow: boolean): Promise<void> {
+    return invoke<void>("resolve_athena_permission", { runId, requestId, allow });
+  },
+  fetchAthenaArtifact(storeKey: string): Promise<string> {
+    return invoke<string>("fetch_athena_artifact", { storeKey });
   }
 };

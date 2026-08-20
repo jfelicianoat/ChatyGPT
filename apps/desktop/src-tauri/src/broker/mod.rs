@@ -619,7 +619,7 @@ pub struct PollPolicy {
 impl Default for PollPolicy {
     fn default() -> Self {
         Self {
-            // Contrato 2.8: el intervalo recomendado para tareas es 2–5 s.
+            // Contrato 2.9: el intervalo recomendado para tareas es 2–5 s.
             initial_ms: 2_000,
             maximum_ms: 5_000,
         }

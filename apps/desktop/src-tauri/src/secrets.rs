@@ -18,6 +18,9 @@ use crate::error::AppError;
 
 const CREDENTIALS_DIR: &str = "credentials";
 const BROKER_TOKEN_FILE: &str = "broker-token.dpapi";
+/// El servicio de Athena regenera su token en cada arranque, así que este
+/// archivo se reescribe a menudo; se protege igual que el del Broker.
+const ATHENA_TOKEN_FILE: &str = "athena-token.dpapi";
 const API_TOKEN_PREFIX: &str = "api-";
 const API_TOKEN_SUFFIX: &str = ".dpapi";
 /// Longitud máxima admitida; evita guardar por error el contenido de un archivo.
@@ -191,6 +194,62 @@ pub fn store_broker_token(data_dir: &Path, token: &str) -> Result<(), AppError> 
     std::fs::create_dir_all(parent)
         .map_err(|error| AppError::DataDirectory(format!("credenciales no accesibles: {error}")))?;
     protect_token(&destination, token)
+}
+
+pub fn athena_token_path(data_dir: &Path) -> PathBuf {
+    data_dir.join(CREDENTIALS_DIR).join(ATHENA_TOKEN_FILE)
+}
+
+/// Token vigente de Athena, solo desde el almacén protegido.
+///
+/// A diferencia del Broker no se admite variable de entorno: aquí no hay una
+/// vía de transición que mantener, y una credencial menos en el entorno es una
+/// credencial menos en la lista de procesos de cualquiera.
+pub fn resolve_athena_token(data_dir: &Path) -> Option<String> {
+    unprotect_token(&athena_token_path(data_dir))
+}
+
+pub fn athena_credential_status(data_dir: &Path) -> BrokerCredentialStatus {
+    let protected = athena_token_path(data_dir).is_file();
+    let (source, message) = if protected {
+        (
+            TokenSource::Protected,
+            "La credencial de Athena está guardada y cifrada para tu cuenta de Windows.".to_owned(),
+        )
+    } else {
+        (
+            TokenSource::Missing,
+            "No hay credencial de Athena guardada; el servicio la regenera en cada arranque."
+                .to_owned(),
+        )
+    };
+    BrokerCredentialStatus {
+        source,
+        protected,
+        environment_present: false,
+        message,
+    }
+}
+
+pub fn store_athena_token(data_dir: &Path, token: &str) -> Result<(), AppError> {
+    let token = validated_secret(token)?;
+    let destination = athena_token_path(data_dir);
+    let parent = destination.parent().ok_or_else(|| {
+        AppError::DataDirectory("el directorio de credenciales no es válido".to_owned())
+    })?;
+    std::fs::create_dir_all(parent)
+        .map_err(|error| AppError::DataDirectory(format!("credenciales no accesibles: {error}")))?;
+    protect_token(&destination, token)
+}
+
+pub fn clear_athena_token(data_dir: &Path) -> Result<(), AppError> {
+    let destination = athena_token_path(data_dir);
+    if destination.is_file() {
+        std::fs::remove_file(&destination).map_err(|error| {
+            AppError::DataDirectory(format!("no se pudo retirar la credencial: {error}"))
+        })?;
+    }
+    Ok(())
 }
 
 fn validated_secret(token: &str) -> Result<&str, AppError> {

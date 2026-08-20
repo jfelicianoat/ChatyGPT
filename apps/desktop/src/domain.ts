@@ -1630,3 +1630,157 @@ export type ExportReport = {
   projectIndexUpdated: boolean;
   approvedMemoryCount: number;
 };
+
+
+/**
+ * Fase de un run de Athena.
+ *
+ * Son los estados que publica el runtime más `starting`, que es el hueco entre
+ * pedir el run y recibir su primer estado. La interfaz nunca deduce ninguna.
+ */
+export type AthenaFase =
+  | "starting"
+  | "running"
+  | "waiting_permission"
+  | "verifying"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "recovery_pending";
+
+/** Estado de una tarea del TaskManager de Athena. */
+export type AthenaEstadoTarea =
+  | "pending"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "killed"
+  | "recovery_pending";
+
+export type AthenaEstadoServicio =
+  | "desconocido"
+  | "conectado"
+  | "no_disponible"
+  | "incompatible";
+
+/** Estado del servicio. Nunca incluye el token: ese valor no sale de Rust. */
+export type AthenaEstadoArea = {
+  estado: AthenaEstadoServicio;
+  urlBase: string;
+  credencialConfigurada: boolean;
+  versionContrato?: number;
+  detalle?: string;
+  runsActivos: number;
+};
+
+export type AthenaTarea = {
+  id: string;
+  nombre: string;
+  estado: AthenaEstadoTarea;
+  iteraciones?: number;
+  llamadasHerramienta?: number;
+  detalle?: string;
+};
+
+export type AthenaHerramienta = {
+  nombre: string;
+  estado: string;
+  correlacion?: string;
+  externalizado: boolean;
+};
+
+/**
+ * Un argumento de la herramienta, tal y como Athena decidió enseñarlo.
+ *
+ * El saneado ocurre en el runtime, que es quien tiene el valor original; aquí
+ * solo se pinta lo que llegó.
+ */
+export type AthenaArgumento = {
+  nombre: string;
+  valor: string;
+  /** Tamaño original cuando el valor viene resumido. */
+  caracteres?: number;
+  redactado: boolean;
+  resumido: boolean;
+};
+
+export type AthenaPermiso = {
+  requestId: string;
+  herramienta: string;
+  operacion: string;
+  accion: string;
+  riesgo: string;
+  nivel: string;
+  motivo: string;
+  efectos: string[];
+  recursos: string[];
+  workspace: string;
+  argumentos: AthenaArgumento[];
+  soloLectura: boolean;
+  destructivo: boolean;
+  confirmado: boolean;
+  segundosRestantes: number;
+  /** Cierto cuando el plazo se agotó: ya no se puede responder. */
+  caducado: boolean;
+};
+
+export type AthenaComprobacion = {
+  nombre: string;
+  paso?: boolean;
+};
+
+export type AthenaError = {
+  codigo: string;
+  mensaje: string;
+  recuperacion?: string;
+};
+
+export type AthenaArtefacto = {
+  clave: string;
+  uri: string;
+  tipo: string;
+  tamano: number;
+};
+
+/**
+ * Proyección de un run: todo lo que el área muestra.
+ *
+ * Cada campo procede de un evento o de una instantánea de Athena. La interfaz
+ * la pinta; no la calcula ni la completa.
+ */
+export type AthenaRun = {
+  runId: string;
+  objetivo: string;
+  fase?: AthenaFase;
+  carpeta: string;
+  degradado: boolean;
+  reanudable: boolean;
+  conectado: boolean;
+  suscriptor?: string;
+  controla: boolean;
+  tareas: AthenaTarea[];
+  herramientas: AthenaHerramienta[];
+  permisos: AthenaPermiso[];
+  comprobaciones: AthenaComprobacion[];
+  verificacion?: string;
+  resumenVerificacion?: string;
+  ficherosModificados: string[];
+  artefactos: AthenaArtefacto[];
+  errores: AthenaError[];
+  actividad: string[];
+  evidencia: string[];
+  ciclosReparacion: number;
+};
+
+/** Forma corta de un run, para la lista de recuperación. */
+export type AthenaResumenRun = {
+  runId: string;
+  workspaceId: string;
+  status: string;
+  resumable: boolean;
+  degraded: boolean;
+  objective: string;
+  filesModified: string[];
+  updatedAt: string;
+};

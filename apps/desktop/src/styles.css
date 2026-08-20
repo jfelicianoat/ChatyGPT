@@ -1391,3 +1391,45 @@ body {
 ) :is(strong, span, small, p) {
   color: #b9b0a5;
 }
+
+/* Área de Athena.
+   La petición de permiso se destaca por encima del resto porque es lo único
+   del área que espera una respuesta; todo lo demás es información. */
+.athena-area { display: grid; gap: 18px; }
+.athena-cabecera h2 { margin: 0; font-family: Georgia, serif; font-size: 24px; font-weight: 500; }
+.athena-servicio { margin: 4px 0 0; color: #766e64; font-size: 13px; }
+.athena-servicio[data-estado="no_disponible"], .athena-servicio[data-estado="incompatible"] { color: #8a5a2b; }
+.athena-aviso { margin: 8px 0 0; border-left: 3px solid #c98b3c; background: #f7efe2; border-radius: 0 8px 8px 0; padding: 8px 12px; color: #7a5424; font-size: 13px; }
+.athena-nota { margin: 8px 0 0; color: #766e64; font-size: 12px; line-height: 1.5; }
+.athena-accion { margin: 6px 0 0; font-weight: 700; font-size: 15px; }
+.athena-motivo { margin: 4px 0 0; color: #5f574e; font-size: 13px; line-height: 1.5; }
+
+.athena-permiso { border: 2px solid #c98b3c; border-radius: 14px; background: #fdf6ea; padding: 18px 20px; }
+.athena-permiso h4 { margin: 0; font-size: 16px; }
+.athena-permiso[data-caducado="si"] { border-color: #cbc3b8; background: #f5f2ec; }
+.athena-permiso-datos { display: grid; grid-template-columns: minmax(90px, auto) 1fr; gap: 4px 14px; margin: 14px 0 0; }
+.athena-permiso-datos dt { color: #8b8277; font-size: 11px; text-transform: uppercase; letter-spacing: .03em; }
+.athena-permiso-datos dd { margin: 0; font-size: 13px; word-break: break-word; }
+.athena-recursos { margin: 0; padding-left: 16px; }
+.athena-recursos li { font-size: 13px; font-family: ui-monospace, "Cascadia Code", Consolas, monospace; }
+
+.athena-argumentos { margin: 14px 0 0; border-top: 1px solid #e4d9c6; padding-top: 10px; }
+.athena-argumentos summary { color: #7a7167; font-size: 12px; cursor: pointer; }
+.athena-argumentos dl { display: grid; gap: 6px; margin: 10px 0 0; }
+.athena-argumentos dt { color: #8b8277; font-size: 11px; }
+.athena-argumentos dd { margin: 2px 0 0; padding: 6px 9px; border-radius: 7px; background: #fffdf9; font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+.athena-argumentos dd[data-redactado="si"] { background: #f0ece4; color: #8b8277; font-style: italic; }
+
+.athena-decision { display: flex; gap: 10px; margin: 16px 0 0; }
+.athena-decision button { border: 1px solid #c1b8ab; border-radius: 10px; background: #fffdf9; color: #4a423a; padding: 9px 16px; font-size: 13px; font-weight: 600; cursor: pointer; }
+.athena-decision button:first-child { border-color: #8a6a30; background: #e7bd68; color: #3d3123; }
+.athena-decision button:disabled { opacity: .5; cursor: not-allowed; }
+
+:root[data-theme="dark"] .athena-permiso { border-color: #8c6732; background: #33291b; }
+:root[data-theme="dark"] .athena-permiso[data-caducado="si"] { border-color: #4a433a; background: #211e1a; }
+:root[data-theme="dark"] .athena-argumentos { border-color: #4a433a; }
+:root[data-theme="dark"] .athena-argumentos dd { background: #1b1916; color: #ded6cc; }
+:root[data-theme="dark"] .athena-argumentos dd[data-redactado="si"] { background: #262320; color: #a4998a; }
+:root[data-theme="dark"] .athena-decision button { border-color: #51493e; background: #211e1a; color: #ded6cc; }
+:root[data-theme="dark"] .athena-decision button:first-child { border-color: #a07c3c; background: #e4b965; color: #2b241a; }
+:root[data-theme="dark"] .athena-aviso { border-color: #a07c3c; background: #33291b; color: #f2d39c; }

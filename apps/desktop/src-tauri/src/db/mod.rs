@@ -49,9 +49,10 @@ const SCHEDULED_WORKFLOWS_MIGRATION: &str =
     include_str!("../../migrations/0021_scheduled_workflows.sql");
 const REMOTE_OPERATION_START_METRIC_MIGRATION: &str =
     include_str!("../../migrations/0022_remote_operation_start_metric.sql");
+const ATHENA_RUNS_MIGRATION: &str = include_str!("../../migrations/0023_athena_runs.sql");
 const RECOVER_NON_TERMINAL_TASKS: &str =
     include_str!("../../queries/recover_non_terminal_tasks.sql");
-pub const SCHEMA_VERSION: i64 = 22;
+pub const SCHEMA_VERSION: i64 = 23;
 
 #[derive(Clone)]
 pub struct Database {
@@ -988,6 +989,17 @@ pub struct AuditEventView {
     pub occurred_at: String,
 }
 
+/// Referencia mínima a un run de Athena que quedó abierto al cerrar ChatyGPT.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AthenaRunRecordado {
+    pub run_id: String,
+    pub objetivo: String,
+    pub workspace: String,
+    pub ultima_fase: Option<String>,
+    pub iniciado_en: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecoveryItemView {
@@ -1154,6 +1166,13 @@ fn audit_presentation(event_type: &str) -> (&'static str, &'static str, &'static
         "local.orphaned" => ("task", "Tarea pendiente marcada para revisión", "warning"),
         "task.abandoned_cancelled" => ("task", "Tarea abandonada cerrada en Broker AI", "warning"),
         "local.tool_decisions_prepared" => ("tool", "Decisiones de herramientas guardadas", "info"),
+        "athena.permission_granted" => ("athena", "Permiso concedido a Athena", "warning"),
+        "athena.permission_denied" => ("athena", "Permiso denegado a Athena", "info"),
+        "athena.permission_rejected_by_service" => {
+            ("athena", "La respuesta al permiso llegó tarde", "warning")
+        }
+        "athena.run_started" => ("athena", "Run de Athena iniciado", "info"),
+        "athena.run_closed" => ("athena", "Run de Athena cerrado", "info"),
         "remote.tool_results_accepted" => ("tool", "Broker AI aceptó los resultados", "info"),
         "export.pending" => ("export", "Exportación iniciada", "info"),
         "export.completed" => ("export", "Exportación completada", "info"),
@@ -1830,9 +1849,16 @@ impl Database {
             transaction.commit()?;
         }
         let current: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if current < SCHEMA_VERSION {
+        if current < 22 {
             let transaction = connection.transaction()?;
             transaction.execute_batch(REMOTE_OPERATION_START_METRIC_MIGRATION)?;
+            transaction.pragma_update(None, "user_version", 22)?;
+            transaction.commit()?;
+        }
+        let current: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        if current < SCHEMA_VERSION {
+            let transaction = connection.transaction()?;
+            transaction.execute_batch(ATHENA_RUNS_MIGRATION)?;
             transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             transaction.commit()?;
         }
@@ -10953,6 +10979,133 @@ impl Database {
         Ok(())
     }
 
+    /// Deja constancia de cada decisión sobre un permiso de Athena.
+    ///
+    /// Se escribe siempre, incluso cuando el servicio rechaza la respuesta por
+    /// tardía o repetida: lo que se audita es que alguien decidió, no que la
+    /// decisión llegase a aplicarse. `resultado` distingue ambos casos.
+    pub fn record_athena_permission_decision(
+        &self,
+        run_id: &str,
+        request_id: &str,
+        herramienta: &str,
+        accion: &str,
+        conceder: bool,
+        resultado: &str,
+    ) -> Result<(), AppError> {
+        let tipo = if resultado != "aplicada" {
+            "athena.permission_rejected_by_service"
+        } else if conceder {
+            "athena.permission_granted"
+        } else {
+            "athena.permission_denied"
+        };
+        self.connect()?.execute(
+            "INSERT INTO audit_events(event_type, actor, payload_json)
+             VALUES (?1, 'user', ?2)",
+            params![
+                tipo,
+                serde_json::json!({
+                    "run_id": run_id,
+                    "request_id": request_id,
+                    "tool": herramienta,
+                    "action": accion,
+                    "granted": conceder,
+                    "outcome": resultado
+                })
+                .to_string()
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Anota el run abierto para poder re-engancharse tras reiniciar ChatyGPT.
+    pub fn record_athena_run_started(
+        &self,
+        run_id: &str,
+        objetivo: &str,
+        workspace: &str,
+    ) -> Result<(), AppError> {
+        let connection = self.connect()?;
+        connection.execute(
+            "INSERT INTO athena_runs(run_id, objective, workspace)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(run_id) DO UPDATE SET
+                 objective = excluded.objective,
+                 workspace = excluded.workspace,
+                 closed_at = NULL,
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
+            params![run_id, objetivo, workspace],
+        )?;
+        connection.execute(
+            "INSERT INTO audit_events(event_type, actor, payload_json)
+             VALUES ('athena.run_started', 'user', ?1)",
+            params![serde_json::json!({ "run_id": run_id, "workspace": workspace }).to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// Guarda la última fase vista, que es lo único que se refleja de Athena.
+    pub fn record_athena_run_phase(&self, run_id: &str, fase: &str) -> Result<(), AppError> {
+        self.connect()?.execute(
+            "UPDATE athena_runs
+                SET last_phase = ?2,
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+              WHERE run_id = ?1",
+            params![run_id, fase],
+        )?;
+        Ok(())
+    }
+
+    /// Cierra el apunte del run. Es idempotente a propósito: la interfaz sondea,
+    /// y un run terminado se consultará muchas veces más; solo el primer cierre
+    /// deja rastro en la auditoría.
+    pub fn close_athena_run(&self, run_id: &str, fase: &str) -> Result<(), AppError> {
+        let connection = self.connect()?;
+        let cerrados = connection.execute(
+            "UPDATE athena_runs
+                SET last_phase = ?2,
+                    closed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+              WHERE run_id = ?1 AND closed_at IS NULL",
+            params![run_id, fase],
+        )?;
+        if cerrados == 0 {
+            return Ok(());
+        }
+        connection.execute(
+            "INSERT INTO audit_events(event_type, actor, payload_json)
+             VALUES ('athena.run_closed', 'system', ?1)",
+            params![serde_json::json!({ "run_id": run_id, "phase": fase }).to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// Runs que quedaron abiertos. Athena dirá si siguen vivos; aquí solo se
+    /// recuerda a quién preguntar.
+    pub fn list_open_athena_runs(&self) -> Result<Vec<AthenaRunRecordado>, AppError> {
+        let connection = self.connect()?;
+        let mut statement = connection.prepare(
+            "SELECT run_id, objective, workspace, last_phase, started_at
+               FROM athena_runs
+              WHERE closed_at IS NULL
+              ORDER BY updated_at DESC
+              LIMIT 20",
+        )?;
+        let runs = statement
+            .query_map([], |row| {
+                Ok(AthenaRunRecordado {
+                    run_id: row.get(0)?,
+                    objetivo: row.get(1)?,
+                    workspace: row.get(2)?,
+                    ultima_fase: row.get(3)?,
+                    iniciado_en: row.get(4)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(runs)
+    }
+
     pub fn list_authorized_folders(&self) -> Result<Vec<AuthorizedFolderView>, AppError> {
         let connection = self.connect()?;
         let mut statement = connection.prepare(
@@ -12353,6 +12506,129 @@ mod tests {
             Uuid::new_v4().simple()
         ));
         Database::open(path).expect("test database should open")
+    }
+
+    fn tipos_de_auditoria(database: &Database) -> Vec<String> {
+        let connection = database.connect().expect("conexión");
+        let mut statement = connection
+            .prepare("SELECT event_type FROM audit_events ORDER BY id")
+            .expect("consulta");
+        let tipos = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("filas")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("tipos");
+        tipos
+    }
+
+    #[test]
+    fn cada_decision_sobre_un_permiso_de_athena_queda_registrada() {
+        // Conceder y denegar dejan rastros distintos: una auditoría que no
+        // distingue las dos cosas no sirve para responder «quién autorizó esto».
+        let database = test_database();
+
+        database
+            .record_athena_permission_decision(
+                "run-1",
+                "req-1",
+                "write_file",
+                "escribir",
+                true,
+                "aplicada",
+            )
+            .expect("concesión registrada");
+        database
+            .record_athena_permission_decision(
+                "run-1",
+                "req-2",
+                "run_command",
+                "ejecutar",
+                false,
+                "aplicada",
+            )
+            .expect("denegación registrada");
+
+        assert_eq!(
+            tipos_de_auditoria(&database),
+            vec![
+                "athena.permission_granted".to_owned(),
+                "athena.permission_denied".to_owned(),
+            ]
+        );
+        cleanup(&database);
+    }
+
+    #[test]
+    fn una_decision_que_el_servicio_rechaza_tambien_se_audita() {
+        // Lo que se registra es que alguien decidió, no que la decisión llegara
+        // a tiempo. Perder ese rastro dejaría huecos justo en los casos raros.
+        let database = test_database();
+
+        database
+            .record_athena_permission_decision(
+                "run-1",
+                "req-1",
+                "write_file",
+                "escribir",
+                true,
+                "caducada",
+            )
+            .expect("registrada");
+
+        assert_eq!(
+            tipos_de_auditoria(&database),
+            vec!["athena.permission_rejected_by_service".to_owned()]
+        );
+        let connection = database.connect().expect("conexión");
+        let carga: String = connection
+            .query_row("SELECT payload_json FROM audit_events", [], |row| {
+                row.get(0)
+            })
+            .expect("carga");
+        let carga: Value = serde_json::from_str(&carga).expect("json");
+        assert_eq!(carga["outcome"], "caducada");
+        assert_eq!(carga["granted"], true);
+        cleanup(&database);
+    }
+
+    #[test]
+    fn un_run_abierto_sobrevive_al_reinicio_y_se_cierra_una_sola_vez() {
+        // ChatyGPT no guarda el estado del agente, solo cómo volver a
+        // preguntarle a Athena por él. Y el cierre es idempotente porque la
+        // interfaz sondea: si no, cada sondeo dejaría un evento de auditoría.
+        let database = test_database();
+        database
+            .record_athena_run_started("run-1", "Arreglar calc.add", "D:/repo")
+            .expect("run anotado");
+
+        let abiertos = database.list_open_athena_runs().expect("lista");
+        assert_eq!(abiertos.len(), 1);
+        assert_eq!(abiertos[0].run_id, "run-1");
+        assert_eq!(abiertos[0].workspace, "D:/repo");
+        assert_eq!(abiertos[0].ultima_fase, None);
+
+        database
+            .record_athena_run_phase("run-1", "verifying")
+            .expect("fase anotada");
+        assert_eq!(
+            database.list_open_athena_runs().expect("lista")[0].ultima_fase,
+            Some("verifying".to_owned())
+        );
+
+        database
+            .close_athena_run("run-1", "completed")
+            .expect("cerrado");
+        database
+            .close_athena_run("run-1", "completed")
+            .expect("cerrado de nuevo");
+
+        assert!(database.list_open_athena_runs().expect("lista").is_empty());
+        let cierres = tipos_de_auditoria(&database)
+            .into_iter()
+            .filter(|tipo| tipo == "athena.run_closed")
+            .count();
+        assert_eq!(cierres, 1, "el segundo cierre no deja rastro");
+        cleanup(&database);
     }
 
     fn cleanup(database: &Database) {

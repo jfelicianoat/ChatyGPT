@@ -15,6 +15,24 @@ pub enum AppError {
     BrokerResponse { status: u16, message: String },
     #[error("Broker AI devolvió un contrato inesperado: {0}")]
     BrokerContract(String),
+    #[error("la URL del servicio de Athena no es válida: {0}")]
+    InvalidAthenaUrl(String),
+    #[error("el servicio de Athena no está accesible: {0}")]
+    AthenaTransport(String),
+    #[error("el servicio de Athena devolvió HTTP {status}: {message}")]
+    AthenaResponse { status: u16, message: String },
+    #[error("el servicio de Athena devolvió un contrato inesperado: {0}")]
+    AthenaContract(String),
+    #[error("el servicio de Athena rechazó la credencial")]
+    AthenaUnauthorized,
+    #[error("otro cliente controla este run; solo él puede aprobar")]
+    AthenaNotController,
+    #[error("esa petición de permiso ya se respondió")]
+    AthenaAlreadyResolved,
+    #[error("la petición de permiso ya no está activa: caducó o el run terminó")]
+    AthenaRequestGone,
+    #[error("el resultado ya no está disponible: {0}")]
+    AthenaArtifactExpired(String),
     #[error("datos no válidos: {0}")]
     Validation(String),
     #[error("no encontrado: {0}")]

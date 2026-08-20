@@ -61,7 +61,7 @@ impl TaskState {
     /// Valida el núcleo estable de `GET /tasks/{id}` antes de que el resto de
     /// la aplicación tome decisiones con él.
     ///
-    /// No se aplica `deny_unknown_fields`: el contrato 2.8 es aditivo y los
+    /// No se aplica `deny_unknown_fields`: el contrato es aditivo y los
     /// estados intermedios pueden crecer. Sí se comprueban las invariantes que
     /// ChatyGPT usa para progreso, herramientas y reintentos.
     pub fn from_contract_value(value: Value, expected_task_id: &str) -> Result<Self, String> {
@@ -246,8 +246,30 @@ pub struct TaskState {
     pub selection_mode: Option<String>,
     #[serde(default)]
     pub progress: Value,
+    /// Contrato 2.9: `served_by`, `models_used` y `fallback_used` tipados.
+    ///
+    /// Los mismos datos siguen en `result` por compatibilidad, pero el propio
+    /// contrato avisa de que `result` no tiene garantías. Si la interfaz llega
+    /// a mostrar qué modelo respondió, tiene que salir de aquí. Es `None`
+    /// mientras la tarea no ha elegido modelo y en el carril de ingesta.
+    #[serde(default)]
+    pub execution_summary: Option<ExecutionSummary>,
     pub result: Option<Value>,
     pub error: Option<Value>,
+}
+
+/// Quién atendió la tarea de verdad (contrato 2.9).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ExecutionSummary {
+    #[serde(default)]
+    pub requested_model: Option<Value>,
+    #[serde(default)]
+    pub served_by: Option<Value>,
+    #[serde(default)]
+    pub models_used: Vec<Value>,
+    /// `true` si respondió uno distinto del pedido.
+    #[serde(default)]
+    pub fallback_used: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -280,6 +302,15 @@ pub struct BrokerCapabilities {
     pub long_context_map_reduce: bool,
     #[serde(default)]
     pub max_active_workflows: Option<u64>,
+    /// Contrato 2.9. ChatyGPT **no** usa `exclude_from_model_learning`: su
+    /// tráfico es de usuarios reales y sí debe enseñarle al router. Se refleja
+    /// aquí para que el diagnóstico pueda decir qué ofrece el Broker.
+    #[serde(default)]
+    pub exclude_from_model_learning: bool,
+    #[serde(default)]
+    pub invocation_telemetry: bool,
+    #[serde(default)]
+    pub execution_fingerprint: bool,
     /// Campo histórico que algunos Brokers publican. El contrato 2.7 ya
     /// garantiza `client_tools` dentro de la estrategia `agent`, por lo que su
     /// ausencia no equivale a `false`.
@@ -551,6 +582,62 @@ mod tests {
 
         assert_eq!(state.status.as_str(), "working");
         assert!(!state.status.is_terminal());
+    }
+
+    #[test]
+    fn contract_2_9_reads_execution_summary_and_new_capabilities() {
+        // 2.9 es aditivo: lo que ya funcionaba sigue igual, y lo nuevo se lee
+        // tipado en vez de hurgar en `result`, que no tiene contrato.
+        let state: TaskState = serde_json::from_value(serde_json::json!({
+            "task_id": "task-29",
+            "kind": "inference",
+            "status": "completed",
+            "created_at": "2026-08-16T10:00:00Z",
+            "updated_at": "2026-08-16T10:00:07Z",
+            "execution_strategy": "single",
+            "execution_preset": "fast",
+            "selection_mode": "auto",
+            "progress": {"phase": "completed"},
+            "execution_summary": {
+                "requested_model": {"provider": "ollama", "deployment": "local", "model": "qwen3.8:27b"},
+                "served_by": {"provider": "ollama", "deployment": "local", "model": "qwen3.6:35b"},
+                "models_used": [{"provider": "ollama", "deployment": "local", "model": "qwen3.6:35b"}],
+                "fallback_used": true
+            },
+            "result": {"assistant_content": "hola"},
+            "error": null
+        }))
+        .expect("2.9 debe deserializarse");
+        let summary = state.execution_summary.expect("execution_summary presente");
+        assert!(summary.fallback_used);
+        assert_eq!(summary.models_used.len(), 1);
+
+        let capabilities: BrokerCapabilities = serde_json::from_value(serde_json::json!({
+            "contract_version": "2.9",
+            "exclude_from_model_learning": true,
+            "invocation_telemetry": true,
+            "execution_fingerprint": true
+        }))
+        .expect("capacidades 2.9");
+        assert_eq!(capabilities.contract_version, "2.9");
+        assert!(capabilities.invocation_telemetry);
+        assert!(capabilities.execution_fingerprint);
+    }
+
+    #[test]
+    fn a_broker_without_2_9_still_deserializes() {
+        // Un Broker anterior no manda `execution_summary`: no puede romper.
+        let state: TaskState = serde_json::from_value(serde_json::json!({
+            "task_id": "task-28",
+            "status": "completed",
+            "created_at": "2026-07-19T10:00:00Z",
+            "updated_at": "2026-07-19T10:00:07Z",
+            "progress": {"phase": "completed"},
+            "result": {"assistant_content": "hola"},
+            "error": null
+        }))
+        .expect("2.8 debe seguir funcionando");
+        assert!(state.execution_summary.is_none());
     }
 }
 

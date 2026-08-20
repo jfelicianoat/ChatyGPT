@@ -4614,6 +4614,10 @@ mod tests {
             long_context_map_reduce: true,
             max_active_workflows: Some(1),
             client_tool_passthrough: Some(true),
+            // Un Broker 2.6 no publica nada de 2.9.
+            exclude_from_model_learning: false,
+            invocation_telemetry: false,
+            execution_fingerprint: false,
         };
         assert!(validate_sandbox_capability(&unavailable).is_err());
         let available = BrokerCapabilities {

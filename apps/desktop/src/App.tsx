@@ -112,6 +112,7 @@ import {
   type ImageDescriptionPreference
 } from "./ingestionPreferences";
 import { isEditableKeyboardTarget, keyboardShortcutAction } from "./keyboard";
+import { AthenaArea } from "./AthenaArea";
 import { WorkflowStudio } from "./WorkflowStudio";
 import { dialogCopy, type DialogState } from "./dialogs";
 import { describeError } from "./errors";
@@ -5320,6 +5321,10 @@ export function App() {
                 customGpts={customGpts.state === "ready" ? customGpts.value : []}
                 onOpenBrokerCredential={openBrokerCredentialSettings}
                 onOpenAutomations={() => setWorkspaceDestination("automations")}
+              />
+
+              <AthenaArea
+                carpetas={authorizedFolders.state === "ready" ? authorizedFolders.value : []}
               />
 
               <div className="grid">
