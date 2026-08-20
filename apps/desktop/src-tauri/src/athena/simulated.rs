@@ -12,6 +12,7 @@
 //! **registro de peticiones** con el que comprobar que el cliente manda la
 //! cabecera de control.
 
+use std::collections::BTreeMap;
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -23,6 +24,10 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 /// Petición observada, para comprobar qué mandó el cliente.
+///
+/// El método se registra aunque ninguna prueba lo mire todavía: una petición sin
+/// su verbo no es una petición observada, y descubrir eso el día que haga falta
+/// significa volver a instrumentar el simulador.
 #[derive(Debug, Clone)]
 pub struct PeticionVista {
     pub metodo: String,
@@ -30,6 +35,17 @@ pub struct PeticionVista {
     pub autorizacion: Option<String>,
     pub suscriptor: Option<String>,
     pub cuerpo: String,
+    /// Todas las cabeceras, en minúsculas. Guardarlas enteras evita tener que
+    /// tocar el simulador cada vez que una prueba quiere observar una nueva.
+    pub cabeceras: BTreeMap<String, String>,
+}
+
+impl PeticionVista {
+    pub fn cabecera(&self, nombre: &str) -> Option<&str> {
+        self.cabeceras
+            .get(&nombre.to_ascii_lowercase())
+            .map(String::as_str)
+    }
 }
 
 /// Guion de una respuesta corriente.
@@ -57,6 +73,8 @@ impl RespuestaGuion {
         }
     }
 
+    /// Respuesta en texto plano, para el artefacto que Athena sirve sin envolver.
+    #[allow(dead_code)]
     pub fn texto(cuerpo: &str) -> Self {
         Self {
             estado: 200,
@@ -214,6 +232,7 @@ fn atender(mut flujo: TcpStream, estado: &Arc<Mutex<Estado>>) {
     let mut longitud = 0usize;
     let mut autorizacion = None;
     let mut suscriptor = None;
+    let mut cabeceras: BTreeMap<String, String> = BTreeMap::new();
     loop {
         let mut cabecera = String::new();
         if lector.read_line(&mut cabecera).is_err() {
@@ -224,6 +243,7 @@ fn atender(mut flujo: TcpStream, estado: &Arc<Mutex<Estado>>) {
             break;
         }
         let (nombre, valor) = recortada.split_once(':').unwrap_or((recortada, ""));
+        cabeceras.insert(nombre.to_ascii_lowercase(), valor.trim().to_owned());
         match nombre.to_ascii_lowercase().as_str() {
             "content-length" => longitud = valor.trim().parse().unwrap_or(0),
             "authorization" => autorizacion = Some(valor.trim().to_owned()),
@@ -242,6 +262,7 @@ fn atender(mut flujo: TcpStream, estado: &Arc<Mutex<Estado>>) {
         autorizacion,
         suscriptor,
         cuerpo: String::from_utf8_lossy(&cuerpo).into_owned(),
+        cabeceras,
     };
 
     let guion_flujo = {

@@ -430,6 +430,96 @@ fn el_flujo_entrega_estado_y_luego_eventos() {
 }
 
 #[test]
+fn al_reconectar_se_pide_reanudar_por_el_ultimo_evento_visto() {
+    // Sin esto, dos segundos sin red cuestan una resincronización entera y la
+    // vista tira todo lo que había derivado. El servidor sabe reanudar desde
+    // ADR-021; esto es lo que hace que alguien se lo pida.
+    let simulado = AthenaSimulado::arrancar();
+    simulado.emitir(GuionFlujo {
+        marcos: vec![
+            GuionFlujo::marco_estado("sus-1", true, instantanea("running")),
+            GuionFlujo::marco_evento("tool.started", "run-1", json!({"tool_name": "grep"})),
+        ],
+        cortar_al_final: true,
+        retardo: None,
+    });
+    simulado.emitir(GuionFlujo {
+        marcos: vec![
+            GuionFlujo::marco_estado("sus-2", true, instantanea("completed")),
+            GuionFlujo::marco_evento("agent.completed", "run-1", json!({})),
+        ],
+        cortar_al_final: true,
+        retardo: None,
+    });
+
+    let cliente = cliente(&simulado);
+    let mut flujo = cliente
+        .flujo_eventos("run-1", true)
+        .con_reconexion(OpcionesReconexion {
+            espera_inicial: std::time::Duration::from_millis(20),
+            espera_maxima: std::time::Duration::from_millis(50),
+            intentos_maximos: Some(3),
+        });
+    let mut vistos = 0;
+    let _ = en_runtime(flujo.escuchar(|mensaje| {
+        if let MensajeFlujo::Evento(evento) = &mensaje {
+            vistos += 1;
+            return evento.name != "agent.completed";
+        }
+        true
+    }));
+
+    let peticiones = simulado.peticiones();
+    let reconexion = peticiones
+        .iter()
+        .filter(|peticion| peticion.ruta.contains("/events"))
+        .nth(1)
+        .expect("hubo una segunda conexión");
+    assert_eq!(
+        reconexion.metodo, "GET",
+        "el flujo se abre leyendo, no enviando"
+    );
+    assert!(
+        reconexion.cabecera("last-event-id").is_some(),
+        "la reconexión dice por dónde iba"
+    );
+    assert_eq!(vistos, 2);
+}
+
+#[test]
+fn la_primera_conexion_no_pide_reanudar_nada() {
+    // Pedir reanudación desde un punto inventado haría que Athena respondiera
+    // con una instantánea igualmente, pero mintiendo sobre lo que se sabe.
+    let simulado = AthenaSimulado::arrancar();
+    simulado.emitir(GuionFlujo {
+        marcos: vec![GuionFlujo::marco_estado(
+            "sus-1",
+            true,
+            instantanea("completed"),
+        )],
+        cortar_al_final: true,
+        retardo: None,
+    });
+
+    let cliente = cliente(&simulado);
+    let mut flujo = cliente
+        .flujo_eventos("run-1", true)
+        .con_reconexion(OpcionesReconexion {
+            espera_inicial: std::time::Duration::from_millis(10),
+            espera_maxima: std::time::Duration::from_millis(20),
+            intentos_maximos: Some(1),
+        });
+    let _ = en_runtime(flujo.escuchar(|_| false));
+
+    let peticiones = simulado.peticiones();
+    let primera = peticiones
+        .iter()
+        .find(|peticion| peticion.ruta.contains("/events"))
+        .expect("se conectó");
+    assert!(primera.cabecera("last-event-id").is_none());
+}
+
+#[test]
 fn el_flujo_reconecta_y_recibe_una_instantanea_nueva() {
     // Athena manda estado y luego cola: los eventos perdidos en el corte no son
     // un problema de corrección porque la instantánea siguiente los sustituye.

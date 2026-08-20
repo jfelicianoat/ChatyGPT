@@ -22,7 +22,6 @@
 // de Tauri: la capa de órdenes obliga a decidir antes si el progreso llega a
 // React por eventos de Tauri o por sondeo, y esta aplicación hoy solo sondea.
 // Este permiso desaparece en cuanto exista esa capa; no debe sobrevivir a ella.
-#![allow(dead_code, unused_imports)]
 
 mod area;
 mod contracts;
@@ -39,17 +38,20 @@ use serde::Serialize;
 use serde_json::Value;
 use url::Url;
 
-pub use area::{AreaAthena, EstadoAreaAthena, EstadoServicio};
+// `lib` nombra un subconjunto de esto; las pruebas del módulo usan el resto a
+// través de `super::*`. Las dos cosas son ciertas a la vez, así que el aviso se
+// silencia aquí, sobre este bloque y diciendo por qué — no sobre el módulo
+// entero, que es lo que ocultaba código realmente muerto.
+#[allow(unused_imports)]
+pub use area::{AreaAthena, EstadoAreaAthena};
+#[allow(unused_imports)]
 pub use contracts::{
-    Checkpoint, DecisionPermiso, EstadoRun, EventoRuntime, InstantaneaRun, ListadoRuns,
-    MarcoEstado, MensajeFlujo, ModoCapacidad, PermisoPendiente, ReferenciaArtefacto, ResumenRun,
-    RunCreado, SaludServicio, SolicitudRun, WIRE_VERSION_SOPORTADA,
+    DecisionPermiso, EstadoRun, InstantaneaRun, ListadoRuns, MensajeFlujo, ModoCapacidad,
+    PermisoPendiente, ResumenRun, RunCreado, SaludServicio, SolicitudRun, WIRE_VERSION_SOPORTADA,
 };
 pub use events::{FlujoEventos, OpcionesReconexion};
-pub use supervisor::{
-    ArgumentoVista, ArtefactoVista, ComprobacionVista, ErrorVista, EstadoTarea, FaseRun,
-    PermisoVista, ProyeccionRun, TareaVista, UsoHerramienta,
-};
+#[allow(unused_imports)]
+pub use supervisor::{FaseRun, ProyeccionRun};
 
 use crate::error::AppError;
 use crate::logging;

@@ -88,6 +88,7 @@ pub enum EstadoTarea {
 }
 
 impl EstadoTarea {
+    #[allow(dead_code)]
     fn desde_texto(valor: &str) -> Option<Self> {
         Some(match valor {
             "pending" => Self::Pending,
@@ -217,6 +218,10 @@ pub struct ProyeccionRun {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub suscriptor: Option<String>,
     pub controla: bool,
+    /// Último evento aplicado. Sobrevive a la tarea que escucha el flujo, que es
+    /// justo lo que hace falta para reanudar en vez de resincronizar.
+    #[serde(skip)]
+    pub ultimo_evento: Option<String>,
 
     pub tareas: Vec<TareaVista>,
     pub herramientas: Vec<UsoHerramienta>,
@@ -271,7 +276,13 @@ impl ProyeccionRun {
     pub fn aplicar(&mut self, mensaje: &MensajeFlujo) {
         match mensaje {
             MensajeFlujo::Estado(estado) => self.aplicar_estado(estado),
-            MensajeFlujo::Evento(evento) => self.aplicar_evento(evento),
+            MensajeFlujo::Evento(evento) => {
+                // El punto de reanudación avanza con cada evento aplicado, no
+                // con cada evento recibido: si aplicarlo falla, reanudar desde
+                // él saltaría un cambio que la vista nunca llegó a reflejar.
+                self.ultimo_evento = Some(evento.event_id.clone());
+                self.aplicar_evento(evento);
+            }
         }
     }
 
@@ -646,6 +657,17 @@ fn argumento(nombre: &str, valor: &Value) -> ArgumentoVista {
     }
 }
 
+/// Estado de tarea publicado por el TaskManager, para cuando el run lo use.
+///
+/// Athena ya publica estados de tarea; ningún run de ChatyGPT los consume aún
+/// porque el área todavía no dibuja el grafo. Se conserva la traducción para que
+/// cuando lo haga no haya que reconstruirla, y se marca para que eso sea una
+/// decisión visible y no un descuido.
+#[allow(dead_code)]
+pub fn estado_tarea_desde(valor: &str) -> Option<EstadoTarea> {
+    EstadoTarea::desde_texto(valor)
+}
+
 fn palabra_estado(estado: EstadoTarea) -> &'static str {
     match estado {
         EstadoTarea::Pending => "pendiente",
@@ -724,9 +746,4 @@ fn recortar<T>(items: &mut Vec<T>) {
     if items.len() > LIMITE_HISTORIAL {
         items.drain(..items.len() - LIMITE_HISTORIAL);
     }
-}
-
-/// Estado de tarea publicado por el TaskManager, para cuando el run lo use.
-pub fn estado_tarea_desde(valor: &str) -> Option<EstadoTarea> {
-    EstadoTarea::desde_texto(valor)
 }

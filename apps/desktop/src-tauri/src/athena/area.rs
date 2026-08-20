@@ -25,7 +25,10 @@ use crate::logging;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EstadoServicio {
-    /// Todavía no se ha comprobado.
+    /// Todavía no se ha comprobado. Nada lo construye porque el estado siempre
+    /// se calcula tras preguntar; existe para que la interfaz pueda representar
+    /// "aún no lo sé" sin inventarse un cuarto valor por su cuenta.
+    #[allow(dead_code)]
     Desconocido,
     /// Responde y habla una versión de contrato que entendemos.
     Conectado,
@@ -110,6 +113,10 @@ impl AreaAthena {
             .and_then(|mapa| mapa.get(run_id).cloned())
     }
 
+    /// Todas las proyecciones vivas. La usa la vista de grafo cuando existe; se
+    /// conserva marcada en vez de borrarse porque su ausencia obligaría a exponer
+    /// el mapa interno, que es peor.
+    #[allow(dead_code)]
     pub fn proyecciones(&self) -> Vec<ProyeccionRun> {
         self.runs
             .lock()
@@ -117,6 +124,7 @@ impl AreaAthena {
             .unwrap_or_default()
     }
 
+    #[allow(dead_code)]
     pub fn olvidar(&self, run_id: &str) {
         if let Ok(mut mapa) = self.runs.lock() {
             mapa.remove(run_id);
@@ -180,10 +188,18 @@ impl AreaAthena {
         let cliente = self.cliente.clone();
         let runs = Arc::clone(&self.runs);
         let identificador = run_id.to_owned();
+        // Si ya se siguió este run antes, se retoma por donde se quedó en vez de
+        // pedir una resincronización entera: lo que la vista había derivado sigue
+        // valiendo, y Athena sólo manda lo que falta.
+        let desde = self.runs.lock().ok().and_then(|mapa| {
+            mapa.get(run_id)
+                .and_then(|vista| vista.ultimo_evento.clone())
+        });
         tokio::spawn(async move {
             let mut flujo = cliente
                 .flujo_eventos(&identificador, true)
-                .con_reconexion(OpcionesReconexion::default());
+                .con_reconexion(OpcionesReconexion::default())
+                .desde_evento(desde);
             let resultado = flujo
                 .escuchar(|mensaje| aplicar(&runs, &identificador, &mensaje))
                 .await;

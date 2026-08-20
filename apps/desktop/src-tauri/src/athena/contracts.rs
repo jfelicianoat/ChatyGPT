@@ -6,6 +6,13 @@
 //! la interfaz. La versión del formato viaja en `wire_version`; si Athena la
 //! sube, esta capa es la que debe adaptarse.
 
+//!
+//! Muchos campos de este módulo no los lee ningún código de ChatyGPT: los lee
+//! serde. Están porque son el contrato de Athena, y tenerlos completos hace que
+//! un cambio en el otro lado aparezca como un error de deserialización en vez
+//! de como un silencio. Por eso el `allow` está aquí y acotado a este fichero,
+//! y no cubriendo el módulo entero.
+#![allow(dead_code)]
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};

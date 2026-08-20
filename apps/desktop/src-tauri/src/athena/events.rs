@@ -1,10 +1,15 @@
 //! Flujo de eventos de un run, sobre SSE.
 //!
-//! La reconexión es *instantánea y luego cola*: al conectar, Athena manda el
-//! estado completo del run y después los eventos vivos. Por eso perder eventos
-//! durante un corte no es un problema de corrección — la instantánea siguiente
-//! los sustituye — y por eso este cliente no necesita un registro de eventos ni
-//! `Last-Event-ID`.
+//! Hay dos formas de volver tras un corte y este cliente usa las dos, en orden.
+//!
+//! Si sabe por dónde iba, manda `Last-Event-ID` y Athena le pone al día evento
+//! a evento: conserva lo que ya había derivado en vez de tirarlo. Si estuvo
+//! fuera más tiempo del que cabe en el búfer del servidor —o si es la primera
+//! conexión— recibe la instantánea completa, que es lo que siempre hizo y sigue
+//! siendo la red de seguridad.
+//!
+//! La instantánea basta para la corrección; el `Last-Event-ID` es lo que evita
+//! reconstruir toda la vista por dos segundos sin red.
 //!
 //! El `subscriber_id` que llega en el marco inicial no es decorativo: los
 //! intents viajan por otra conexión, así que es lo único que prueba que quien
@@ -48,6 +53,9 @@ pub struct FlujoEventos {
     opciones: OpcionesReconexion,
     /// Identidad que el servicio asignó en la última conexión.
     suscriptor: Option<String>,
+    /// Último evento entregado al manejador. Es el punto por el que se pide
+    /// reanudar; sin él una reconexión cuesta una resincronización entera.
+    ultimo_evento: Option<String>,
 }
 
 impl FlujoEventos {
@@ -58,6 +66,7 @@ impl FlujoEventos {
             controlar,
             opciones: OpcionesReconexion::default(),
             suscriptor: None,
+            ultimo_evento: None,
         }
     }
 
@@ -67,8 +76,25 @@ impl FlujoEventos {
     }
 
     /// Identidad del suscriptor, disponible tras el primer marco de estado.
+    ///
+    /// El área lee el suscriptor de la proyección, no del flujo, porque la
+    /// proyección sobrevive a la tarea que escucha. Esto queda como lectura
+    /// directa para las pruebas y para quien use el flujo sin área.
+    #[allow(dead_code)]
     pub fn suscriptor(&self) -> Option<&str> {
         self.suscriptor.as_deref()
+    }
+
+    /// Punto por el que se reanudaría ahora mismo. Misma razón que arriba.
+    #[allow(dead_code)]
+    pub fn ultimo_evento(&self) -> Option<&str> {
+        self.ultimo_evento.as_deref()
+    }
+
+    /// Reanuda desde un punto conocido, por ejemplo tras reiniciar ChatyGPT.
+    pub fn desde_evento(mut self, event_id: Option<String>) -> Self {
+        self.ultimo_evento = event_id;
+        self
     }
 
     /// Escucha el flujo entregando cada mensaje al manejador.
@@ -141,6 +167,12 @@ impl FlujoEventos {
             .timeout(Duration::from_secs(60 * 60 * 24));
         if let Some(cabecera) = self.cliente.token_actual() {
             peticion = peticion.header(reqwest::header::AUTHORIZATION, cabecera);
+        }
+        if let Some(ultimo) = &self.ultimo_evento {
+            // La cabecera que define la especificación de SSE. Athena responde
+            // con `resumed: true` y sólo lo perdido, o con una instantánea si el
+            // punto ya se cayó de su ventana.
+            peticion = peticion.header("Last-Event-ID", ultimo.clone());
         }
         let respuesta = peticion.send().await.map_err(|error| {
             logging::warn(
@@ -223,7 +255,13 @@ impl FlujoEventos {
             }
         }
         match serde_json::from_str::<EventoRuntime>(&datos) {
-            Ok(evento) => Some(MensajeFlujo::Evento(Box::new(evento))),
+            Ok(evento) => {
+                // Se anota aquí, no en el manejador: el punto de reanudación es
+                // lo último que este cliente *entendió*, y un marco ilegible no
+                // debe mover el marcador hacia adelante.
+                self.ultimo_evento = Some(evento.event_id.clone());
+                Some(MensajeFlujo::Evento(Box::new(evento)))
+            }
             Err(_) => {
                 logging::warn(
                     "athena.event_unreadable",
