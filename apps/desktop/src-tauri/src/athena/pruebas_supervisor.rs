@@ -837,3 +837,52 @@ fn cancelar_el_plan_no_se_confunde_con_que_falle() {
 
     assert_eq!(vista.fase, Some(FaseRun::Cancelled));
 }
+
+#[test]
+fn la_estrategia_de_ejecucion_llega_a_la_vista() {
+    // Athena decide la forma antes de que nadie pueda suscribirse, así que viaja en el
+    // marco de estado. Aquí sólo se comprueba que llega entera: la interfaz no interpreta
+    // la decisión, la enseña.
+    let mut vista = base();
+    let marco = json!({
+        "subscriber_id": "sub-1",
+        "controls": true,
+        "wire_version": 1,
+        "shape": {
+            "execution_mode": "auto",
+            "executed_as": "direct",
+            "reason_code": "planning_unavailable",
+            "reason": "auto -> direct: this deployment has planning switched off",
+            "policy_verdict": "decompose",
+            "policy_explanation": "Decomposition is worth its overhead here: …",
+            "criteria_met": ["multiple independently verifiable outputs"],
+            "assumed_signals": ["has_meaningful_dependencies"]
+        },
+        "snapshot": null,
+        "pending_approvals": []
+    });
+    let marco: MarcoEstado = serde_json::from_value(marco).expect("marco válido");
+
+    vista.aplicar(&MensajeFlujo::Estado(Box::new(marco)));
+
+    let estrategia = vista.estrategia.expect("la estrategia llega");
+    assert_eq!(estrategia.solicitada, "auto");
+    assert_eq!(estrategia.seleccionada, "direct");
+    assert_eq!(estrategia.codigo, "planning_unavailable");
+    // Lo que opinó la política se conserva aunque diga lo contrario de lo que se hizo:
+    // enseñar sólo uno de los dos contaría mal por qué este run fue como fue.
+    assert_eq!(estrategia.veredicto_politica, "decompose");
+    assert_eq!(estrategia.criterios.len(), 1);
+    assert_eq!(estrategia.senales_supuestas.len(), 1);
+}
+
+#[test]
+fn un_run_sin_estrategia_anunciada_no_se_inventa_una() {
+    // Un Athena anterior no manda `shape`. La vista se queda sin el bloque, que es
+    // distinto de enseñar uno con valores por defecto.
+    let mut vista = base();
+
+    vista.aplicar(&marco_estado("sub-1", true, None));
+
+    assert!(vista.estrategia.is_none());
+}

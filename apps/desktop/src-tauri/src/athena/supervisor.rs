@@ -16,7 +16,9 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 use serde_json::Value;
 
-use super::contracts::{EstadoRun, EventoRuntime, InstantaneaRun, MarcoEstado, MensajeFlujo};
+use super::contracts::{
+    EstadoRun, EstrategiaEjecucion, EventoRuntime, InstantaneaRun, MarcoEstado, MensajeFlujo,
+};
 
 /// Cuántas entradas se conservan de cada historial. Lo viejo se descarta: la
 /// interfaz muestra lo que está pasando, no un registro completo.
@@ -250,6 +252,42 @@ pub struct ProyeccionRun {
     /// Evidencia final: lo que permitió dar el trabajo por terminado.
     pub evidencia: Vec<String>,
     pub ciclos_reparacion: u64,
+    /// Con qué estrategia se está ejecutando este run, cuando Athena ya lo ha dicho.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub estrategia: Option<EstrategiaVista>,
+}
+
+/// La estrategia de ejecución, lista para enseñar.
+///
+/// Copia de lo que publicó Athena sin interpretarlo. Traducir aquí `reason_code` a una
+/// frase distinta de la que vino sería que la interfaz opinara sobre una decisión que no
+/// tomó; lo único que se hace más abajo es darle a cada código un nombre legible.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EstrategiaVista {
+    pub solicitada: String,
+    pub seleccionada: String,
+    pub codigo: String,
+    pub motivo: String,
+    pub veredicto_politica: String,
+    pub explicacion_politica: String,
+    pub criterios: Vec<String>,
+    pub senales_supuestas: Vec<String>,
+}
+
+impl From<&EstrategiaEjecucion> for EstrategiaVista {
+    fn from(origen: &EstrategiaEjecucion) -> Self {
+        Self {
+            solicitada: origen.execution_mode.clone(),
+            seleccionada: origen.executed_as.clone(),
+            codigo: origen.reason_code.clone(),
+            motivo: origen.reason.clone(),
+            veredicto_politica: origen.policy_verdict.clone(),
+            explicacion_politica: origen.policy_explanation.clone(),
+            criterios: origen.criteria_met.clone(),
+            senales_supuestas: origen.assumed_signals.clone(),
+        }
+    }
 }
 
 impl ProyeccionRun {
@@ -371,6 +409,9 @@ impl ProyeccionRun {
         self.suscriptor = Some(estado.subscriber_id.clone());
         self.controla = estado.controls;
         self.conectado = true;
+        if let Some(forma) = &estado.shape {
+            self.estrategia = Some(EstrategiaVista::from(forma));
+        }
         if let Some(instantanea) = &estado.snapshot {
             self.adoptar_instantanea(instantanea);
         }

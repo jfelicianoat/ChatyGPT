@@ -294,10 +294,54 @@ pub struct MarcoEstado {
     pub controls: bool,
     #[serde(default)]
     pub wire_version: u32,
+    /// Con qué estrategia decidió Athena ejecutar el run, y por qué.
+    ///
+    /// Viaja en el estado y no sólo en `plan.decided` porque la decisión se toma antes
+    /// de que nadie pueda suscribirse: un cliente que sólo escuchase el flujo no la
+    /// vería nunca, y es justo lo que se quiere saber al preguntar por qué un objetivo
+    /// no se planificó.
+    #[serde(default)]
+    pub shape: Option<EstrategiaEjecucion>,
     #[serde(default)]
     pub snapshot: Option<InstantaneaRun>,
     #[serde(default)]
     pub pending_approvals: Vec<PermisoPendiente>,
+}
+
+/// Cómo se decidió ejecutar un run.
+///
+/// Los códigos —`reason_code`, `execution_mode`, `executed_as`— son estables y los
+/// escribe Athena; las frases están para leerse y se reescribirán. Aquí no se traduce
+/// ninguna decisión: se enseña la que ya vino tomada.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct EstrategiaEjecucion {
+    /// Lo que pidió el cliente: `auto`, `hierarchical` o `direct`.
+    #[serde(default)]
+    pub execution_mode: String,
+    /// Lo que se hizo: `direct` o `hierarchical`.
+    #[serde(default)]
+    pub executed_as: String,
+    /// Código estable del motivo, para no depender de la redacción.
+    #[serde(default)]
+    pub reason_code: String,
+    /// El motivo efectivo, en una frase.
+    #[serde(default)]
+    pub reason: String,
+    /// Lo que opinó la política: `decompose` o `decline`.
+    ///
+    /// Puede no coincidir con lo que se hizo, y ése es el caso interesante: un objetivo
+    /// que la política considera divisible puede acabar en el bucle porque el despliegue
+    /// no tiene planificación. Enseñar sólo uno de los dos lo contaría mal.
+    #[serde(default)]
+    pub policy_verdict: String,
+    #[serde(default)]
+    pub policy_explanation: String,
+    /// Criterios de descomposición que este objetivo cumple.
+    #[serde(default)]
+    pub criteria_met: Vec<String>,
+    /// Señales que Athena no pudo medir y dejó en su valor neutro.
+    #[serde(default)]
+    pub assumed_signals: Vec<String>,
 }
 
 /// Lo que llega por el flujo de eventos, ya distinguido.
