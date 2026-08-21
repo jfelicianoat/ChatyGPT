@@ -635,6 +635,31 @@ fn al_reconectar_las_peticiones_vivas_vuelven_completas() {
 }
 
 #[test]
+fn un_marco_con_campos_que_no_conocemos_se_sigue_leyendo() {
+    // Athena puede añadir información al marco de estado —ahora manda `shape`, con qué
+    // forma se decidió ejecutar el run y por qué— y una versión anterior de la aplicación
+    // tiene que seguir funcionando. Si esto rompiese, actualizar el runtime dejaría la
+    // aplicación sin flujo hasta actualizarla también.
+    let marco = json!({
+        "subscriber_id": "sub-1",
+        "controls": true,
+        "wire_version": 1,
+        "shape": {
+            "execution_mode": "auto",
+            "executed_as": "direct",
+            "reason": "auto -> direct: el plan no repartía trabajo"
+        },
+        "snapshot": null,
+        "pending_approvals": []
+    });
+
+    let marco: MarcoEstado = serde_json::from_value(marco).expect("marco válido");
+
+    assert_eq!(marco.subscriber_id, "sub-1");
+    assert!(marco.controls);
+}
+
+#[test]
 fn el_plan_de_una_instantanea_no_duplica_las_tareas_que_llegan_despues() {
     // Reconectar a mitad de un plan es lo normal: se cierra el portátil, se va la red,
     // se reinicia la aplicación. Lo que no puede pasar es que la misma tarea salga dos
