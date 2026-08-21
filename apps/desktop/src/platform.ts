@@ -424,6 +424,9 @@ export const platform = {
   pickGptModifyFolder(): Promise<AuthorizedFolderView | null> {
     return invoke<AuthorizedFolderView | null>("pick_gpt_modify_folder");
   },
+  pickAthenaFolder(): Promise<AuthorizedFolderView | null> {
+    return invoke<AuthorizedFolderView | null>("pick_athena_folder");
+  },
   createScheduledWorkflow(
     name: string,
     workflowId: string,

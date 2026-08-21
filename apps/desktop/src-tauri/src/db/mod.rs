@@ -10909,6 +10909,56 @@ impl Database {
         Ok(())
     }
 
+    /// Autoriza una carpeta como límite de trabajo de Athena sin retirar los
+    /// permisos de lectura o modificación que ya tuviera para otros usos.
+    pub fn authorize_folder_for_athena(
+        &self,
+        folder: &Path,
+        display_name: &str,
+    ) -> Result<(), AppError> {
+        let key = folder_key(folder);
+        let connection = self.connect()?;
+        let existing: Option<String> = connection
+            .query_row(
+                "SELECT permissions_json FROM authorized_folders WHERE canonical_path = ?1",
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let mut permissions = existing
+            .as_deref()
+            .and_then(|value| serde_json::from_str::<Value>(value).ok())
+            .and_then(|value| value.as_object().cloned())
+            .unwrap_or_default();
+        permissions.insert("athena".to_owned(), Value::Bool(true));
+        permissions.insert(
+            "purpose".to_owned(),
+            Value::String("athena_workspace".to_owned()),
+        );
+        connection.execute(
+            "INSERT INTO authorized_folders(
+                id, canonical_path, display_name, permissions_json
+             ) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(canonical_path) DO UPDATE SET
+                display_name = excluded.display_name,
+                permissions_json = excluded.permissions_json,
+                granted_at = datetime('now'),
+                revoked_at = NULL",
+            params![
+                format!("folder_{}", Uuid::new_v4().simple()),
+                key,
+                display_name,
+                Value::Object(permissions).to_string()
+            ],
+        )?;
+        connection.execute(
+            "INSERT INTO audit_events(event_type, actor, payload_json)
+             VALUES ('authorized_folder.athena_granted', 'user', '{}')",
+            [],
+        )?;
+        Ok(())
+    }
+
     /// Resuelve una concesión de lectura por su identificador opaco.
     pub fn authorized_folder_for_read(
         &self,

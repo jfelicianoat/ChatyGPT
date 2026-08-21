@@ -963,7 +963,13 @@ export type AuthorizedFolderView = {
   id: string;
   path: string;
   displayName: string;
-  permissions: { write?: boolean; read?: boolean; modify?: boolean; purpose?: string };
+  permissions: {
+    write?: boolean;
+    read?: boolean;
+    modify?: boolean;
+    athena?: boolean;
+    purpose?: string;
+  };
   grantedAt: string;
   revokedAt: string | null;
 };
@@ -985,6 +991,8 @@ export const authorizedFolderPurpose = (folder: AuthorizedFolderView): string =>
       return "Lectura solicitada por GPTs personales";
     case "gpt_modify":
       return "Modificación confirmada por GPTs personales";
+    case "athena_workspace":
+      return "Espacio de trabajo de Athena";
     default:
       return "Uso no declarado";
   }
@@ -1074,6 +1082,23 @@ export const isTerminalTask = (task: LocalTaskSnapshot): boolean =>
 export const isTaskPollingComplete = (task: LocalTaskSnapshot): boolean =>
   isTerminalTask(task) ||
   ["waiting_for_tools", "orphaned"].includes(task.localState);
+
+/**
+ * Detecta el breve relevo entre una tarea auxiliar ya terminada y la tarea
+ * final del chat. Mientras el mensaje siga pendiente y aún apunte a la tarea
+ * terminal, la conversación debe recargarse para descubrir el nuevo vínculo.
+ */
+export const shouldReconcilePendingTurn = ({
+  task,
+  messages
+}: {
+  task: LocalTaskSnapshot;
+  messages: Pick<ConversationMessage, "status" | "brokerTaskId">[];
+}): boolean =>
+  isTerminalTask(task) &&
+  messages.some(
+    (message) => message.status === "pending" && message.brokerTaskId === task.id
+  );
 
 /**
  * Si queda algún recuerdo indexándose y por tanto hay que seguir sondeando.
@@ -1660,7 +1685,12 @@ export type AthenaEstadoTarea =
 
 export type AthenaEstadoServicio =
   | "desconocido"
+  /** Responde, habla un contrato que entendemos y nos conoce. */
   | "conectado"
+  /** Responde, pero todavía no le hemos dado credencial. */
+  | "sin_credencial"
+  /** Responde, tenemos credencial y la rechaza: hay que volver a vincular. */
+  | "credencial_invalida"
   | "no_disponible"
   | "incompatible";
 
@@ -1755,6 +1785,31 @@ export type AthenaArtefacto = {
  * Cada campo procede de un evento o de una instantánea de Athena. La interfaz
  * la pinta; no la calcula ni la completa.
  */
+/**
+ * Con qué estrategia decidió Athena ejecutar un run, y por qué.
+ *
+ * Los tres códigos —`solicitada`, `seleccionada`, `codigo`— son estables y vienen del
+ * runtime; las frases están para leerse. La interfaz les pone nombre en castellano y no
+ * decide nada: la decisión ya venía tomada.
+ */
+export type AthenaEstrategia = {
+  /** Lo que se pidió: `auto`, `hierarchical` o `direct`. */
+  solicitada: string;
+  /** Lo que se hizo: `direct` o `hierarchical`. */
+  seleccionada: string;
+  /** Código estable del motivo. */
+  codigo: string;
+  /** El motivo efectivo, en una frase. */
+  motivo: string;
+  /** Lo que opinó la política: `decompose` o `decline`. Puede no coincidir con lo hecho. */
+  veredictoPolitica: string;
+  explicacionPolitica: string;
+  /** Criterios de descomposición que el objetivo cumple. */
+  criterios: string[];
+  /** Señales que Athena no pudo medir y dejó en su valor neutro. */
+  senalesSupuestas: string[];
+};
+
 export type AthenaRun = {
   runId: string;
   objetivo: string;
@@ -1777,6 +1832,8 @@ export type AthenaRun = {
   actividad: string[];
   evidencia: string[];
   ciclosReparacion: number;
+  /** Cómo se está ejecutando este run. Ausente hasta que Athena lo dice. */
+  estrategia?: AthenaEstrategia;
 };
 
 /** Forma corta de un run, para la lista de recuperación. */

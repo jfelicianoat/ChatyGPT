@@ -23,9 +23,13 @@ import {
   etiquetasPermiso,
   mensajeServicio,
   motivoBloqueoPermiso,
+  motivoEstrategia,
+  nombreCriterio,
   nombreEstadoTarea,
+  nombreEstrategia,
   nombreRol,
   ordenarPlan,
+  politicaDiscrepa,
   progresoPlan,
   simboloTarea,
   nombreFase,
@@ -41,18 +45,29 @@ import {
 
 type Props = {
   carpetas: AuthorizedFolderView[];
+  carpetasCargando: boolean;
+  carpetasError: string | null;
+  onAutorizarCarpeta: () => Promise<AuthorizedFolderView | null>;
 };
 
-export function AthenaArea({ carpetas }: Props) {
+export function AthenaArea({
+  carpetas,
+  carpetasCargando,
+  carpetasError,
+  onAutorizarCarpeta
+}: Props) {
   const [aviso, setAviso] = useState<string | null>(null);
   const [estado, setEstado] = useState<AthenaEstadoArea | null>(null);
   const [objetivo, setObjetivo] = useState("");
   const [carpetaId, setCarpetaId] = useState("");
+  const [credencial, setCredencial] = useState("");
+  const [guardandoCredencial, setGuardandoCredencial] = useState(false);
   const [runId, setRunId] = useState<string | null>(null);
   const [run, setRun] = useState<AthenaRun | null>(null);
   const [porRecuperar, setPorRecuperar] = useState<AthenaResumenRun[]>([]);
   const [artefacto, setArtefacto] = useState<string | null>(null);
   const [ocupado, setOcupado] = useState(false);
+  const [autorizandoCarpeta, setAutorizandoCarpeta] = useState(false);
   const sondeo = useRef<number | null>(null);
 
   const informar = useCallback((error: unknown) => {
@@ -66,6 +81,24 @@ export function AthenaArea({ carpetas }: Props) {
       informar(error);
     }
   }, [informar]);
+
+  const guardarCredencial = async () => {
+    if (!credencial.trim()) {
+      setAviso("Escribe el token que muestra el servicio de Athena.");
+      return;
+    }
+    setGuardandoCredencial(true);
+    setAviso(null);
+    try {
+      await platform.setAthenaCredential(credencial);
+      setCredencial("");
+      await refrescarEstado();
+    } catch (error) {
+      informar(error);
+    } finally {
+      setGuardandoCredencial(false);
+    }
+  };
 
   const refrescarRecuperacion = useCallback(async () => {
     try {
@@ -155,6 +188,21 @@ export function AthenaArea({ carpetas }: Props) {
     }
   };
 
+  const autorizarCarpeta = async () => {
+    setAutorizandoCarpeta(true);
+    setAviso(null);
+    try {
+      const seleccionada = await onAutorizarCarpeta();
+      if (seleccionada) {
+        setCarpetaId(seleccionada.id);
+      }
+    } catch (error) {
+      informar(error);
+    } finally {
+      setAutorizandoCarpeta(false);
+    }
+  };
+
   const responder = async (requestId: string, permitir: boolean) => {
     if (!runId) {
       return;
@@ -221,13 +269,49 @@ export function AthenaArea({ carpetas }: Props) {
     <section className="athena-area" aria-label="Athena">
       <header className="athena-cabecera">
         <h2>Athena</h2>
-        <p className="athena-servicio" data-estado={estado?.estado ?? "desconocido"}>
-          {mensajeServicio(estado)}
-        </p>
-        {estado && !estado.credencialConfigurada ? (
-          <p className="athena-aviso">
-            Falta la credencial de Athena. El servicio la regenera en cada arranque.
+        <div className="athena-status-tools">
+          <p className="athena-servicio" data-estado={estado?.estado ?? "desconocido"}>
+            {mensajeServicio(estado)}
           </p>
+          <button
+            type="button"
+            className="athena-refresh"
+            onClick={() => void refrescarEstado()}
+          >
+            Volver a comprobar
+          </button>
+        </div>
+        {estado ? <small className="athena-service-url">Servicio: {estado.urlBase}</small> : null}
+        {estado && !estado.credencialConfigurada ? (
+          <section className="athena-credential-setup" aria-labelledby="athena-credential-title">
+            <div>
+              <strong id="athena-credential-title">Conectar este ChatyGPT con Athena</strong>
+              <p>Introduce el token del servicio. Se guardará cifrado para tu cuenta de Windows.</p>
+            </div>
+            <label htmlFor="athena-credential">Token de Athena</label>
+            <div className="athena-credential-controls">
+              <input
+                id="athena-credential"
+                type="password"
+                autoComplete="off"
+                value={credencial}
+                onChange={(evento) => setCredencial(evento.target.value)}
+                onKeyDown={(evento) => {
+                  if (evento.key === "Enter") {
+                    evento.preventDefault();
+                    void guardarCredencial();
+                  }
+                }}
+              />
+              <button
+                type="button"
+                disabled={guardandoCredencial || !credencial.trim()}
+                onClick={() => void guardarCredencial()}
+              >
+                {guardandoCredencial ? "Guardando…" : "Guardar y conectar"}
+              </button>
+            </div>
+          </section>
         ) : null}
         {aviso ? (
           <p className="athena-aviso" role="alert">
@@ -243,33 +327,72 @@ export function AthenaArea({ carpetas }: Props) {
           void lanzar();
         }}
       >
-        <label htmlFor="athena-objetivo">Objetivo</label>
-        <textarea
-          id="athena-objetivo"
-          value={objetivo}
-          onChange={(evento) => setObjetivo(evento.target.value)}
-          placeholder="Qué quieres que haga Athena en el repositorio"
-          rows={2}
-        />
-        <label htmlFor="athena-carpeta">Carpeta autorizada</label>
-        <select
-          id="athena-carpeta"
-          value={carpetaId}
-          onChange={(evento) => setCarpetaId(evento.target.value)}
-        >
-          <option value="">Elige una carpeta…</option>
-          {carpetas.map((carpeta) => (
-            <option key={carpeta.id} value={carpeta.id}>
-              {carpeta.displayName}
-            </option>
-          ))}
-        </select>
-        <p className="athena-nota">
-          Cada cambio y cada comando te pedirán permiso, uno a uno.
-        </p>
-        <button type="submit" disabled={ocupado || !puedeLanzarse(estado, objetivo, carpetaId)}>
-          Lanzar
-        </button>
+        <header className="athena-lanzador-encabezado">
+          <div>
+            <h3>Iniciar un trabajo</h3>
+            <p>Describe el resultado que necesitas y limita a Athena a una carpeta autorizada.</p>
+          </div>
+        </header>
+
+        <div className="athena-form-field athena-form-objective">
+          <label htmlFor="athena-objetivo">Objetivo</label>
+          <textarea
+            id="athena-objetivo"
+            value={objetivo}
+            onChange={(evento) => setObjetivo(evento.target.value)}
+            placeholder="Por ejemplo: revisa el proyecto, corrige el fallo y ejecuta las pruebas"
+            rows={5}
+          />
+          <small>Incluye qué debe cambiar y cómo sabrás que el trabajo está terminado.</small>
+        </div>
+
+        <div className="athena-form-field athena-form-folder">
+          <label htmlFor="athena-carpeta">Carpeta autorizada</label>
+          <div className="athena-folder-controls">
+            <select
+              id="athena-carpeta"
+              value={carpetaId}
+              disabled={carpetasCargando || autorizandoCarpeta || carpetas.length === 0}
+              onChange={(evento) => setCarpetaId(evento.target.value)}
+            >
+              <option value="">
+                {carpetasCargando
+                  ? "Cargando carpetas…"
+                  : carpetas.length === 0
+                    ? "No hay carpetas autorizadas"
+                    : "Elige una carpeta…"}
+              </option>
+              {carpetas.map((carpeta) => (
+                <option key={carpeta.id} value={carpeta.id}>
+                  {carpeta.displayName}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              className="secondary"
+              disabled={autorizandoCarpeta}
+              onClick={() => void autorizarCarpeta()}
+            >
+              {autorizandoCarpeta ? "Abriendo selector…" : "Autorizar carpeta"}
+            </button>
+          </div>
+          {carpetasError ? <small role="alert">{carpetasError}</small> : null}
+          {!carpetasCargando && !carpetasError && carpetas.length === 0 ? (
+            <small>Autoriza una carpeta para que Athena pueda trabajar dentro de ella.</small>
+          ) : (
+            <small>Athena no podrá trabajar fuera de esta ubicación.</small>
+          )}
+        </div>
+
+        <footer className="athena-lanzador-acciones">
+          <p className="athena-nota">
+            Cada cambio y cada comando te pedirán permiso, uno a uno.
+          </p>
+          <button type="submit" disabled={ocupado || !puedeLanzarse(estado, objetivo, carpetaId)}>
+            {ocupado ? "Iniciando…" : "Lanzar trabajo"}
+          </button>
+        </footer>
       </form>
 
       {porRecuperar.length > 0 ? (
@@ -403,6 +526,60 @@ export function AthenaArea({ carpetas }: Props) {
               </p>
               {bloqueoPermiso ? <p className="athena-aviso">{bloqueoPermiso}</p> : null}
             </section>
+          ) : null}
+
+          {run.estrategia ? (
+            <details className="athena-estrategia">
+              <summary>
+                Estrategia de ejecución
+                <span className="athena-rol">
+                  {nombreEstrategia(run.estrategia.seleccionada)}
+                </span>
+              </summary>
+              <p className="athena-motivo">{motivoEstrategia(run.estrategia)}</p>
+              <dl>
+                <div>
+                  <dt>Pediste</dt>
+                  <dd>{nombreEstrategia(run.estrategia.solicitada)}</dd>
+                </div>
+                <div>
+                  <dt>Se hizo</dt>
+                  <dd>{nombreEstrategia(run.estrategia.seleccionada)}</dd>
+                </div>
+                {/* El criterio de Athena sólo se enseña cuando dice algo distinto de lo
+                    que se hizo. Repetir «coincide» en cada run sería ruido, y callarlo
+                    cuando discrepa escondería justo lo que hay que explicar. */}
+                {politicaDiscrepa(run.estrategia) ? (
+                  <div>
+                    <dt>Criterio de Athena</dt>
+                    <dd>
+                      {run.estrategia.veredictoPolitica === "decompose"
+                        ? "Este objetivo se podía repartir en tareas."
+                        : "Este objetivo no necesitaba repartirse."}
+                    </dd>
+                  </div>
+                ) : null}
+              </dl>
+              {run.estrategia.criterios.length > 0 ? (
+                <>
+                  <p className="athena-nota">Por qué se podía repartir:</p>
+                  <ul className="athena-senales">
+                    {run.estrategia.criterios.map((criterio) => (
+                      <li key={criterio}>{nombreCriterio(criterio)}</li>
+                    ))}
+                  </ul>
+                </>
+              ) : null}
+              {run.estrategia.senalesSupuestas.length > 0 ? (
+                <p className="athena-nota">
+                  Athena no pudo medirlo todo: {run.estrategia.senalesSupuestas.length}{" "}
+                  {run.estrategia.senalesSupuestas.length === 1
+                    ? "señal quedó"
+                    : "señales quedaron"}{" "}
+                  sin comprobar y no se dieron por ciertas.
+                </p>
+              ) : null}
+            </details>
           ) : null}
 
           {run.tareas.length > 0 ? (

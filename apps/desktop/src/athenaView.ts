@@ -9,6 +9,7 @@
 
 import type {
   AthenaArgumento,
+  AthenaEstrategia,
   AthenaEstadoArea,
   AthenaEstadoTarea,
   AthenaFase,
@@ -151,6 +152,93 @@ export function nombreRol(rol: string): string {
       return "Verificador";
     default:
       return rol;
+  }
+}
+
+/**
+ * Nombre legible de una estrategia de ejecución.
+ *
+ * `hierarchical` no se traduce como «jerárquico» a secas: lo que le importa a quien mira
+ * es que el trabajo se repartió en tareas, no la forma del grafo.
+ */
+export function nombreEstrategia(estrategia: string): string {
+  switch (estrategia) {
+    case "auto":
+      return "Que decida Athena";
+    case "hierarchical":
+      return "Repartido en tareas";
+    case "direct":
+      return "De una sola pieza";
+    default:
+      return estrategia;
+  }
+}
+
+/**
+ * Por qué se ejecutó así, en una frase corta.
+ *
+ * Se traduce el código y no el texto que lo acompaña: el código es estable y el texto se
+ * reescribirá. Un código que no se reconozca cae al motivo que mandó Athena, que siempre
+ * dice algo, en vez de dejar el hueco vacío.
+ */
+export function motivoEstrategia(estrategia: AthenaEstrategia): string {
+  switch (estrategia.codigo) {
+    case "caller_required_direct":
+      return "Lo pediste así.";
+    case "caller_required_hierarchical":
+      return "Lo pediste así: repartir el trabajo aunque no hiciera falta.";
+    case "planning_unavailable":
+      return "Este Athena no tiene activado el reparto en tareas.";
+    case "policy_declined":
+      return "El objetivo tiene una sola cosa que comprobar al final, así que repartirlo no habría aportado nada.";
+    case "policy_endorsed":
+      return "El trabajo se puede repartir de verdad, así que se repartió.";
+    case "plan_not_worthwhile":
+      return "El reparto que salió no aportaba nada: las tareas iban una detrás de otra y todas para el mismo especialista.";
+    case "plan_refused":
+      return "No salió un reparto utilizable, así que se hizo de una pieza.";
+    case "no_usable_plan":
+      return "No salió un reparto utilizable, así que el objetivo entero quedó como una única tarea.";
+    default:
+      return estrategia.motivo;
+  }
+}
+
+/**
+ * Cierto cuando la política habría hecho otra cosa de la que se hizo.
+ *
+ * Es el caso que merece explicación: un objetivo que se podía repartir ejecutado de una
+ * pieza, o al revés. Cuando coinciden no hay nada que contar.
+ */
+export function politicaDiscrepa(estrategia: AthenaEstrategia): boolean {
+  if (!estrategia.veredictoPolitica) {
+    return false;
+  }
+  const politicaRepartiria = estrategia.veredictoPolitica === "decompose";
+  return politicaRepartiria !== (estrategia.seleccionada === "hierarchical");
+}
+
+/** Nombre legible de un criterio de descomposición. */
+export function nombreCriterio(criterio: string): string {
+  switch (criterio) {
+    case "multiple independently verifiable outputs":
+      return "Varios resultados que se comprueban por separado";
+    case "meaningful dependencies":
+      return "Hay partes que dependen de otras";
+    case "parallelisable investigation":
+      return "Se puede investigar en paralelo";
+    case "high implementation risk":
+      return "El cambio es arriesgado";
+    case "multiple files or subsystems":
+      return "Toca varias partes del repositorio";
+    case "more than one specialist":
+      return "Hace falta más de un especialista";
+    case "tasks that can run at the same time":
+      return "Hay tareas que pueden ir a la vez";
+    case "work for more than one specialist":
+      return "Hay trabajo para más de un especialista";
+    default:
+      return criterio;
   }
 }
 
@@ -302,6 +390,13 @@ export function mensajeServicio(estado: AthenaEstadoArea | null): string {
   switch (estado.estado) {
     case "conectado":
       return "Athena está disponible.";
+    case "sin_credencial":
+      return "Athena está disponible, pero falta su credencial. Guárdala aquí abajo para poder usarla.";
+    case "credencial_invalida":
+      // Que Athena esté viva no significa que sea la misma que emitió la credencial
+      // guardada: al reiniciarla se genera otra. Decirlo evita mandar a nadie a revisar
+      // el servicio cuando lo que hay que rehacer es la vinculación.
+      return "Athena está disponible pero rechaza la credencial guardada. Es de otra sesión suya: vuelve a vincularla abajo.";
     case "incompatible":
       return "Athena responde con una versión que esta aplicación no sabe leer. Actualiza una de las dos.";
     case "no_disponible":
@@ -311,14 +406,17 @@ export function mensajeServicio(estado: AthenaEstadoArea | null): string {
   }
 }
 
-/** Solo se puede lanzar un run si el servicio responde y hay carpeta y objetivo. */
+/** Solo se puede lanzar si hay servicio autenticable, carpeta y objetivo. */
 export function puedeLanzarse(
   estado: AthenaEstadoArea | null,
   objetivo: string,
   carpeta: string
 ): boolean {
   return (
-    estado?.estado === "conectado" && objetivo.trim().length > 0 && carpeta.trim().length > 0
+    estado?.estado === "conectado" &&
+    estado.credencialConfigurada &&
+    objetivo.trim().length > 0 &&
+    carpeta.trim().length > 0
   );
 }
 

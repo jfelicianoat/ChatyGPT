@@ -191,6 +191,54 @@ fn pick_gpt_modify_folder(
 }
 
 #[tauri::command]
+fn pick_athena_folder(
+    state: State<'_, AppState>,
+) -> Result<Option<AuthorizedFolderView>, AppError> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        let script = r#"
+            Add-Type -AssemblyName System.Windows.Forms
+            $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+            $dialog.Description = 'Elige la carpeta en la que Athena podrá trabajar con tu autorización'
+            $dialog.ShowNewFolderButton = $true
+            if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+                [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+                [Console]::Write($dialog.SelectedPath)
+            }
+        "#;
+        let output = std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-STA", "-Command", script])
+            .creation_flags(0x0800_0000)
+            .output()
+            .map_err(|error| {
+                AppError::Validation(format!("no se pudo abrir el selector: {error}"))
+            })?;
+        if !output.status.success() {
+            return Err(AppError::Validation(
+                String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+            ));
+        }
+        let path = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        if path.is_empty() {
+            return Ok(None);
+        }
+        state
+            .database
+            .authorize_folder_for_athena(std::path::Path::new(&path), &path)?;
+        Ok(state
+            .database
+            .list_authorized_folders()?
+            .into_iter()
+            .find(|folder| folder.path.eq_ignore_ascii_case(&path)))
+    }
+    #[cfg(not(target_os = "windows"))]
+    Err(AppError::Validation(
+        "la selección de carpetas todavía solo está disponible en Windows".to_owned(),
+    ))
+}
+
+#[tauri::command]
 fn revoke_authorized_folder(
     folder_id: String,
     confirmed: bool,
@@ -269,10 +317,15 @@ async fn start_athena_run(
         .database
         .list_authorized_folders()?
         .into_iter()
-        .find(|folder| folder.id == folder_id)
+        .find(|folder| {
+            folder.id == folder_id
+                && folder.revoked_at.is_none()
+                && folder.permissions.get("athena").and_then(|value| value.as_bool())
+                    == Some(true)
+        })
         .ok_or_else(|| {
             AppError::Validation(
-                "la carpeta no está autorizada; añádela antes de lanzar un run".to_owned(),
+                "la carpeta no está autorizada para Athena; añádela desde su sección antes de lanzar el trabajo".to_owned(),
             )
         })?;
     let opciones = athena::OpcionesRun {
@@ -357,14 +410,10 @@ async fn get_athena_run(
     run_id: String,
     state: State<'_, AppState>,
 ) -> Result<athena::ProyeccionRun, AppError> {
-    if let Some(vista) = state.athena.proyeccion(&run_id) {
-        // Mientras el flujo siga vivo, lo acumulado ya está al día.
-        if vista.conectado {
-            cerrar_si_termino(&state, &run_id, &vista)?;
-            return Ok(vista);
-        }
-    }
-    let vista = state.athena.refrescar(&run_id).await?;
+    // El flujo da inmediatez, pero la instantánea durable decide. Una conexión
+    // SSE aún abierta no demuestra que el evento terminal haya llegado: si se
+    // pierde justo al cerrar, confiar en la caché dejaría la UI en «Trabajando».
+    let vista = state.athena.consultar(&run_id).await?;
     cerrar_si_termino(&state, &run_id, &vista)?;
     Ok(vista)
 }
@@ -2868,6 +2917,7 @@ pub fn run() {
             clear_api_credential,
             pick_gpt_read_folder,
             pick_gpt_modify_folder,
+            pick_athena_folder,
             revoke_authorized_folder,
             start_smoke_task,
             get_local_task,

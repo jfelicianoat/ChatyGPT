@@ -25,4 +25,13 @@ describe("contraste de superficies en el tema oscuro", () => {
     expect(finalContrastBlock).toContain(".memory-item.disabled");
     expect(finalContrastBlock).toContain(".custom-gpt-knowledge-item.disabled");
   });
+
+  it("mantiene el lanzador de Athena amplio y adaptable", () => {
+    expect(css).toMatch(
+      /\.athena-lanzador\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1\.65fr\) minmax\(260px, \.85fr\)/
+    );
+    expect(css).toMatch(
+      /@media \(max-width: 820px\)[\s\S]*?\.athena-lanzador\s*\{[^}]*grid-template-columns:\s*1fr/
+    );
+  });
 });

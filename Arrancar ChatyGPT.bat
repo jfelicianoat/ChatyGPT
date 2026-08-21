@@ -104,9 +104,13 @@ powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command ^
   "  throw ('No se pudo validar Broker AI en ' + $capabilitiesUrl + '. Comprueba que esta arrancado y que el token es el actual. ' + $_.Exception.Message);" ^
   "}" ^
   "Write-Host ('Broker AI listo. Contrato ' + $capabilities.contract_version);" ^
+  "& (Join-Path (Get-Location) 'scripts\Start-AthenaForChatyGPT.ps1') -BrokerBaseUrl $env:CHATYGPT_BROKER_BASE_URL -BrokerToken $env:AI_BROKER_ADMIN_TOKEN;" ^
   "$releaseExe = Join-Path (Get-Location) 'apps\desktop\src-tauri\target\release\chatygpt.exe';" ^
-  "& $releaseExe;" ^
-  "exit $LASTEXITCODE"
+  "$appExit = 1;" ^
+  "try { & $releaseExe; $appExit = $LASTEXITCODE } finally {" ^
+  "  & (Join-Path (Get-Location) 'scripts\Stop-AthenaForChatyGPT.ps1');" ^
+  "}" ^
+  "exit $appExit"
 
 if errorlevel 1 goto :failed
 exit /b 0

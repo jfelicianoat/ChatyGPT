@@ -31,6 +31,7 @@ import {
   progressiveConversationWindow,
   shouldOfferSandboxForPrompt,
   shouldRefreshSandboxDiagnostic,
+  shouldReconcilePendingTurn,
   sandboxUnavailableGuidance,
   scheduledCalendarOccurrences,
   scheduledNotifications,
@@ -784,6 +785,23 @@ describe("broker task state helpers", () => {
     expect(isTerminalTask(task("completed", "terminal"))).toBe(true);
     expect(isTaskPollingComplete(task("failed", "terminal"))).toBe(true);
     expect(isTaskBlockingConversation(task("not_submitted", "orphaned"))).toBe(false);
+  });
+
+  it("reconciles a pending message after its auxiliary task finishes", () => {
+    const completed = task("completed", "terminal");
+
+    expect(shouldReconcilePendingTurn({
+      task: completed,
+      messages: [{ status: "pending", brokerTaskId: completed.id }]
+    })).toBe(true);
+    expect(shouldReconcilePendingTurn({
+      task: completed,
+      messages: [{ status: "complete", brokerTaskId: completed.id }]
+    })).toBe(false);
+    expect(shouldReconcilePendingTurn({
+      task: task("generating"),
+      messages: [{ status: "pending", brokerTaskId: completed.id }]
+    })).toBe(false);
   });
 });
 

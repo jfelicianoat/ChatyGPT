@@ -55,6 +55,13 @@ const DEFAULTS: Record<string, unknown> = {
     environmentPresent: false,
     message: "Credencial cifrada para tu cuenta de Windows."
   },
+  getAthenaStatus: {
+    estado: "conectado",
+    urlBase: "http://127.0.0.1:8770",
+    credencialConfigurada: true,
+    versionContrato: 1,
+    runsActivos: 0
+  },
   listAuthorizedFolders: [
     {
       id: "folder-1",
@@ -160,6 +167,77 @@ describe("navegación principal simplificada", () => {
       .toBe("page");
     expect(screen.getByRole("heading", { name: "Flujos" })).toBeDefined();
     expect(screen.getByRole("button", { name: "Crear flujo" })).toBeDefined();
+
+    await userEvent.click(screen.getByRole("button", { name: "Athena" }));
+    expect(screen.getByRole("button", { name: "Athena" }).getAttribute("aria-current"))
+      .toBe("page");
+    expect(document.querySelector(".home-athena")).not.toBeNull();
+    expect(screen.getByRole("heading", { name: "Athena" })).toBeDefined();
+    expect(screen.getByRole("heading", { name: "Iniciar un trabajo" })).toBeDefined();
+    expect(screen.getByRole("button", { name: "Lanzar trabajo" })).toBeDefined();
+    expect(document.querySelector(".athena-form-objective")).not.toBeNull();
+    expect(document.querySelector(".athena-form-folder")).not.toBeNull();
+  });
+
+  it("permite guardar la credencial de un servicio Athena externo", async () => {
+    platformMethod("getAthenaStatus").mockResolvedValue({
+      estado: "conectado",
+      urlBase: "http://127.0.0.1:8770",
+      credencialConfigurada: false,
+      versionContrato: 1,
+      runsActivos: 0
+    });
+    platformMethod("setAthenaCredential").mockResolvedValue({
+      source: "protected",
+      protected: true,
+      environmentPresent: false,
+      message: "Credencial guardada"
+    });
+    await mountHome();
+
+    await userEvent.click(screen.getByRole("button", { name: "Athena" }));
+    await userEvent.type(screen.getByLabelText("Token de Athena"), "token-del-servicio");
+    await userEvent.click(screen.getByRole("button", { name: "Guardar y conectar" }));
+
+    await waitFor(() => {
+      expect(platformMethod("setAthenaCredential")).toHaveBeenCalledWith(
+        "token-del-servicio"
+      );
+    });
+  });
+
+  it("permite autorizar y seleccionar una carpeta desde el lanzador de Athena", async () => {
+    const folder = {
+      id: "folder-athena",
+      path: "D:/Trabajo Athena",
+      displayName: "D:/Trabajo Athena",
+      permissions: { athena: true, purpose: "athena_workspace" },
+      grantedAt: "2026-08-21T18:00:00Z",
+      revokedAt: null
+    };
+    platformMethod("listAuthorizedFolders")
+      .mockResolvedValueOnce([])
+      .mockResolvedValue([folder]);
+    platformMethod("pickAthenaFolder").mockResolvedValue(folder);
+    await mountHome();
+
+    await userEvent.click(screen.getByRole("button", { name: "Athena" }));
+    await userEvent.type(
+      screen.getByLabelText("Objetivo"),
+      "Revisa el proyecto y ejecuta sus pruebas"
+    );
+    expect((screen.getByRole("button", { name: "Lanzar trabajo" }) as HTMLButtonElement).disabled)
+      .toBe(true);
+
+    await userEvent.click(screen.getByRole("button", { name: "Autorizar carpeta" }));
+
+    await waitFor(() => {
+      expect(platformMethod("pickAthenaFolder")).toHaveBeenCalledTimes(1);
+      expect((screen.getByLabelText("Carpeta autorizada") as HTMLSelectElement).value)
+        .toBe(folder.id);
+      expect((screen.getByRole("button", { name: "Lanzar trabajo" }) as HTMLButtonElement).disabled)
+        .toBe(false);
+    });
   });
 
   it("hace visible inmediatamente que el mensaje remoto está arrancando", async () => {
@@ -200,6 +278,117 @@ describe("navegación principal simplificada", () => {
     );
     expect(platformMethod("sendChatTurn")).toHaveBeenCalledTimes(1);
   });
+
+  it("sigue el relevo tardío entre la búsqueda semántica y la respuesta del chat", async () => {
+    const summary = {
+      id: "conversation-semantic-handoff",
+      title: "Consulta con contexto semántico",
+      projectId: null,
+      updatedAt: "2026-08-21T16:57:52Z"
+    };
+    const executionPreferences = {
+      dataClassification: "public",
+      strategy: "single",
+      preset: "fast",
+      maxCostUsd: 0.1,
+      longContext: "fail",
+      priority: 50
+    };
+    const userMessage = {
+      id: "message-user",
+      role: "user",
+      status: "complete",
+      sequenceNo: 1,
+      text: "Analiza el documento",
+      sources: [],
+      createdAt: "2026-08-21T16:57:52Z"
+    };
+    const pendingEmbedding = {
+      id: "message-assistant",
+      role: "assistant",
+      status: "pending",
+      sequenceNo: 2,
+      brokerTaskId: "task-embedding",
+      taskRemoteStatus: "completed",
+      sources: [],
+      createdAt: "2026-08-21T16:57:52Z"
+    };
+    const pendingChat = {
+      ...pendingEmbedding,
+      brokerTaskId: "task-chat",
+      taskRemoteStatus: "queued"
+    };
+    const completedAssistant = {
+      ...pendingChat,
+      status: "complete",
+      taskRemoteStatus: "completed",
+      text: "Respuesta recuperada después del relevo semántico"
+    };
+    const conversation = (messages: unknown[]) => ({
+      ...summary,
+      customGptId: null,
+      executionPreferences,
+      messages,
+      researchRuns: []
+    });
+    const task = (
+      id: string,
+      remoteStatus: string,
+      localState: string
+    ) => ({
+      id,
+      remoteTaskId: `remote-${id}`,
+      remoteStatus,
+      localState,
+      consecutivePollErrors: 0,
+      result: remoteStatus === "completed" ? {} : null,
+      progress: { phase: remoteStatus },
+      pendingToolCalls: [],
+      updatedAt: "2026-08-21T16:57:56Z"
+    });
+    let conversationReads = 0;
+    platformMethod("listConversations").mockResolvedValue([summary]);
+    platformMethod("listAttachments").mockResolvedValue([]);
+    platformMethod("listProjectFiles").mockResolvedValue([]);
+    platformMethod("getConversation").mockImplementation(async () => {
+      conversationReads += 1;
+      if (conversationReads === 1) return conversation([]);
+      if (conversationReads <= 3) return conversation([userMessage, pendingEmbedding]);
+      if (conversationReads === 4) return conversation([userMessage, pendingChat]);
+      return conversation([userMessage, completedAssistant]);
+    });
+    platformMethod("sendChatTurn").mockResolvedValue(
+      task("task-embedding", "queued", "polling")
+    );
+    let taskReads = 0;
+    platformMethod("getLocalTask").mockImplementation(async (taskId: string) => {
+      taskReads += 1;
+      if (taskId === "task-chat") {
+        return task(
+          "task-chat",
+          taskReads >= 5 ? "completed" : "queued",
+          taskReads >= 5 ? "terminal" : "polling"
+        );
+      }
+      return task(
+        "task-embedding",
+        taskReads >= 2 ? "completed" : "queued",
+        taskReads >= 2 ? "terminal" : "polling"
+      );
+    });
+
+    render(<App />);
+    await screen.findByRole("heading", { name: summary.title });
+    await userEvent.type(screen.getByPlaceholderText("Escribe un mensaje…"), userMessage.text);
+    await userEvent.click(screen.getByRole("button", { name: "Enviar" }));
+
+    expect(
+      await screen.findByText("Respuesta recuperada después del relevo semántico", {}, {
+        timeout: 7_000
+      })
+    ).toBeDefined();
+    expect(platformMethod("getLocalTask")).toHaveBeenCalledWith("task-chat");
+  }, 10_000);
 
   it("abre un chat largo por el final y permite recuperar mensajes anteriores", async () => {
     const summary = {

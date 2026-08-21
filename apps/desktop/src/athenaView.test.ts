@@ -1,15 +1,25 @@
 import { describe, expect, it } from "vitest";
 
-import type { AthenaEstadoArea, AthenaPermiso, AthenaRun, AthenaTarea } from "./domain";
+import type {
+  AthenaEstadoArea,
+  AthenaEstrategia,
+  AthenaPermiso,
+  AthenaRun,
+  AthenaTarea
+} from "./domain";
 import {
   debeSeguirSondeando,
   esFaseTerminal,
   etiquetasPermiso,
   mensajeServicio,
   motivoBloqueoPermiso,
+  motivoEstrategia,
+  nombreCriterio,
   nombreEstadoTarea,
+  nombreEstrategia,
   nombreRol,
   ordenarPlan,
+  politicaDiscrepa,
   progresoPlan,
   simboloTarea,
   nombreFase,
@@ -158,6 +168,7 @@ describe("acciones disponibles", () => {
   it("no se lanza un run sin servicio, objetivo o carpeta", () => {
     expect(puedeLanzarse(estado(), "Arreglar", "D:/repo")).toBe(true);
     expect(puedeLanzarse(estado({ estado: "no_disponible" }), "Arreglar", "D:/repo")).toBe(false);
+    expect(puedeLanzarse(estado({ credencialConfigurada: false }), "Arreglar", "D:/repo")).toBe(false);
     expect(puedeLanzarse(estado(), "   ", "D:/repo")).toBe(false);
     expect(puedeLanzarse(estado(), "Arreglar", "")).toBe(false);
     expect(puedeLanzarse(null, "Arreglar", "D:/repo")).toBe(false);
@@ -408,5 +419,95 @@ describe("el plan como grafo", () => {
     expect(nombreRol("verifier")).toBe("Verificador");
     expect(nombreRol("")).toBe("");
     expect(nombreRol("analista")).toBe("analista");
+  });
+});
+
+describe("estrategia de ejecución", () => {
+  const base: AthenaEstrategia = {
+    solicitada: "auto",
+    seleccionada: "direct",
+    codigo: "policy_declined",
+    motivo: "auto -> direct: One verifiable output, so a graph would add bookkeeping…",
+    veredictoPolitica: "decline",
+    explicacionPolitica: "One verifiable output…",
+    criterios: [],
+    senalesSupuestas: []
+  };
+
+  it("llama a las estrategias por lo que significan, no por su código", () => {
+    expect(nombreEstrategia("auto")).toBe("Que decida Athena");
+    expect(nombreEstrategia("hierarchical")).toBe("Repartido en tareas");
+    expect(nombreEstrategia("direct")).toBe("De una sola pieza");
+  });
+
+  it("deja pasar una estrategia que no conoce en vez de inventarse un nombre", () => {
+    // Athena puede añadir modos. Enseñar el código crudo es feo; enseñar un nombre
+    // equivocado es peor, porque nadie sabría que lo es.
+    expect(nombreEstrategia("speculative")).toBe("speculative");
+  });
+
+  it("explica el motivo a partir del código, que es lo estable", () => {
+    expect(motivoEstrategia({ ...base, codigo: "planning_unavailable" })).toContain(
+      "no tiene activado"
+    );
+    expect(motivoEstrategia({ ...base, codigo: "plan_not_worthwhile" })).toContain(
+      "no aportaba nada"
+    );
+  });
+
+  it("ante un código desconocido enseña el motivo que mandó Athena", () => {
+    // La frase de Athena siempre dice algo. Dejar el hueco vacío convertiría un modo
+    // nuevo en una interfaz rota.
+    expect(motivoEstrategia({ ...base, codigo: "inventado" })).toBe(base.motivo);
+  });
+
+  it("señala cuando la política habría hecho otra cosa", () => {
+    // Es el caso que merece explicación: un objetivo que se podía repartir, ejecutado de
+    // una pieza porque el despliegue no tiene planificación.
+    expect(
+      politicaDiscrepa({ ...base, veredictoPolitica: "decompose", seleccionada: "direct" })
+    ).toBe(true);
+    expect(
+      politicaDiscrepa({ ...base, veredictoPolitica: "decline", seleccionada: "direct" })
+    ).toBe(false);
+  });
+
+  it("no señala discrepancia cuando no hay veredicto que comparar", () => {
+    expect(politicaDiscrepa({ ...base, veredictoPolitica: "" })).toBe(false);
+  });
+
+  it("traduce los criterios y respeta los que no conoce", () => {
+    expect(nombreCriterio("multiple independently verifiable outputs")).toBe(
+      "Varios resultados que se comprueban por separado"
+    );
+    expect(nombreCriterio("algo nuevo")).toBe("algo nuevo");
+  });
+});
+
+describe("estados de conexión con Athena", () => {
+  const vivo = (estado: AthenaEstadoArea["estado"], credencial: boolean): AthenaEstadoArea => ({
+    estado,
+    urlBase: "http://127.0.0.1:8770",
+    credencialConfigurada: credencial,
+    versionContrato: 1,
+    runsActivos: 0
+  });
+
+  it("no invita a lanzar nada cuando la credencial no vale", () => {
+    // Athena viva y credencial guardada: antes bastaba para habilitar el botón, y cada
+    // intento moría con un 401 que nadie había anticipado.
+    expect(puedeLanzarse(vivo("credencial_invalida", true), "arregla el test", "D:/repo")).toBe(
+      false
+    );
+    expect(puedeLanzarse(vivo("sin_credencial", false), "arregla el test", "D:/repo")).toBe(false);
+    expect(puedeLanzarse(vivo("conectado", true), "arregla el test", "D:/repo")).toBe(true);
+  });
+
+  it("dice qué hacer, y son cosas distintas", () => {
+    // «Falta credencial» y «la credencial no vale» mandan a la persona a sitios
+    // distintos: uno a guardarla, otro a rehacer la vinculación.
+    expect(mensajeServicio(vivo("sin_credencial", false))).toContain("falta su credencial");
+    expect(mensajeServicio(vivo("credencial_invalida", true))).toContain("rechaza");
+    expect(mensajeServicio(vivo("credencial_invalida", true))).toContain("vincularla");
   });
 });

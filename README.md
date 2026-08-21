@@ -350,6 +350,20 @@ Credencial de Broker AI:
 - `Arrancar ChatyGPT.bat` reutiliza la credencial guardada y solo pide el token
   cuando no existe o no puede descifrarse.
 
+Servicio Athena:
+
+- `Arrancar ChatyGPT.bat` inicia automáticamente el servicio Athena incluido en
+  la carpeta hermana `Athena`, lo conecta al mismo Broker y guarda una credencial
+  propia cifrada con DPAPI. La instancia administrada se identifica de forma
+  durable mediante su PID y hora de inicio, y se detiene al cerrar ChatyGPT
+  aunque una variable temporal del lanzador se haya perdido.
+- Si Athena ya está funcionando en `http://127.0.0.1:8770`, ChatyGPT la reutiliza
+  y nunca la detiene. Cuando falte su credencial, la app sigue abriéndose para
+  que pueda guardarse desde **Athena → Conexión con Athena**.
+- En **Athena**, el botón **Volver a comprobar** actualiza el estado. Con el
+  servicio conectado, basta con escribir el objetivo, elegir la carpeta
+  autorizada y pulsar **Lanzar**.
+
 Compatibilidad con el contrato 2.8:
 
 - La especificación de cliente vigente es [Client_API.md](../docs/Client_API.md).

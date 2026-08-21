@@ -285,6 +285,27 @@ impl AthenaClient {
         Ok(salud)
     }
 
+    /// ¿Vale la credencial que llevamos?
+    ///
+    /// Pregunta distinta de `salud`, y por eso endpoint distinto: `/v1/health` es público
+    /// a propósito —un sondeo de vida que exigiese credencial no diría si hay que arrancar
+    /// el servicio— así que un 200 suyo no autoriza a nadie a decirse conectado.
+    pub async fn credencial_valida(&self) -> Result<bool, AppError> {
+        let respuesta = self
+            .enviar(Method::GET, "/v1/auth/check", "auth_check", None::<&Value>, None)
+            .await?;
+        match respuesta.status() {
+            StatusCode::OK => Ok(true),
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => Ok(false),
+            _ => {
+                // Cualquier otra cosa no responde a la pregunta. Darla por «no vale»
+                // mandaría a la persona a revincular por un problema que no es suyo.
+                Self::interpretar(respuesta, "auth_check").await?;
+                Ok(false)
+            }
+        }
+    }
+
     /// Abre un run. Devuelve solo cuando ya es direccionable.
     pub async fn crear_run(
         &self,

@@ -449,6 +449,28 @@ impl ProyeccionRun {
                 tamano: referencia.size_chars,
             })
             .collect();
+        self.errores = instantanea
+            .working_memory
+            .get("errors")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|error| {
+                let codigo = error.get("code")?.as_str()?.to_owned();
+                Some(ErrorVista {
+                    codigo,
+                    mensaje: error
+                        .get("message")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                    recuperacion: error
+                        .get("recovery_action")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                })
+            })
+            .collect();
         self.tareas = tareas_de(&instantanea.working_memory);
     }
 

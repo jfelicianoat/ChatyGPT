@@ -30,8 +30,19 @@ pub enum EstadoServicio {
     /// "aún no lo sé" sin inventarse un cuarto valor por su cuenta.
     #[allow(dead_code)]
     Desconocido,
-    /// Responde y habla una versión de contrato que entendemos.
+    /// Responde, habla un contrato que entendemos y nos conoce.
     Conectado,
+    /// Responde, pero todavía no le hemos dado credencial.
+    ///
+    /// Distinto de `CredencialInvalida`: aquí no falta configuración de Athena, falta un
+    /// paso que la persona no ha dado, y decirle que su credencial no vale la mandaría a
+    /// revisar una que no existe.
+    SinCredencial,
+    /// Responde, tenemos credencial y la rechaza.
+    ///
+    /// Es el caso que antes se contaba como «conectado»: Athena viva, aplicación
+    /// anunciándose lista, y cada operación devolviendo 401 sin que nada lo avisara.
+    CredencialInvalida,
     /// No responde: los runs de Athena quedan deshabilitados, el chat normal no.
     NoDisponible,
     /// Responde pero con un contrato que este cliente no sabe leer.
@@ -78,14 +89,39 @@ impl AreaAthena {
     pub async fn estado(&self, credencial_configurada: bool) -> EstadoAreaAthena {
         let activos = self.runs.lock().map(|mapa| mapa.len()).unwrap_or(0);
         match self.cliente.salud().await {
-            Ok(salud) => EstadoAreaAthena {
-                estado: EstadoServicio::Conectado,
-                url_base: self.cliente.base_url(),
-                credencial_configurada,
-                version_contrato: Some(salud.wire_version),
-                detalle: None,
-                runs_activos: activos,
-            },
+            Ok(salud) => {
+                // Vivo. Que además nos conozca es otra pregunta y se hace aparte; sin
+                // preguntarla, una credencial caducada se presentaba como «conectado».
+                let (estado, detalle) = if !credencial_configurada {
+                    (
+                        EstadoServicio::SinCredencial,
+                        Some("Falta la credencial del servicio de Athena.".to_owned()),
+                    )
+                } else {
+                    match self.cliente.credencial_valida().await {
+                        Ok(true) => (EstadoServicio::Conectado, None),
+                        Ok(false) => (
+                            EstadoServicio::CredencialInvalida,
+                            Some(
+                                "Athena está disponible pero rechaza la credencial \
+                                 guardada. Vuelve a vincularla."
+                                    .to_owned(),
+                            ),
+                        ),
+                        // La comprobación no pudo hacerse: se informa de que está vivo y
+                        // se dice por qué no se sabe más, en vez de acusar a la credencial.
+                        Err(error) => (EstadoServicio::Conectado, Some(error.to_string())),
+                    }
+                };
+                EstadoAreaAthena {
+                    estado,
+                    url_base: self.cliente.base_url(),
+                    credencial_configurada,
+                    version_contrato: Some(salud.wire_version),
+                    detalle,
+                    runs_activos: activos,
+                }
+            }
             Err(AppError::AthenaContract(detalle)) => EstadoAreaAthena {
                 estado: EstadoServicio::Incompatible,
                 url_base: self.cliente.base_url(),
@@ -235,6 +271,17 @@ impl AreaAthena {
         vista.adoptar_instantanea(&instantanea);
         Ok(vista.clone())
     }
+
+    /// Devuelve la vista después de contrastarla con la instantánea durable.
+    ///
+    /// El flujo SSE reduce la latencia, pero no es una fuente suficiente para
+    /// responder a una consulta: una conexión puede seguir abierta justo
+    /// cuando el runtime ya persistió el cierre. Consultar siempre confirma el
+    /// estado con Athena, de modo que perder el último evento no deja un run
+    /// eternamente en marcha en la interfaz.
+    pub async fn consultar(&self, run_id: &str) -> Result<ProyeccionRun, AppError> {
+        self.refrescar(run_id).await
+    }
 }
 
 /// Aplica un mensaje del flujo a la proyección. Devuelve `false` cuando ya no
@@ -274,6 +321,89 @@ mod pruebas {
             .build()
             .expect("runtime")
             .block_on(futuro)
+    }
+
+    #[test]
+    fn salud_200_con_credencial_invalida_no_es_estar_conectado() {
+        // El caso reproducido contra el servicio real: Athena viva, `/v1/health` público
+        // devolviendo 200, y la credencial guardada rechazada con 401. Antes de esto, la
+        // aplicación decía «Conectado ✓ credencial configurada ✓» y luego fallaba cada
+        // operación sin haber avisado de nada.
+        let simulado = AthenaSimulado::arrancar();
+        simulado.responder(
+            "/v1/health",
+            RespuestaGuion::ok(json!({"status": "ok", "wire_version": 1, "runs": 0})),
+        );
+        simulado.responder(
+            "/v1/auth/check",
+            RespuestaGuion::error(401, "unauthorized", "credencial no válida"),
+        );
+
+        let estado = en_runtime(area(&simulado).estado(true));
+
+        assert_eq!(estado.estado, EstadoServicio::CredencialInvalida);
+        // Sigue habiendo credencial guardada: lo que falla es que valga, y son cosas
+        // distintas para quien tiene que arreglarlo.
+        assert!(estado.credencial_configurada);
+        assert!(estado
+            .detalle
+            .as_deref()
+            .is_some_and(|texto| texto.contains("vincular")));
+    }
+
+    #[test]
+    fn salud_200_sin_credencial_pide_credencial_y_no_culpa_a_ninguna() {
+        // Sin credencial no hay nada que comprobar, y decir que «no vale» mandaría a la
+        // persona a revisar una que no ha llegado a existir.
+        let simulado = AthenaSimulado::arrancar();
+        simulado.responder(
+            "/v1/health",
+            RespuestaGuion::ok(json!({"status": "ok", "wire_version": 1, "runs": 0})),
+        );
+
+        let estado = en_runtime(area(&simulado).estado(false));
+
+        assert_eq!(estado.estado, EstadoServicio::SinCredencial);
+        assert!(!estado.credencial_configurada);
+    }
+
+    #[test]
+    fn salud_200_con_credencial_valida_si_es_estar_conectado() {
+        let simulado = AthenaSimulado::arrancar();
+        simulado.responder(
+            "/v1/health",
+            RespuestaGuion::ok(json!({"status": "ok", "wire_version": 1, "runs": 0})),
+        );
+        simulado.responder(
+            "/v1/auth/check",
+            RespuestaGuion::ok(json!({"authenticated": true, "wire_version": 1})),
+        );
+
+        let estado = en_runtime(area(&simulado).estado(true));
+
+        assert_eq!(estado.estado, EstadoServicio::Conectado);
+        assert!(estado.detalle.is_none());
+    }
+
+    #[test]
+    fn una_comprobacion_que_no_se_puede_hacer_no_acusa_a_la_credencial() {
+        // El servicio contesta a `/v1/health` y se rompe al comprobar. No se sabe si la
+        // credencial vale, así que no se dice que no valga: se informa de que está vivo y
+        // de por qué no se sabe más.
+        let simulado = AthenaSimulado::arrancar();
+        simulado.responder(
+            "/v1/health",
+            RespuestaGuion::ok(json!({"status": "ok", "wire_version": 1, "runs": 0})),
+        );
+        simulado.responder(
+            "/v1/auth/check",
+            RespuestaGuion::error(500, "internal", "algo se rompió dentro"),
+        );
+
+        let estado = en_runtime(area(&simulado).estado(true));
+
+        assert_eq!(estado.estado, EstadoServicio::Conectado);
+        assert!(estado.detalle.is_some(), "debería decir por qué no se sabe más");
     }
 
     #[test]
@@ -389,6 +519,42 @@ mod pruebas {
         assert_eq!(vista.ficheros_modificados, vec!["calc.py".to_owned()]);
         assert_eq!(vista.verificacion.as_deref(), Some("passed"));
         assert!(area.proyeccion("run-1").is_some(), "queda guardada");
+    }
+
+    #[test]
+    fn consultar_no_confia_en_una_conexion_que_conserva_un_estado_obsoleto() {
+        let simulado = AthenaSimulado::arrancar();
+        simulado.responder(
+            "/v1/runs/run-1",
+            RespuestaGuion::ok(json!({
+                "run_id": "run-1", "workspace_id": "ws", "status": "failed",
+                "resumable": false, "degraded": false, "objective": "Crear un archivo",
+                "created_at": "", "updated_at": "",
+                "working_memory": {
+                    "objective": "Crear un archivo",
+                    "files_modified": [],
+                    "errors": [{
+                        "code": "model_permanent_error",
+                        "message": "El modelo devolvio texto en vez de una decision de herramienta",
+                        "recovery_action": "abort"
+                    }]
+                },
+                "verification": {}, "tool_references": [], "checkpoints": []
+            })),
+        );
+        let area = area(&simulado);
+        let mut obsoleta = ProyeccionRun::nueva("run-1", "Crear un archivo", "C:\\repo");
+        obsoleta.conectado = true;
+        area.runs
+            .lock()
+            .expect("estado")
+            .insert("run-1".to_owned(), obsoleta);
+
+        let vista = en_runtime(area.consultar("run-1")).expect("sincronizada");
+
+        assert_eq!(vista.fase, Some(crate::athena::FaseRun::Failed));
+        assert_eq!(vista.errores.len(), 1);
+        assert_eq!(vista.errores[0].codigo, "model_permanent_error");
     }
 
     #[test]

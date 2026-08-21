@@ -14,6 +14,7 @@ import {
   canUseSemanticMemory,
   shouldPollMemoryIndex,
   shouldPollMemorySearch,
+  shouldReconcilePendingTurn,
   shouldReloadConversationAfterTurn,
   activeMemoriesForConversation,
   semanticReadyMemoriesForConversation,
@@ -164,7 +165,14 @@ type ScreenCapturePreview = CapturedScreenFrame & {
   source: "screen" | "camera";
 };
 
-type WorkspaceDestination = "chats" | "projects" | "gpts" | "workflows" | "automations" | "settings";
+type WorkspaceDestination =
+  | "chats"
+  | "projects"
+  | "gpts"
+  | "workflows"
+  | "athena"
+  | "automations"
+  | "settings";
 
 const INITIAL_VISIBLE_MESSAGES = 80;
 const EARLIER_MESSAGE_PAGE_SIZE = 50;
@@ -293,6 +301,7 @@ export function App() {
   const [contextInspectorOpen, setContextInspectorOpen] = useState(true);
   const [activeTurn, setActiveTurn] = useState<Loadable<LocalTaskSnapshot> | null>(null);
   const [activeTurnConversationId, setActiveTurnConversationId] = useState<string | null>(null);
+  const turnHandoffReloadingRef = useRef(false);
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<AttachmentView[]>([]);
   const [projectFiles, setProjectFiles] = useState<AttachmentView[]>([]);
@@ -1163,12 +1172,42 @@ export function App() {
   ]);
 
   useEffect(() => {
-    if (activeTurn?.state !== "ready" || isTaskPollingComplete(activeTurn.value)) {
+    if (activeTurn?.state !== "ready") {
       return;
     }
     const localTaskId = activeTurn.value.id;
     const turnConversationId = activeTurnConversationId;
+    const needsTaskHandoff =
+      conversation?.state === "ready" &&
+      shouldReconcilePendingTurn({
+        task: activeTurn.value,
+        messages: conversation.value.messages
+      });
+    if (isTaskPollingComplete(activeTurn.value) && !needsTaskHandoff) {
+      return;
+    }
     const interval = window.setInterval(() => {
+      if (needsTaskHandoff) {
+        if (
+          !turnHandoffReloadingRef.current &&
+          turnConversationId &&
+          shouldReloadConversationAfterTurn({
+            turnConversationId,
+            openConversationId:
+              conversation?.state === "ready" ? conversation.value.id : null
+          })
+        ) {
+          turnHandoffReloadingRef.current = true;
+          loadConversation(turnConversationId)
+            .catch((error) =>
+              setActiveTurn({ state: "error", message: describeError(error) })
+            )
+            .finally(() => {
+              turnHandoffReloadingRef.current = false;
+            });
+        }
+        return;
+      }
       platform.getLocalTask(localTaskId)
         .then(async (value) => {
           setActiveTurn({ state: "ready", value });
@@ -1194,7 +1233,13 @@ export function App() {
     activeTurn?.state === "ready" ? activeTurn.value.remoteStatus : null,
     activeTurn?.state === "ready" ? activeTurn.value.localState : null,
     activeTurnConversationId,
-    conversation?.state === "ready" ? conversation.value.id : null
+    conversation?.state === "ready" ? conversation.value.id : null,
+    conversation?.state === "ready"
+      ? conversation.value.messages
+          .filter((message) => message.status === "pending")
+          .map((message) => `${message.id}:${message.brokerTaskId ?? ""}`)
+          .join("|")
+      : ""
   ]);
 
   const visibleConversationList = useMemo(
@@ -2484,6 +2529,22 @@ export function App() {
     }
   };
 
+  const authorizeAthenaFolder = async (): Promise<AuthorizedFolderView | null> => {
+    try {
+      const selected = await platform.pickAthenaFolder();
+      if (selected) {
+        setAuthorizedFolders({
+          state: "ready",
+          value: await platform.listAuthorizedFolders()
+        });
+      }
+      return selected;
+    } catch (error) {
+      setAuthorizedFolders({ state: "error", message: describeError(error) });
+      throw error;
+    }
+  };
+
   const openWorkspaceDestination = (destination: WorkspaceDestination) => {
     setWorkspaceDestination(destination);
     setConversation(null);
@@ -3723,6 +3784,7 @@ export function App() {
             ["projects", "Proyectos"],
             ["gpts", "GPTs"],
             ["workflows", "Flujos"],
+            ["athena", "Athena"],
             ["automations", "Automatizaciones"],
             ["settings", "Ajustes"],
           ] as const).map(([destination, label], index) => (
@@ -5324,7 +5386,20 @@ export function App() {
               />
 
               <AthenaArea
-                carpetas={authorizedFolders.state === "ready" ? authorizedFolders.value : []}
+                carpetas={
+                  authorizedFolders.state === "ready"
+                    ? authorizedFolders.value.filter(
+                        (folder) =>
+                          !folder.revokedAt &&
+                          folder.permissions?.athena === true
+                      )
+                    : []
+                }
+                carpetasCargando={authorizedFolders.state === "loading"}
+                carpetasError={
+                  authorizedFolders.state === "error" ? authorizedFolders.message : null
+                }
+                onAutorizarCarpeta={authorizeAthenaFolder}
               />
 
               <div className="grid">
