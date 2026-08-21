@@ -635,6 +635,66 @@ fn al_reconectar_las_peticiones_vivas_vuelven_completas() {
 }
 
 #[test]
+fn el_plan_de_una_instantanea_no_duplica_las_tareas_que_llegan_despues() {
+    // Reconectar a mitad de un plan es lo normal: se cierra el portátil, se va la red,
+    // se reinicia la aplicación. Lo que no puede pasar es que la misma tarea salga dos
+    // veces —una del plan y otra del evento— y se lea como trabajo duplicado.
+    let mut vista = base();
+    let mut snapshot = snapshot_json("running");
+    snapshot["working_memory"] = json!({
+        "objective": "Arreglar calc.add",
+        "current_plan": [
+            {"description": "investigar el fallo", "status": "done", "task_id": "T01"},
+            {"description": "corregir la función", "status": "pending", "task_id": "T02"}
+        ],
+        "current_step": 1
+    });
+
+    vista.aplicar(&marco_estado("sub-1", true, Some(snapshot)));
+    assert_eq!(vista.tareas.len(), 2);
+    assert_eq!(vista.tareas[0].id, "T01");
+
+    vista.aplicar(&evento(
+        "task.started",
+        Some("T02"),
+        json!({"task_id": "T02", "role": "coder", "dependencies": ["T01"]}),
+    ));
+
+    assert_eq!(vista.tareas.len(), 2, "la del plan y la del evento son la misma");
+    let segunda = vista
+        .tareas
+        .iter()
+        .find(|tarea| tarea.id == "T02")
+        .expect("T02 sigue ahí");
+    assert_eq!(segunda.estado, EstadoTarea::Running);
+    // Lo que la instantánea no podía saber lo aporta el evento, sin perder el nombre
+    // que el plan ya había dado.
+    assert_eq!(segunda.rol, "coder");
+    assert_eq!(segunda.dependencias, vec!["T01".to_owned()]);
+    assert_eq!(segunda.nombre, "corregir la función");
+}
+
+#[test]
+fn un_plan_sin_identidad_sigue_dibujandose() {
+    // El plan que el propio bucle escribe para sí mismo no tiene identificadores: sus
+    // pasos son prosa. Debe seguir viéndose, numerado, como hasta ahora.
+    let mut vista = base();
+    let mut snapshot = snapshot_json("running");
+    snapshot["working_memory"] = json!({
+        "objective": "Arreglar calc.add",
+        "current_plan": [{"description": "leer calc.py", "status": "in_progress"}],
+        "current_step": 0
+    });
+
+    vista.aplicar(&marco_estado("sub-1", true, Some(snapshot)));
+
+    let paso = vista.tareas.first().expect("el paso se dibuja");
+    assert_eq!(paso.id, "paso-0");
+    assert_eq!(paso.estado, EstadoTarea::Running);
+    assert!(paso.rol.is_empty());
+}
+
+#[test]
 fn un_run_jerarquico_dibuja_su_plan_antes_de_ejecutarlo() {
     // El grafo se anuncia entero al empezar. Descubrirlo tarea a tarea dejaría a
     // quien mira sin saber cuánto queda.

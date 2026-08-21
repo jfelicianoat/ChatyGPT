@@ -277,6 +277,14 @@ impl ProyeccionRun {
         let objetivo = texto(carga, "goal").unwrap_or_else(|| id.clone());
         if let Some(existente) = self.tareas.iter_mut().find(|tarea| tarea.id == id) {
             existente.estado = EstadoTarea::Running;
+            // El plan de la instantánea no trae rol ni dependencias; el evento sí. Se
+            // completa lo que faltaba en vez de sustituir la tarea, que ya es la misma.
+            if existente.rol.is_empty() {
+                existente.rol = rol;
+            }
+            if existente.dependencias.is_empty() {
+                existente.dependencias = lista(carga, "dependencies");
+            }
             return;
         }
         self.tareas.push(TareaVista {
@@ -796,6 +804,15 @@ fn tareas_de(memoria: &Value) -> Vec<TareaVista> {
         .enumerate()
         .filter_map(|(indice, paso)| {
             let descripcion = paso.get("description").and_then(Value::as_str)?;
+            // Un paso que viene de un grafo trae el identificador de su tarea. Sin él, la
+            // instantánea llamaría «paso-0» a lo que los eventos llaman «T01», y al
+            // reconectar la misma tarea aparecería dos veces: una del plan y otra del
+            // primer `task.started` que llegase después.
+            let identificador = paso
+                .get("task_id")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("paso-{indice}"));
             let estado = paso
                 .get("status")
                 .and_then(Value::as_str)
@@ -807,7 +824,7 @@ fn tareas_de(memoria: &Value) -> Vec<TareaVista> {
                 })
                 .unwrap_or(EstadoTarea::Pending);
             Some(TareaVista {
-                id: format!("paso-{indice}"),
+                id: identificador,
                 nombre: descripcion.to_owned(),
                 estado: if paso_actual == Some(indice as u64) && estado == EstadoTarea::Pending {
                     EstadoTarea::Running
@@ -817,8 +834,9 @@ fn tareas_de(memoria: &Value) -> Vec<TareaVista> {
                 iteraciones: None,
                 llamadas_herramienta: None,
                 detalle: None,
-                // Un paso del plan de trabajo del propio loop no es una tarea de
-                // un grafo: no tiene rol ni dependencias que dibujar.
+                // Ni el rol ni las dependencias viajan en la instantánea. Esto es lo
+                // que se sabe hasta que lleguen los eventos de tarea, que sí los traen;
+                // rellenarlos aquí sería dibujar un grafo supuesto.
                 rol: String::new(),
                 dependencias: Vec::new(),
                 ficheros: Vec::new(),
