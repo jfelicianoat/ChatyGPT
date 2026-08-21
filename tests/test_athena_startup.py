@@ -12,35 +12,19 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class AthenaStartupTests(unittest.TestCase):
-    def test_launcher_starts_athena_before_opening_chatygpt(self) -> None:
+    """El cableado del arranque.
+
+    Lo que queda aquí es lo único que sigue siendo una pregunta sobre el texto: si el BAT
+    llama a los dos guiones. Comprobarlo ejecutándolo exigiría arrancar la aplicación
+    entera, y la conducta de los guiones ya se prueba corriéndolos, en
+    `test_athena_launcher_behaviour`.
+    """
+
+    def test_launcher_starts_and_stops_athena_around_the_application(self) -> None:
         launcher = (ROOT / "Arrancar ChatyGPT.bat").read_text(encoding="utf-8")
-        script = (ROOT / "scripts" / "Start-AthenaForChatyGPT.ps1").read_text(
-            encoding="utf-8"
-        )
 
         self.assertIn("Start-AthenaForChatyGPT.ps1", launcher)
-        self.assertIn("/v1/health", script)
-        self.assertIn("pythonw.exe", script)
-        self.assertIn("athena_service", script)
-        self.assertIn("ProtectedData]::Protect", script)
-        self.assertIn("CHATYGPT_MANAGED_ATHENA_PID", script)
         self.assertIn("Stop-AthenaForChatyGPT.ps1", launcher)
-        self.assertIn("athena-managed.json", script)
-        self.assertIn("startedAt", script)
-        self.assertNotIn("dsfdsjk", script)
-
-    def test_existing_external_service_is_never_terminated(self) -> None:
-        script = (ROOT / "scripts" / "Start-AthenaForChatyGPT.ps1").read_text(
-            encoding="utf-8"
-        )
-        attach_branch = script.split("if (Test-AthenaHealth)", maxsplit=1)[1].split(
-            "if (-not $AthenaRoot)", maxsplit=1
-        )[0]
-
-        self.assertNotIn("Stop-Process", attach_branch)
-        self.assertIn("Athena ya está disponible", attach_branch)
-        self.assertNotIn("throw", attach_branch.lower())
-        self.assertIn("Podrás guardarla en la sección Athena", attach_branch)
 
     @unittest.skipUnless(os.name == "nt", "el servicio administrado es específico de Windows")
     def test_shutdown_terminates_the_durable_managed_process(self) -> None:
