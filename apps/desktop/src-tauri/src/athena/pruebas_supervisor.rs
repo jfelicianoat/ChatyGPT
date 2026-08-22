@@ -886,3 +886,53 @@ fn un_run_sin_estrategia_anunciada_no_se_inventa_una() {
 
     assert!(vista.estrategia.is_none());
 }
+
+#[test]
+fn un_run_que_no_se_pudo_comprobar_no_se_ensena_como_fallido() {
+    // Athena distingue «tu cambio esta mal» de «no pude comprobarlo». Si la
+    // proyeccion las junta otra vez, la distincion no le sirve a nadie: manda a
+    // revisar el trabajo a quien tendria que revisar el proyecto.
+    let mut vista = base();
+
+    vista.aplicar(&evento(
+        "agent.failed",
+        None,
+        json!({
+            "error_code": "verification_inconclusive",
+            "message": "Verification is inconclusive",
+            "reason": "no_checks_defined",
+        }),
+    ));
+
+    assert_eq!(vista.fase, Some(FaseRun::Unverified));
+    assert_ne!(vista.fase, Some(FaseRun::Failed));
+    let error = vista.errores.last().expect("un error registrado");
+    assert_eq!(error.codigo, "verification_inconclusive");
+    assert_eq!(
+        error.razon.as_deref(),
+        Some("no_checks_defined"),
+        "sin la razon se sabe que no se comprobo y no que arreglar"
+    );
+}
+
+#[test]
+fn un_fallo_de_verdad_sigue_siendo_un_fallo() {
+    // El camino bueno no se toca: un cambio que rompe los tests tiene que
+    // seguir leyendose como lo que es.
+    let mut vista = base();
+
+    vista.aplicar(&evento(
+        "agent.failed",
+        None,
+        json!({"error_code": "verification_failure", "message": "los tests fallan"}),
+    ));
+
+    assert_eq!(vista.fase, Some(FaseRun::Failed));
+    assert!(vista.errores.last().unwrap().razon.is_none());
+}
+
+#[test]
+fn un_run_sin_comprobar_ya_no_se_sigue_sondeando() {
+    assert!(FaseRun::Unverified.es_terminal());
+    assert_eq!(FaseRun::Unverified.palabra(), "unverified");
+}

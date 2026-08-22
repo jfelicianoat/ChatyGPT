@@ -1670,6 +1670,12 @@ export type AthenaFase =
   | "verifying"
   | "completed"
   | "failed"
+  /**
+   * El trabajo termino y no se pudo comprobar: sin checks que ejecutar, con una
+   * dependencia que falta o con el entorno a medias. No es haber fallado, y
+   * contarlo igual le echa la culpa al cambio de una maquina rota.
+   */
+  | "unverified"
   | "cancelled"
   | "recovery_pending";
 
@@ -1769,6 +1775,12 @@ export type AthenaComprobacion = {
 export type AthenaError = {
   codigo: string;
   mensaje: string;
+  /**
+   * Cual de los huecos fue, cuando el codigo dice que no se pudo comprobar:
+   * sin checks definidos, una dependencia que falta, el entorno a medias. Sin
+   * esto se sabe que no se comprobo y no se sabe que arreglar.
+   */
+  razon?: string;
   recuperacion?: string;
 };
 

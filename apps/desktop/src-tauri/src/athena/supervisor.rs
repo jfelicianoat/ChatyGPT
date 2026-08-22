@@ -37,6 +37,11 @@ pub enum FaseRun {
     Verifying,
     Completed,
     Failed,
+    /// El trabajo termino y no se pudo comprobar. No es lo mismo que haber
+    /// fallado, y contarlo igual le echa la culpa al cambio de una maquina rota
+    /// o de un proyecto que nunca definio checks. Athena las distingue desde
+    /// ADR-027; esto es lo que hace que la distincion llegue a una persona.
+    Unverified,
     Cancelled,
     RecoveryPending,
 }
@@ -66,13 +71,19 @@ impl FaseRun {
             Self::Verifying => "verifying",
             Self::Completed => "completed",
             Self::Failed => "failed",
+            Self::Unverified => "unverified",
             Self::Cancelled => "cancelled",
             Self::RecoveryPending => "recovery_pending",
         }
     }
 
     pub fn es_terminal(self) -> bool {
-        matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
+        // `Unverified` es terminal: el run no va a cambiar solo. Dejarlo fuera
+        // haria que la interfaz siguiera sondeando un run acabado para siempre.
+        matches!(
+            self,
+            Self::Completed | Self::Failed | Self::Unverified | Self::Cancelled
+        )
     }
 }
 
@@ -200,6 +211,9 @@ pub struct ComprobacionVista {
 pub struct ErrorVista {
     pub codigo: String,
     pub mensaje: String,
+    /// Cual de los huecos fue, cuando el codigo dice que no se pudo comprobar.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub razon: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recuperacion: Option<String>,
 }
@@ -464,6 +478,7 @@ impl ProyeccionRun {
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                         .to_owned(),
+                    razon: error.get("reason").and_then(Value::as_str).map(str::to_owned),
                     recuperacion: error
                         .get("recovery_action")
                         .and_then(Value::as_str)
@@ -492,10 +507,23 @@ impl ProyeccionRun {
                 self.anotar("Trabajo terminado y verificado");
             }
             "agent.failed" => {
-                self.fase = Some(FaseRun::Failed);
+                // Dos finales distintos llegan por el mismo evento, y el codigo
+                // tipado es lo unico que los separa. Leerlo del mensaje seria
+                // acertar hasta la primera vez que alguien lo reescriba.
+                let sin_comprobar = texto(carga, "error_code")
+                    .is_some_and(|codigo| codigo == "verification_inconclusive");
+                self.fase = Some(if sin_comprobar {
+                    FaseRun::Unverified
+                } else {
+                    FaseRun::Failed
+                });
                 self.permisos.clear();
                 self.registrar_error(carga, None);
-                self.anotar("El agente ha fallado");
+                self.anotar(if sin_comprobar {
+                    "El trabajo termino, pero no se pudo comprobar"
+                } else {
+                    "El agente ha fallado"
+                });
             }
             // El nivel de grafo. Un run jerárquico anuncia su plan antes de
             // ejecutarlo, y cada tarea se sigue por separado: la vista puede
@@ -745,9 +773,14 @@ impl ProyeccionRun {
         let Some(codigo) = texto(carga, "error_code").or_else(|| texto(carga, "reason")) else {
             return;
         };
+        // Cuando el codigo ya es `verification_inconclusive`, `reason` dice cual
+        // de los huecos fue: sin checks, dependencia que falta, entorno a medias.
+        // Sin eso, quien lo lea sabe que no se comprobo y no sabe que arreglar.
+        let razon = texto(carga, "reason").filter(|valor| *valor != codigo);
         self.errores.push(ErrorVista {
             codigo,
             mensaje: texto(carga, "message").unwrap_or_default(),
+            razon,
             recuperacion,
         });
         recortar(&mut self.errores);

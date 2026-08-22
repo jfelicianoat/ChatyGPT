@@ -19,7 +19,14 @@ import type {
 } from "./domain";
 
 /** Fases en las que el run ya no va a cambiar por su cuenta. */
-const FASES_TERMINALES: AthenaFase[] = ["completed", "failed", "cancelled"];
+const FASES_TERMINALES: AthenaFase[] = [
+  "completed",
+  "failed",
+  // Un run sin comprobar tampoco va a cambiar solo. Dejarlo fuera haria que la
+  // interfaz siguiera sondeando para siempre un run que ya termino.
+  "unverified",
+  "cancelled"
+];
 
 /** Cada cuánto se pide la proyección mientras el run sigue vivo. */
 export const INTERVALO_SONDEO_MS = 1000;
@@ -48,6 +55,12 @@ export function nombreFase(fase: AthenaFase | undefined): string {
       return "Terminado";
     case "failed":
       return "Fallido";
+    case "unverified":
+      // No «Fallido». Athena distingue «tu cambio esta mal» de «no pude
+      // comprobarlo» desde ADR-027, y esta linea es donde esa distincion llega
+      // a una persona: la primera manda a revisar el trabajo, la segunda a
+      // revisar el proyecto.
+      return "Terminado sin comprobar";
     case "cancelled":
       return "Cancelado";
     case "recovery_pending":
@@ -464,4 +477,35 @@ export function resumenActividad(run: AthenaRun | null): string {
     partes.push(run.errores.length === 1 ? "1 error" : `${run.errores.length} errores`);
   }
   return partes.join(" · ");
+}
+
+/**
+ * Por qué no se pudo comprobar un run, en palabras de quien lo va a leer.
+ *
+ * Los códigos vienen de `InconclusiveReason` y son estables; estas frases no.
+ * Se traducen aquí y no en Athena porque son presentación, y porque un runtime
+ * que devolviera texto para pantalla obligaría a cada cliente a aceptar el suyo.
+ *
+ * Un código que no se reconozca se enseña tal cual: inventarle una frase
+ * amable sería contar algo que no se sabe.
+ */
+export function motivoSinComprobar(razon: string): string {
+  switch (razon) {
+    case "no_checks_defined":
+      return "el proyecto no define comprobaciones que Athena pueda ejecutar";
+    case "dependency_missing":
+      return "falta algo que hay que instalar";
+    case "environment_incomplete":
+      return "el entorno está a medias";
+    case "tool_unavailable":
+      return "la comprobación no se pudo ejecutar";
+    case "external_service_unavailable":
+      return "un servicio del que depende no responde";
+    case "partial_verification":
+      return "sólo se pudo comprobar una parte";
+    case "ambiguous_result":
+      return "el resultado no dice ni que sí ni que no";
+    default:
+      return razon;
+  }
 }

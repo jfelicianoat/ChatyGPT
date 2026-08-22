@@ -24,6 +24,7 @@ import {
   mensajeServicio,
   motivoBloqueoPermiso,
   motivoEstrategia,
+  motivoSinComprobar,
   nombreCriterio,
   nombreEstadoTarea,
   nombreEstrategia,
@@ -690,6 +691,7 @@ export function AthenaArea({
                 {run.errores.map((error, indice) => (
                   <li key={`${error.codigo}-${indice}`}>
                     <strong>{error.codigo}</strong> {error.mensaje}
+                    {error.razon ? <em> · {motivoSinComprobar(error.razon)}</em> : null}
                     {error.recuperacion ? <em> · {error.recuperacion}</em> : null}
                   </li>
                 ))}

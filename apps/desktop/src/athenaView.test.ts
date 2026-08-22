@@ -13,6 +13,7 @@ import {
   etiquetasPermiso,
   mensajeServicio,
   motivoBloqueoPermiso,
+  motivoSinComprobar,
   motivoEstrategia,
   nombreCriterio,
   nombreEstadoTarea,
@@ -109,7 +110,7 @@ describe("fases", () => {
     expect(nombreFase("recovery_pending")).toContain("necesita decisión");
   });
 
-  it("nombra las ocho fases sin inventarse ninguna", () => {
+  it("nombra las nueve fases sin inventarse ninguna", () => {
     expect(nombreFase("starting")).toBe("Arrancando");
     expect(nombreFase("running")).toBe("Trabajando");
     expect(nombreFase("waiting_permission")).toBe("Esperando tu autorización");
@@ -118,6 +119,21 @@ describe("fases", () => {
     expect(nombreFase("failed")).toBe("Fallido");
     expect(nombreFase("cancelled")).toBe("Cancelado");
     expect(nombreFase(undefined)).toBe("Sin estado");
+  });
+
+  it("no llama fallido a un run que sólo no se pudo comprobar", () => {
+    // Athena distingue «tu cambio está mal» de «no pude comprobarlo». Si la
+    // interfaz las junta otra vez, la distinción no le sirve a nadie: manda a
+    // revisar el trabajo a quien tendría que revisar el proyecto.
+    expect(nombreFase("unverified")).not.toBe("Fallido");
+    expect(nombreFase("unverified")).toContain("sin comprobar");
+  });
+
+  it("un run sin comprobar ya no va a cambiar solo", () => {
+    // Si no fuera terminal, la interfaz seguiría sondeando para siempre un run
+    // que había acabado.
+    expect(esFaseTerminal("unverified")).toBe(true);
+    expect(debeSeguirSondeando(run({ fase: "unverified" }))).toBe(false);
   });
 
   it("nombra los siete estados de tarea", () => {
@@ -509,5 +525,19 @@ describe("estados de conexión con Athena", () => {
     expect(mensajeServicio(vivo("sin_credencial", false))).toContain("falta su credencial");
     expect(mensajeServicio(vivo("credencial_invalida", true))).toContain("rechaza");
     expect(mensajeServicio(vivo("credencial_invalida", true))).toContain("vincularla");
+  });
+});
+
+describe("por qué no se pudo comprobar", () => {
+  it("traduce los códigos que Athena publica", () => {
+    expect(motivoSinComprobar("no_checks_defined")).toContain("no define comprobaciones");
+    expect(motivoSinComprobar("dependency_missing")).toContain("instalar");
+    expect(motivoSinComprobar("environment_incomplete")).toContain("entorno");
+  });
+
+  it("un código que no conoce se enseña tal cual", () => {
+    // Inventarle una frase amable sería contar algo que no se sabe, y Athena
+    // puede añadir motivos nuevos sin que esta interfaz se entere.
+    expect(motivoSinComprobar("motivo_futuro")).toBe("motivo_futuro");
   });
 });
