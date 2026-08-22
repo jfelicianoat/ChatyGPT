@@ -706,3 +706,288 @@ fn quitar_el_token_deja_de_mandar_la_cabecera() {
 
     assert!(simulado.peticiones()[0].autorizacion.is_none());
 }
+
+// -- revision del encargo -------------------------------------------------
+
+#[test]
+fn revisar_el_encargo_dice_siempre_sobre_que_revision_escribe() {
+    let simulado = AthenaSimulado::arrancar();
+    simulado.responder(
+        "/goal",
+        RespuestaGuion::ok(json!({
+            "run_id": "run-1",
+            "goal": {"text": "Nuevo encargo", "revision": 2, "reason": "faltaba algo",
+                     "revised_at": "2026-08-22T10:00:00+00:00"},
+            "applied": false,
+        })),
+    );
+
+    let resultado = en_runtime(cliente(&simulado).revisar_objetivo(
+        "run-1",
+        "Nuevo encargo",
+        1,
+        "faltaba algo",
+    ))
+    .expect("revision aceptada");
+
+    match resultado {
+        RevisionObjetivo::Aceptada { objetivo } => assert_eq!(objetivo.revision, 2),
+        otro => panic!("se esperaba aceptada: {otro:?}"),
+    }
+    // `base_revision` no tiene defecto ni aqui ni en Athena: uno implicito
+    // convertiria cada revision en un pisoton.
+    let cuerpo = &simulado.peticiones()[0].cuerpo;
+    assert!(cuerpo.contains("\"base_revision\":1"), "{cuerpo}");
+}
+
+#[test]
+fn un_conflicto_de_revision_es_una_respuesta_y_no_un_error() {
+    // Que otro haya escrito antes es algo que pasa, no un fallo de quien lo intenta.
+    // Devolverlo como `AppError` obligaria a la interfaz a leer una frase para
+    // enterarse, y a reintentar a ciegas para recuperarse.
+    let simulado = AthenaSimulado::arrancar();
+    simulado.responder(
+        "/goal",
+        RespuestaGuion {
+            estado: 409,
+            cuerpo: json!({
+                "error": {"code": "goal_conflict", "message": "va por la revision 3"},
+                "current_revision": 3,
+                "current": "Lo que pidio Telegram",
+            })
+            .to_string()
+            .into_bytes(),
+            tipo: "application/json",
+        },
+    );
+    // La relectura que sigue al conflicto: el 409 trae texto y revision, pero no el
+    // motivo ni la fecha, y ensenar media verdad es peor que preguntar otra vez.
+    simulado.responder(
+        "/goal",
+        RespuestaGuion::ok(json!({
+            "text": "Lo que pidio Telegram", "revision": 3, "reason": "cambio de alcance",
+            "revised_at": "2026-08-22T10:05:00+00:00",
+        })),
+    );
+
+    let resultado =
+        en_runtime(cliente(&simulado).revisar_objetivo("run-1", "Lo que quiero yo", 2, ""))
+            .expect("el conflicto no es un error de transporte");
+
+    match resultado {
+        RevisionObjetivo::Conflicto { vigente } => {
+            assert_eq!(vigente.revision, 3);
+            assert_eq!(vigente.text, "Lo que pidio Telegram");
+            assert_eq!(vigente.reason, "cambio de alcance");
+        }
+        otro => panic!("se esperaba conflicto: {otro:?}"),
+    }
+}
+
+#[test]
+fn si_la_relectura_falla_se_contesta_con_lo_que_traia_el_conflicto() {
+    // Media verdad es preferible a ninguna cuando lo que falta es el adorno: sin
+    // revision y sin texto la interfaz no podria ni decir que paso.
+    let simulado = AthenaSimulado::arrancar();
+    simulado.responder(
+        "/goal",
+        RespuestaGuion {
+            estado: 409,
+            cuerpo: json!({
+                "error": {"code": "goal_conflict", "message": "va por la revision 3"},
+                "current_revision": 3,
+                "current": "Lo que pidio Telegram",
+            })
+            .to_string()
+            .into_bytes(),
+            tipo: "application/json",
+        },
+    );
+
+    let resultado =
+        en_runtime(cliente(&simulado).revisar_objetivo("run-1", "Lo que quiero yo", 2, ""))
+            .expect("el conflicto se conserva aunque la relectura falle");
+
+    match resultado {
+        RevisionObjetivo::Conflicto { vigente } => {
+            assert_eq!(vigente.revision, 3);
+            assert!(vigente.reason.is_empty());
+        }
+        otro => panic!("se esperaba conflicto: {otro:?}"),
+    }
+}
+
+#[test]
+fn un_409_que_no_es_de_revision_no_se_disfraza_de_conflicto_de_encargo() {
+    // Un run que ya termino tambien contesta 409, y refrescar el objetivo no lo
+    // arreglaria: ofrecer «vuelve a escribirlo» seria mandar a repetir algo imposible.
+    let simulado = AthenaSimulado::arrancar();
+    simulado.responder(
+        "/goal",
+        RespuestaGuion::error(409, "run_finished", "That run is over"),
+    );
+
+    let resultado = en_runtime(cliente(&simulado).revisar_objetivo("run-1", "Otra cosa", 1, ""));
+
+    assert!(matches!(resultado, Err(AppError::Conflict(_))));
+}
+
+#[test]
+fn un_encargo_vacio_no_llega_a_salir_de_la_aplicacion() {
+    let simulado = AthenaSimulado::arrancar();
+
+    let resultado = en_runtime(cliente(&simulado).revisar_objetivo("run-1", "   ", 1, ""));
+
+    assert!(matches!(resultado, Err(AppError::Validation(_))));
+    assert!(simulado.peticiones().is_empty());
+}
+
+// -- perfiles -------------------------------------------------------------
+
+#[test]
+fn los_perfiles_los_dice_athena_y_no_una_lista_local() {
+    let simulado = AthenaSimulado::arrancar();
+    simulado.responder(
+        "/v1/profiles",
+        RespuestaGuion::ok(json!({
+            "default": "software_engineering",
+            "profiles": [
+                {"name": "software_engineering", "subject": "a repository",
+                 "evidence": "executed_checks", "proves": "checks passed",
+                 "tools": ["glob", "bash"], "description": "Repositorio"},
+                {"name": "documents", "subject": "a folder of documents",
+                 "evidence": "artifacts", "proves": "the deliverables exist",
+                 "tools": ["glob", "write_file"], "description": "Documentos"}
+            ],
+        })),
+    );
+
+    let listado = en_runtime(cliente(&simulado).listar_perfiles()).expect("listado legible");
+
+    assert_eq!(listado.default, "software_engineering");
+    assert_eq!(listado.profiles.len(), 2);
+    assert_eq!(listado.profiles[1].name, "documents");
+    assert!(listado.profiles[1].proves.contains("deliverables"));
+}
+
+#[test]
+fn un_perfil_desconocido_vuelve_como_rechazo_y_no_cae_al_de_por_defecto() {
+    // Quien pide `documents` y recibe el de software no se entera hasta que Athena
+    // intenta ejecutar los tests de una carpeta de textos. Athena lo rechaza con 400 y
+    // el cliente lo deja pasar tal cual, sin buscarle un sustituto.
+    let simulado = AthenaSimulado::arrancar();
+    simulado.responder(
+        "/v1/runs",
+        RespuestaGuion::error(
+            400,
+            "tool_validation_error",
+            "Perfil desconocido: inventado. Disponibles: documents, software_engineering",
+        ),
+    );
+
+    let opciones = OpcionesRun {
+        perfil: "inventado".to_owned(),
+        ..OpcionesRun::default()
+    };
+    let resultado = en_runtime(cliente(&simulado).crear_run("Arreglar", "D:/repo", &opciones));
+
+    match resultado {
+        Err(AppError::Validation(mensaje)) => assert!(mensaje.contains("Disponibles")),
+        otro => panic!("se esperaba el rechazo de Athena: {otro:?}"),
+    }
+}
+
+#[test]
+fn sin_perfil_elegido_no_se_manda_ninguno() {
+    // Mandar una cadena vacia seria pedir un perfil sin nombre, y Athena lo rechazaria
+    // con razon. La ausencia del campo es lo que significa «el de por defecto».
+    let simulado = AthenaSimulado::arrancar();
+    simulado.responder(
+        "/v1/runs",
+        RespuestaGuion::creado(json!({
+            "run_id": "run-1", "workspace_id": "ws-1", "writes": "ask", "exec": "ask",
+        })),
+    );
+
+    en_runtime(cliente(&simulado).crear_run("Arreglar", "D:/repo", &OpcionesRun::default()))
+        .expect("run creado");
+
+    let cuerpo = &simulado.peticiones()[0].cuerpo;
+    assert!(!cuerpo.contains("profile"), "{cuerpo}");
+}
+
+// -- memoria de proyecto --------------------------------------------------
+
+#[test]
+fn la_memoria_se_pide_por_proyecto_y_llega_con_su_procedencia() {
+    let simulado = AthenaSimulado::arrancar();
+    simulado.responder(
+        "/v1/memory",
+        RespuestaGuion::ok(json!({
+            "project_id": "ws-1",
+            "items": [{
+                "id": "mem-1", "project_id": "ws-1", "kind": "verified_command",
+                "content": "pytest -q", "source": "run:ws-1", "source_reference": null,
+                "confidence": 0.9, "verification_state": "verified", "scope": "project",
+                "status": "active", "supersedes": null,
+                "created_at": "2026-08-20T10:00:00+00:00",
+                "updated_at": "2026-08-20T10:00:00+00:00", "stale": false,
+            }],
+        })),
+    );
+
+    let recuerdos = en_runtime(cliente(&simulado).listar_memoria("ws-1", 50)).expect("legible");
+
+    assert_eq!(recuerdos.len(), 1);
+    assert_eq!(recuerdos[0].verification_state, "verified");
+    assert_eq!(recuerdos[0].status, "active");
+    assert!(!recuerdos[0].stale);
+    assert!(simulado.peticiones()[0].ruta.contains("project=ws-1"));
+}
+
+#[test]
+fn sin_proyecto_no_se_pregunta_por_la_memoria_de_nadie() {
+    // Athena exige el proyecto y responderia 400. Preguntarlo igualmente gastaria una
+    // vuelta para enterarse de algo que ya se sabia aqui.
+    let simulado = AthenaSimulado::arrancar();
+
+    let resultado = en_runtime(cliente(&simulado).listar_memoria("  ", 50));
+
+    assert!(matches!(resultado, Err(AppError::Validation(_))));
+    assert!(simulado.peticiones().is_empty());
+}
+
+#[test]
+fn confirmar_un_recuerdo_devuelve_el_estado_que_alcanzo() {
+    // `user_confirmed` solo se alcanza por HTTP: Athena tiene una prueba que prohibe
+    // que ningun modulo suyo lo nombre. Este es el camino entero.
+    let simulado = AthenaSimulado::arrancar();
+    simulado.responder(
+        "/confirm",
+        RespuestaGuion::ok(json!({
+            "id": "mem-1", "project_id": "ws-1", "kind": "verified_command",
+            "content": "pytest -q", "source": "run:ws-1", "confidence": 0.9,
+            "verification_state": "user_confirmed", "scope": "project", "status": "active",
+            "created_at": "2026-08-20T10:00:00+00:00",
+            "updated_at": "2026-08-22T10:00:00+00:00",
+        })),
+    );
+
+    let recuerdo = en_runtime(cliente(&simulado).confirmar_recuerdo("mem-1")).expect("legible");
+
+    assert_eq!(recuerdo.verification_state, "user_confirmed");
+    assert_eq!(simulado.peticiones()[0].metodo, "POST");
+}
+
+#[test]
+fn olvidar_un_recuerdo_que_ya_no_esta_se_distingue_de_un_fallo() {
+    let simulado = AthenaSimulado::arrancar();
+    simulado.responder(
+        "/v1/memory",
+        RespuestaGuion::error(404, "not_found", "No memory mem-9"),
+    );
+
+    let resultado = en_runtime(cliente(&simulado).olvidar_recuerdo("mem-9"));
+
+    assert!(matches!(resultado, Err(AppError::NotFound(_))));
+}

@@ -24,6 +24,16 @@ LIB_RS = ROOT / "apps" / "desktop" / "src-tauri" / "src" / "lib.rs"
 PLATFORM_TS = ROOT / "apps" / "desktop" / "src" / "platform.ts"
 APP_TSX = ROOT / "apps" / "desktop" / "src" / "App.tsx"
 WORKFLOW_STUDIO_TSX = ROOT / "apps" / "desktop" / "src" / "WorkflowStudio.tsx"
+#: Los componentes que llaman al núcleo sin pasar por `App.tsx`.
+#:
+#: El área de Athena creció en piezas propias, y cada una llama a `platform` por su
+#: cuenta. Si la lista se quedara en `App.tsx`, una acción destructiva nueva pasaría la
+#: comprobación por no ser vista, que es la peor forma de pasarla.
+FRONTEND_SOURCES = [
+    APP_TSX,
+    WORKFLOW_STUDIO_TSX,
+    *sorted((ROOT / "apps" / "desktop" / "src").glob("Athena*.tsx")),
+]
 
 # Tipos que Tauri inyecta al invocar: no viajan desde el frontend.
 INJECTED_TYPES = ("State<", "AppHandle", "Window", "WebviewWindow")
@@ -229,8 +239,9 @@ class DestructiveConfirmationTests(unittest.TestCase):
 
     def test_confirmation_is_asked_before_it_is_asserted(self) -> None:
         frontend_sources = [
-            APP_TSX.read_text(encoding="utf-8"),
-            WORKFLOW_STUDIO_TSX.read_text(encoding="utf-8"),
+            ruta.read_text(encoding="utf-8")
+            for ruta in FRONTEND_SOURCES
+            if ruta.is_file() and not ruta.name.endswith(".test.tsx")
         ]
         unconfirmed = []
         for method in self.platform_methods_that_assert_confirmation():

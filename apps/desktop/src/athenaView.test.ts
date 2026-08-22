@@ -8,6 +8,7 @@ import type {
   AthenaTarea
 } from "./domain";
 import {
+  debeAvisarDeDesconexion,
   debeSeguirSondeando,
   esFaseTerminal,
   etiquetasPermiso,
@@ -19,14 +20,17 @@ import {
   nombreEstadoTarea,
   nombreEstrategia,
   nombreRol,
+  nombreSenal,
   ordenarPlan,
   politicaDiscrepa,
+  veredictoPolitica,
   progresoPlan,
   simboloTarea,
   nombreFase,
   nombreRiesgo,
   nombreVerificacion,
   permisoActivo,
+  pistaDeDetalle,
   puedeCancelarse,
   puedeLanzarse,
   puedeReanudarse,
@@ -40,6 +44,9 @@ function run(parcial: Partial<AthenaRun> = {}): AthenaRun {
   return {
     runId: "run-1",
     objetivo: "Arreglar calc.add",
+    objetivoRevision: 1,
+    perfilSolicitado: "",
+    workspaceId: "ws-1",
     fase: "running",
     carpeta: "D:/repo",
     degradado: false,
@@ -48,6 +55,7 @@ function run(parcial: Partial<AthenaRun> = {}): AthenaRun {
     suscriptor: "sus-1",
     controla: true,
     tareas: [],
+    delegados: [],
     herramientas: [],
     permisos: [],
     comprobaciones: [],
@@ -158,6 +166,44 @@ describe("sondeo", () => {
     expect(debeSeguirSondeando(run({ fase: "completed" }))).toBe(false);
     expect(debeSeguirSondeando(run({ fase: "failed" }))).toBe(false);
     expect(debeSeguirSondeando(null)).toBe(false);
+  });
+});
+
+describe("detalle de un fallo", () => {
+  it("traduce el rechazo de credencial a lo que hay que hacer", () => {
+    // El run moría con «HTTP 403» y el único dato accionable, ADMIN_AUTH_REQUIRED,
+    // ni siquiera se guardaba: nadie podía saber que tocaba renovar el token.
+    expect(pistaDeDetalle("ADMIN_AUTH_REQUIRED")).toContain("renuévala");
+  });
+
+  it("distingue el llavero roto, que no se arregla con otra credencial", () => {
+    expect(pistaDeDetalle("ADMIN_AUTH_BACKEND_UNAVAILABLE")).toContain("no lo arreglaría");
+  });
+
+  it("enseña tal cual lo que no reconoce", () => {
+    expect(pistaDeDetalle("ALGO_NUEVO")).toBe("ALGO_NUEVO");
+  });
+});
+
+describe("aviso de desconexión", () => {
+  it("avisa mientras el run sigue vivo y la vista no recibe nada", () => {
+    expect(debeAvisarDeDesconexion(run({ fase: "running", conectado: false }))).toBe(true);
+    expect(
+      debeAvisarDeDesconexion(run({ fase: "waiting_permission", conectado: false }))
+    ).toBe(true);
+  });
+
+  it("no avisa de un run terminado: el flujo se cierra porque ya no hay nada que contar", () => {
+    // Se veía «Fallido · sin conexión con el run» en todos los runs que
+    // terminaban, y se leía como si el fallo fuera de red.
+    expect(debeAvisarDeDesconexion(run({ fase: "failed", conectado: false }))).toBe(false);
+    expect(debeAvisarDeDesconexion(run({ fase: "completed", conectado: false }))).toBe(false);
+    expect(debeAvisarDeDesconexion(run({ fase: "unverified", conectado: false }))).toBe(false);
+    expect(debeAvisarDeDesconexion(run({ fase: "cancelled", conectado: false }))).toBe(false);
+  });
+
+  it("no avisa mientras la conexión está viva", () => {
+    expect(debeAvisarDeDesconexion(run({ fase: "running", conectado: true }))).toBe(false);
   });
 });
 
@@ -490,6 +536,32 @@ describe("estrategia de ejecución", () => {
 
   it("no señala discrepancia cuando no hay veredicto que comparar", () => {
     expect(politicaDiscrepa({ ...base, veredictoPolitica: "" })).toBe(false);
+  });
+
+  it("dice el veredicto de la política también cuando coincide con lo hecho", () => {
+    // Enseñarlo sólo al discrepar obligaba a leer el acuerdo en el silencio, y un
+    // silencio no distingue «dijo lo mismo» de «no llegó a pronunciarse».
+    expect(veredictoPolitica({ ...base, veredictoPolitica: "decline" })).toContain(
+      "no necesitaba repartirse"
+    );
+    expect(veredictoPolitica({ ...base, veredictoPolitica: "decompose" })).toContain(
+      "se podía repartir"
+    );
+  });
+
+  it("distingue no haberse pronunciado de haber dicho que no", () => {
+    expect(veredictoPolitica({ ...base, veredictoPolitica: "" })).toContain(
+      "no llegó a pronunciarse"
+    );
+  });
+
+  it("nombra las señales que Athena no pudo medir, en vez de contarlas", () => {
+    // Saber que «quedaron dos sin comprobar» no dice cuáles, y son justo las que hay
+    // que mirar cuando la decisión sorprende.
+    expect(nombreSenal("has_meaningful_dependencies")).toBe(
+      "Si hay partes que dependen de otras"
+    );
+    expect(nombreSenal("senal_nueva")).toBe("senal_nueva");
   });
 
   it("traduce los criterios y respeta los que no conoce", () => {

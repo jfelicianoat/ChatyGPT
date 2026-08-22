@@ -15,9 +15,15 @@ import type {
   AthenaRun,
   AuthorizedFolderView
 } from "./domain";
+import { AthenaDelegados } from "./AthenaDelegados";
+import { AthenaHistorial } from "./AthenaHistorial";
+import { AthenaMemoria } from "./AthenaMemoria";
+import { AthenaPerfilSelector } from "./AthenaPerfil";
+import { AthenaEncargo } from "./AthenaEncargo";
 import { platform } from "./platform";
 import {
   INTERVALO_SONDEO_MS,
+  debeAvisarDeDesconexion,
   debeSeguirSondeando,
   esFaseTerminal,
   etiquetasPermiso,
@@ -29,20 +35,32 @@ import {
   nombreEstadoTarea,
   nombreEstrategia,
   nombreRol,
+  nombreSenal,
   ordenarPlan,
   politicaDiscrepa,
+  veredictoPolitica,
   progresoPlan,
   simboloTarea,
   nombreFase,
+  pistaDeDetalle,
   nombreVerificacion,
   permisoActivo,
   puedeCancelarse,
   puedeLanzarse,
   puedeReanudarse,
+  puedeRevisarseElEncargo,
   resumenActividad,
   textoArgumento,
   tiempoRestante
 } from "./athenaView";
+
+/**
+ * Cuántos elementos de un resultado se enseñan antes de recortar.
+ *
+ * El recorte se dice siempre junto al total: una lista de cuarenta enseñada como diez,
+ * sin decirlo, se lee como una lista de diez.
+ */
+const LIMITE_ELEMENTOS = 10;
 
 type Props = {
   carpetas: AuthorizedFolderView[];
@@ -61,6 +79,7 @@ export function AthenaArea({
   const [estado, setEstado] = useState<AthenaEstadoArea | null>(null);
   const [objetivo, setObjetivo] = useState("");
   const [carpetaId, setCarpetaId] = useState("");
+  const [perfil, setPerfil] = useState("");
   const [credencial, setCredencial] = useState("");
   const [guardandoCredencial, setGuardandoCredencial] = useState(false);
   const [runId, setRunId] = useState<string | null>(null);
@@ -100,6 +119,15 @@ export function AthenaArea({
       setGuardandoCredencial(false);
     }
   };
+
+  // Estable entre renders: el selector la usa como dependencia de su efecto, y una
+  // función nueva en cada render lo haría volver a consultar la lista sin parar.
+  const listarPerfiles = useCallback(() => platform.listAthenaProfiles(), []);
+  const listarRuns = useCallback(() => platform.listAthenaRuns(), []);
+  const abrirHistoria = useCallback(
+    (runId: string) => platform.getAthenaRunHistory(runId),
+    []
+  );
 
   const refrescarRecuperacion = useCallback(async () => {
     try {
@@ -178,7 +206,13 @@ export function AthenaArea({
     setOcupado(true);
     setAviso(null);
     try {
-      const identificador = await platform.startAthenaRun(objetivo, carpetaId);
+      const identificador = await platform.startAthenaRun(
+        objetivo,
+        carpetaId,
+        undefined,
+        undefined,
+        perfil || undefined
+      );
       setRunId(identificador);
       setRun(null);
       setArtefacto(null);
@@ -227,6 +261,23 @@ export function AthenaArea({
         // El sondeo volverá a intentarlo.
       }
     }
+  };
+
+  /**
+   * Retirar un recuerdo del proyecto, después de preguntar.
+   *
+   * La pregunta vive aquí, junto a la llamada que afirma la confirmación: repartirlas
+   * dejaría una confirmación afirmada en vez de obtenida, que es lo mismo que no tener
+   * ninguna.
+   */
+  const olvidarRecuerdo = async (memoryId: string) => {
+    const seguro = window.confirm(
+      "¿Retirar este recuerdo? Athena dejará de usarlo, y quedará constancia de que lo creyó."
+    );
+    if (!seguro) {
+      return;
+    }
+    await platform.forgetAthenaMemory(memoryId);
   };
 
   const cancelar = async () => {
@@ -386,6 +437,13 @@ export function AthenaArea({
           )}
         </div>
 
+        <AthenaPerfilSelector
+          valor={perfil}
+          onCambiar={setPerfil}
+          onListar={listarPerfiles}
+          deshabilitado={ocupado}
+        />
+
         <footer className="athena-lanzador-acciones">
           <p className="athena-nota">
             Cada cambio y cada comando te pedirán permiso, uno a uno.
@@ -422,9 +480,15 @@ export function AthenaArea({
             <h3>{run.objetivo}</h3>
             <p className="athena-fase" data-fase={run.fase ?? "desconocida"}>
               {nombreFase(run.fase)}
-              {run.conectado ? "" : " · sin conexión con el run"}
+              {debeAvisarDeDesconexion(run) ? " · sin conexión con el run" : ""}
             </p>
             <p className="athena-resumen">{resumenActividad(run)}</p>
+            {/* El perfil con el que se creó. Se enseña y no se ofrece cambiar: cambiarlo
+                a mitad cambiaría qué cuenta como prueba, y lo ya comprobado dejaría de
+                significar lo que decía. */}
+            {run.perfilSolicitado ? (
+              <p className="athena-nota">Perfil: {run.perfilSolicitado}</p>
+            ) : null}
             {run.degradado ? (
               <p className="athena-aviso">
                 Athena tuvo que reconstruir el estado de este run tras un fallo.
@@ -441,6 +505,16 @@ export function AthenaArea({
               </button>
             ) : null}
           </header>
+
+          {puedeRevisarseElEncargo(run) ? (
+            <AthenaEncargo
+              run={run}
+              onLeer={() => platform.getAthenaGoal(run.runId)}
+              onRevisar={(objetivo, motivo) =>
+                platform.reviseAthenaGoal(run.runId, objetivo, motivo)
+              }
+            />
+          ) : null}
 
           {permiso ? (
             <section
@@ -547,20 +621,39 @@ export function AthenaArea({
                   <dt>Se hizo</dt>
                   <dd>{nombreEstrategia(run.estrategia.seleccionada)}</dd>
                 </div>
-                {/* El criterio de Athena sólo se enseña cuando dice algo distinto de lo
-                    que se hizo. Repetir «coincide» en cada run sería ruido, y callarlo
-                    cuando discrepa escondería justo lo que hay que explicar. */}
-                {politicaDiscrepa(run.estrategia) ? (
+                {/* El veredicto se enseña siempre, coincida o no. Enseñarlo sólo al
+                    discrepar hacía que del silencio hubiera que deducir acuerdo, y un
+                    silencio no distingue «dijo lo mismo» de «no se pronunció». */}
+                <div>
+                  <dt>Criterio de Athena</dt>
+                  <dd>
+                    {veredictoPolitica(run.estrategia)}
+                    {politicaDiscrepa(run.estrategia) ? (
+                      <em className="athena-nota">
+                        {" "}
+                        · no es lo que acabó haciéndose
+                      </em>
+                    ) : null}
+                  </dd>
+                </div>
+                {run.estrategia.codigo ? (
                   <div>
-                    <dt>Criterio de Athena</dt>
+                    {/* El código, en crudo. Es lo estable: las frases de arriba se
+                        reescribirán y ésta es la que se puede citar en un informe o
+                        buscar en el registro. */}
+                    <dt>Código del motivo</dt>
                     <dd>
-                      {run.estrategia.veredictoPolitica === "decompose"
-                        ? "Este objetivo se podía repartir en tareas."
-                        : "Este objetivo no necesitaba repartirse."}
+                      <code>{run.estrategia.codigo}</code>
                     </dd>
                   </div>
                 ) : null}
               </dl>
+              {/* Lo que dijo la propia política, con sus palabras. No se reescribe:
+                  quien la escribió sabe por qué decidió, y traducirlo aquí sería que la
+                  interfaz opinara sobre una decisión que no tomó. */}
+              {run.estrategia.explicacionPolitica ? (
+                <p className="athena-nota">{run.estrategia.explicacionPolitica}</p>
+              ) : null}
               {run.estrategia.criterios.length > 0 ? (
                 <>
                   <p className="athena-nota">Por qué se podía repartir:</p>
@@ -572,13 +665,16 @@ export function AthenaArea({
                 </>
               ) : null}
               {run.estrategia.senalesSupuestas.length > 0 ? (
-                <p className="athena-nota">
-                  Athena no pudo medirlo todo: {run.estrategia.senalesSupuestas.length}{" "}
-                  {run.estrategia.senalesSupuestas.length === 1
-                    ? "señal quedó"
-                    : "señales quedaron"}{" "}
-                  sin comprobar y no se dieron por ciertas.
-                </p>
+                <>
+                  <p className="athena-nota">
+                    Athena no pudo medir esto, y no lo dio por cierto:
+                  </p>
+                  <ul className="athena-senales">
+                    {run.estrategia.senalesSupuestas.map((senal) => (
+                      <li key={senal}>{nombreSenal(senal)}</li>
+                    ))}
+                  </ul>
+                </>
               ) : null}
             </details>
           ) : null}
@@ -620,6 +716,15 @@ export function AthenaArea({
             </section>
           ) : null}
 
+          <AthenaDelegados delegados={run.delegados} />
+
+          <AthenaMemoria
+            workspaceId={run.workspaceId}
+            onListar={platform.listAthenaMemory}
+            onConfirmar={platform.confirmAthenaMemory}
+            onOlvidar={olvidarRecuerdo}
+          />
+
           {run.herramientas.length > 0 ? (
             <section aria-label="Herramientas">
               <h4>Herramientas</h4>
@@ -628,6 +733,46 @@ export function AthenaArea({
                   <li key={`${uso.nombre}-${uso.correlacion ?? indice}`}>
                     {uso.nombre} — {uso.estado}
                     {uso.externalizado ? " · resultado guardado aparte" : ""}
+                    {/* El resultado se dibuja con la forma que dijo Athena, no con la
+                        que parezca tener. Sin presentación no se enseña nada: no hay
+                        una de repuesto que no sea una invención. */}
+                    {uso.presentacion ? (
+                      <div className="athena-resultado">
+                        <p className="athena-resultado-titulo">
+                          {uso.presentacion.titulo}
+                        </p>
+                        {uso.presentacion.resumen ? (
+                          <p className="athena-motivo">{uso.presentacion.resumen}</p>
+                        ) : null}
+                        {uso.presentacion.elementos.length > 0 ? (
+                          <ul className="athena-resultado-lista">
+                            {uso.presentacion.elementos
+                              .slice(0, LIMITE_ELEMENTOS)
+                              .map((elemento, posicion) => (
+                                <li key={`${elemento}-${posicion}`}>{elemento}</li>
+                              ))}
+                          </ul>
+                        ) : null}
+                        {/* El recorte se dice aparte del total. Enseñar diez de
+                            cuarenta sin decirlo cuenta cuarenta como diez. */}
+                        {uso.presentacion.elementos.length > LIMITE_ELEMENTOS ? (
+                          <p className="athena-nota">
+                            {uso.presentacion.elementos.length} en total; se enseñan{" "}
+                            {LIMITE_ELEMENTOS}.
+                          </p>
+                        ) : null}
+                        {uso.presentacion.hechos.length > 0 ? (
+                          <dl className="athena-resultado-hechos">
+                            {uso.presentacion.hechos.map((hecho) => (
+                              <div key={hecho.nombre}>
+                                <dt>{hecho.nombre}</dt>
+                                <dd>{hecho.valor}</dd>
+                              </div>
+                            ))}
+                          </dl>
+                        ) : null}
+                      </div>
+                    ) : null}
                   </li>
                 ))}
               </ul>
@@ -692,6 +837,7 @@ export function AthenaArea({
                   <li key={`${error.codigo}-${indice}`}>
                     <strong>{error.codigo}</strong> {error.mensaje}
                     {error.razon ? <em> · {motivoSinComprobar(error.razon)}</em> : null}
+                    {error.detalle ? <em> · {pistaDeDetalle(error.detalle)}</em> : null}
                     {error.recuperacion ? <em> · {error.recuperacion}</em> : null}
                   </li>
                 ))}
@@ -722,6 +868,11 @@ export function AthenaArea({
           ) : null}
         </article>
       ) : null}
+
+      <AthenaHistorial
+        onListar={listarRuns}
+        onAbrir={abrirHistoria}
+      />
     </section>
   );
 }

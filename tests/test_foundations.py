@@ -497,21 +497,38 @@ class BuildConfigurationTests(unittest.TestCase):
 
     def test_windows_launcher_starts_the_release_app_with_broker_environment(self) -> None:
         launcher = (ROOT / "Arrancar ChatyGPT.bat").read_text(encoding="utf-8")
-        self.assertIn(
-            "$env:CHATYGPT_BROKER_BASE_URL = 'http://192.168.1.52:8765'",
-            launcher,
-        )
-        self.assertIn(
-            "$releaseExe = Join-Path (Get-Location) "
-            "'apps\\desktop\\src-tauri\\target\\release\\chatygpt.exe'",
-            launcher,
-        )
-        self.assertIn("& $releaseExe", launcher)
+        # El arranque vive ahora en un script propio. Dentro del BAT era un bloque de
+        # PowerShell escapado con acentos circunflejos: ni se leia ni se podia probar, y
+        # ahi es donde la comprobacion de la credencial no comprobaba nada.
+        self.assertIn('-File "scripts\\Start-ChatyGPT.ps1"', launcher)
+        self.assertIn('-BrokerBaseUrl "http://192.168.1.52:8765"', launcher)
         self.assertIn(
             'set "STAGED_EXE=apps\\desktop\\src-tauri\\target-next\\release\\chatygpt.exe"',
             launcher,
         )
         self.assertIn('copy /y "%STAGED_EXE%" "%RELEASE_EXE%"', launcher)
+
+        arranque = (ROOT / "scripts" / "Start-ChatyGPT.ps1").read_text(encoding="utf-8")
+        self.assertIn("target\\release\\chatygpt.exe", arranque)
+        self.assertIn("& $releaseExe", arranque)
+
+    def test_the_broker_credential_is_checked_against_an_endpoint_that_demands_it(self) -> None:
+        """La comprobacion tiene que pedirle la credencial al broker, no saludarle.
+
+        Se validaba contra `/api/v1/capabilities`, que responde 200 a cualquiera —se
+        comprobo con un token inventado—, asi que una credencial caducada pasaba el
+        control y reventaba mucho despues dentro de un run, como un 403 que nadie
+        relacionaba con el arranque.
+        """
+        arranque = (ROOT / "scripts" / "Start-ChatyGPT.ps1").read_text(encoding="utf-8")
+        self.assertIn("/api/v1/dashboard/tasks?limit=1", arranque)
+        self.assertNotIn(
+            "$capabilitiesUrl",
+            arranque,
+            "capabilities no exige credencial: no puede ser la puerta",
+        )
+        # Un rechazo se distingue de un broker apagado: mandan a sitios distintos.
+        self.assertIn("$status -eq 401 -or $status -eq 403", arranque)
 
     def test_windows_icon_required_by_tauri_is_a_real_ico(self) -> None:
         content = WINDOWS_ICON.read_bytes()

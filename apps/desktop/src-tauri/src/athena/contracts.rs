@@ -91,6 +91,11 @@ pub struct SolicitudRun {
     pub max_iterations: u32,
     pub max_repair_cycles: u32,
     pub session_timeout_seconds: f64,
+    /// Para qué se usa Athena en este run. Se omite cuando no se eligió ninguno, para
+    /// que decida el despliegue: mandar una cadena vacía sería pedir un perfil sin
+    /// nombre, y Athena lo rechazaría con razón.
+    #[serde(skip_serializing_if = "str::is_empty")]
+    pub profile: String,
 }
 
 /// Respuesta a la apertura de un run.
@@ -101,6 +106,11 @@ pub struct RunCreado {
     pub writes: String,
     #[serde(rename = "exec")]
     pub ejecucion: String,
+    /// Con qué perfil quedó fijado el run. Athena no lo devuelve todavía; se conserva el
+    /// campo porque el día que lo haga, quien lea esto sabrá que es de Athena y no una
+    /// copia de lo que ChatyGPT creía haber pedido.
+    #[serde(default)]
+    pub profile: String,
 }
 
 /// Salud del servicio.
@@ -209,6 +219,276 @@ impl InstantaneaRun {
     pub fn estado_verificacion(&self) -> Option<&str> {
         self.verification.get("status").and_then(Value::as_str)
     }
+}
+
+/// De quién es un hecho del registro duradero.
+///
+/// `run_id` es la raíz, no la sesión que lo publicó: es lo que hace que un run con
+/// delegados tenga una sola historia en vez de una por agente.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Procedencia {
+    #[serde(default)]
+    pub run_id: String,
+    #[serde(default)]
+    pub session_id: String,
+    #[serde(default)]
+    pub actor: String,
+    #[serde(default)]
+    pub task_id: Option<String>,
+    /// Si lo hizo un delegado y no el propio run.
+    #[serde(default)]
+    pub delegated: bool,
+}
+
+/// Un hecho del registro duradero de un run.
+///
+/// Distinto de `EventoRuntime`, que es lo que viaja en vivo: éste sobrevive al proceso,
+/// lleva su sitio en el orden (`seq`) y dice de quién es. Sin procedencia, un run con
+/// delegados se leería como si todo lo hubiera hecho el padre.
+#[derive(Debug, Clone, Deserialize)]
+pub struct EventoHistorico {
+    pub seq: u64,
+    #[serde(default)]
+    pub event_id: String,
+    pub name: String,
+    #[serde(default)]
+    pub version: u32,
+    #[serde(default)]
+    pub correlation_id: Option<String>,
+    #[serde(default)]
+    pub occurred_at: String,
+    #[serde(default)]
+    pub provenance: Procedencia,
+    #[serde(default)]
+    pub payload: BTreeMap<String, Value>,
+}
+
+impl EventoHistorico {
+    /// El mismo hecho, en la forma que entiende la proyección.
+    ///
+    /// `run_id` toma la **sesión que lo publicó** y no la raíz a propósito: es lo que
+    /// permite que la misma atribución que funciona en vivo —lo que hace un delegado es
+    /// del delegado— funcione al releer. Poner la raíz haría que todo pareciera del
+    /// padre, que es justo lo que la procedencia existe para evitar.
+    pub fn como_evento(&self) -> EventoRuntime {
+        EventoRuntime {
+            event_id: self.event_id.clone(),
+            name: self.name.clone(),
+            run_id: if self.provenance.session_id.is_empty() {
+                self.provenance.run_id.clone()
+            } else {
+                self.provenance.session_id.clone()
+            },
+            correlation_id: self.correlation_id.clone(),
+            occurred_at: self.occurred_at.clone(),
+            payload: self.payload.clone(),
+        }
+    }
+}
+
+/// Lo esencial de un run reconstruido por Athena a partir de sus hechos.
+///
+/// Viaja con los hechos porque se deriva de ellos: calcularlo en el cliente obligaría a
+/// cada cliente a repetir la misma lectura y a ponerse de acuerdo en cómo se lee.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all(serialize = "camelCase", deserialize = "snake_case"))]
+pub struct ResumenHistoria {
+    #[serde(default)]
+    pub status: String,
+    /// `direct` o `hierarchical`.
+    #[serde(default)]
+    pub executed_as: String,
+    /// Estado final de cada tarea del plan, por id.
+    #[serde(default)]
+    pub tasks: BTreeMap<String, String>,
+    /// Rol de cada delegado, por sesión.
+    #[serde(default)]
+    pub delegates: BTreeMap<String, String>,
+    #[serde(default)]
+    pub verification: String,
+    #[serde(default)]
+    pub permission_requests: u32,
+}
+
+/// La historia de un run: los hechos y lo que Athena concluye de ellos.
+#[derive(Debug, Clone, Deserialize)]
+pub struct HistoriaRun {
+    #[serde(default)]
+    pub run_id: String,
+    #[serde(default)]
+    pub events: Vec<EventoHistorico>,
+    #[serde(default)]
+    pub summary: ResumenHistoria,
+}
+
+/// Algo que Athena cree saber de un proyecto.
+///
+/// Tres estados y no dos, y el orden importa (ADR-031): `proposed` es lo que dijo un
+/// modelo, `verified` lo que algo comprobó, `user_confirmed` lo que una persona
+/// respaldó. El último **sólo** se alcanza por HTTP: ningún módulo del runtime puede
+/// llegar a él, y por eso existe este panel.
+///
+/// `status` es cosa aparte: dice si el recuerdo sigue vigente, si otro lo reemplazó o
+/// si alguien lo retiró. Un recuerdo superado no se borra, para que «antes creíamos X»
+/// sobreviva.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all(serialize = "camelCase", deserialize = "snake_case"))]
+pub struct RecuerdoProyecto {
+    pub id: String,
+    #[serde(default)]
+    pub project_id: String,
+    /// Qué clase de cosa se recuerda: comando verificado, convención, decisión…
+    pub kind: String,
+    pub content: String,
+    /// De dónde salió. Un recuerdo sin origen no se puede juzgar.
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub source_reference: Option<String>,
+    #[serde(default)]
+    pub confidence: f64,
+    /// `proposed`, `verified` o `user_confirmed`.
+    pub verification_state: String,
+    #[serde(default)]
+    pub scope: String,
+    /// `active`, `superseded` o `forgotten`.
+    pub status: String,
+    /// El recuerdo al que éste sustituye, si sustituye a alguno.
+    #[serde(default)]
+    pub supersedes: Option<String>,
+    #[serde(default)]
+    pub created_at: String,
+    #[serde(default)]
+    pub updated_at: String,
+    /// Si ya pasó el plazo de su tipo. Lo calcula Athena: una fecha ISO obligaría a cada
+    /// cliente a decidir por su cuenta cuándo algo es viejo, y a discrepar entre sí.
+    #[serde(default)]
+    pub stale: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ListadoMemoria {
+    #[serde(default)]
+    pub project_id: String,
+    #[serde(default)]
+    pub items: Vec<RecuerdoProyecto>,
+}
+
+/// Un perfil de Athena: para qué clase de trabajo sirve este run.
+///
+/// No es el perfil de un subagente. `AthenaProfile` dice qué clase de trabajo es el run
+/// entero —qué herramientas existen y qué cuenta como prueba—; `SubagentProfile` reparte
+/// autoridad dentro. Se componen, no se mezclan (ADR-028).
+///
+/// Athena **no publica versión** de un perfil, así que aquí no hay ninguna: enseñar un
+/// número que nadie mantiene invitaría a confiar en que subiría al cambiar el perfil.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all(serialize = "camelCase", deserialize = "snake_case"))]
+pub struct PerfilAthena {
+    pub name: String,
+    /// Sobre qué trabaja: un repositorio, una carpeta de documentos…
+    #[serde(default)]
+    pub subject: String,
+    /// Qué clase de evidencia da por buena.
+    #[serde(default)]
+    pub evidence: String,
+    /// Qué demuestra esa evidencia — incluido lo que **no** demuestra.
+    #[serde(default)]
+    pub proves: String,
+    /// Las herramientas que existen bajo este perfil. Es un filtro estructural: lo que
+    /// no está aquí no es que se deniegue, es que no existe.
+    #[serde(default)]
+    pub tools: Vec<String>,
+    #[serde(default)]
+    pub description: String,
+}
+
+/// Los perfiles que ofrece este despliegue, y cuál usa si no se pide ninguno.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListadoPerfiles {
+    #[serde(default)]
+    pub default: String,
+    #[serde(default)]
+    pub profiles: Vec<PerfilAthena>,
+}
+
+/// El encargo de un run, en su versión número `revision`.
+///
+/// La revisión no es burocracia: es lo único que impide que dos personas mirando el
+/// mismo run se pisen sin enterarse (ADR-029). ChatyGPT la conserva porque tiene que
+/// decir sobre cuál escribe.
+///
+/// Se lee en el `snake_case` que publica Athena y se escribe en el `camelCase` que
+/// espera la interfaz, igual que `ResumenRun`: un único `rename_all` rompería la lectura.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all(serialize = "camelCase", deserialize = "snake_case"))]
+pub struct ObjetivoRun {
+    pub text: String,
+    pub revision: u32,
+    /// Por qué se cambió, dicho por quien lo cambió. Vacío en la primera.
+    #[serde(default)]
+    pub reason: String,
+    #[serde(default)]
+    pub revised_at: String,
+}
+
+/// Petición de revisión del encargo.
+///
+/// `base_revision` no tiene valor por defecto ni aquí ni en Athena. Uno implícito
+/// —«la última»— convertiría cada revisión en un pisotón.
+#[derive(Debug, Clone, Serialize)]
+pub struct SolicitudRevision {
+    pub objective: String,
+    pub base_revision: u32,
+    pub reason: String,
+}
+
+/// Respuesta a una revisión aceptada.
+///
+/// `applied` llega en falso a propósito: escrito no es aplicado. El bucle recoge el
+/// cambio entre iteraciones y lo anuncia con `goal.revised`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RevisionAceptada {
+    pub run_id: String,
+    pub goal: ObjetivoRun,
+    #[serde(default)]
+    pub applied: bool,
+}
+
+/// Cuerpo del 409 cuando alguien escribió sobre una revisión que ya no era la vigente.
+///
+/// Athena manda el objetivo actual dentro del propio rechazo para que quien llegó tarde
+/// decida con él delante, en vez de tener que volver a preguntarlo.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ConflictoObjetivo {
+    pub current_revision: u32,
+    #[serde(default)]
+    pub current: String,
+}
+
+/// Cómo se enseña el resultado de una herramienta, ya derivado por Athena.
+///
+/// Viaja en `tool.completed` desde ADR-026 y existe para que ningún cliente vuelva a
+/// deducir la presentación leyendo el payload interno de la tool: dos clientes deduciendo
+/// por su cuenta acaban discrepando, y el que discrepa no sabe que discrepa.
+///
+/// `kind` es un conjunto cerrado de cinco valores —`text`, `items`, `change`, `record`,
+/// `reference`— y son las formas que cambian cómo se dibuja algo, no un tipo por tool.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ResultadoMostrable {
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub summary: String,
+    #[serde(default)]
+    pub items: Vec<String>,
+    #[serde(default)]
+    pub facts: BTreeMap<String, Value>,
+    /// Dónde vive el cuerpo cuando no cupo en el evento.
+    #[serde(default)]
+    pub reference_uri: Option<String>,
 }
 
 /// Un evento del runtime.

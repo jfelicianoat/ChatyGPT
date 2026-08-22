@@ -43,11 +43,14 @@ use url::Url;
 // silencia aquí, sobre este bloque y diciendo por qué — no sobre el módulo
 // entero, que es lo que ocultaba código realmente muerto.
 #[allow(unused_imports)]
-pub use area::{AreaAthena, EstadoAreaAthena};
+pub use area::{AreaAthena, EstadoAreaAthena, HechoHistorico, HistoriaVista};
 #[allow(unused_imports)]
 pub use contracts::{
-    DecisionPermiso, EstadoRun, InstantaneaRun, ListadoRuns, MensajeFlujo, ModoCapacidad,
-    PermisoPendiente, ResumenRun, RunCreado, SaludServicio, SolicitudRun, WIRE_VERSION_SOPORTADA,
+    ConflictoObjetivo, DecisionPermiso, EstadoRun, EventoHistorico, HistoriaRun, InstantaneaRun,
+    ListadoMemoria, ListadoPerfiles, ListadoRuns, MensajeFlujo, ModoCapacidad, ObjetivoRun,
+    PerfilAthena, PermisoPendiente, Procedencia, RecuerdoProyecto, ResumenHistoria, ResumenRun,
+    RevisionAceptada, RunCreado, SaludServicio, SolicitudRevision, SolicitudRun,
+    WIRE_VERSION_SOPORTADA,
 };
 pub use events::{FlujoEventos, OpcionesReconexion};
 #[allow(unused_imports)]
@@ -76,7 +79,20 @@ pub struct OpcionesRun {
     pub ejecucion: ModoCapacidad,
     pub max_iteraciones: u32,
     pub max_ciclos_reparacion: u32,
+    /// Techo de reloj para el run entero.
+    ///
+    /// Medido contra este despliegue: un turno contra un modelo local de 30B ya cargado
+    /// cuesta del orden de nueve minutos, y la carga en frio se lleva otros diez. Con los
+    /// 900 s de antes no cabian ni dos turnos de los doce que permite `max_iteraciones`,
+    /// asi que un run moria con `process_timeout` sin haber hecho nada y sin que el
+    /// numero tuviera nada que ver con el trabajo pedido.
     pub tiempo_sesion_segundos: f64,
+    /// Perfil pedido. Vacío = el de por defecto del despliegue.
+    ///
+    /// Un nombre desconocido no cae al de por defecto ni aquí ni en Athena: quien pide
+    /// `documents` y recibe el de software no se entera hasta que Athena intenta
+    /// ejecutar los tests de una carpeta de textos.
+    pub perfil: String,
 }
 
 impl Default for OpcionesRun {
@@ -86,9 +102,27 @@ impl Default for OpcionesRun {
             ejecucion: ModoCapacidad::Ask,
             max_iteraciones: 12,
             max_ciclos_reparacion: 2,
-            tiempo_sesion_segundos: 900.0,
+            tiempo_sesion_segundos: 3_600.0,
+            perfil: String::new(),
         }
     }
+}
+
+/// Cómo acabó una revisión del encargo.
+///
+/// Dos respuestas, no una respuesta y un error: que otro haya revisado antes es una
+/// cosa que pasa, no un fallo de quien lo intenta. La diferencia importa porque sólo
+/// una de las dos ramas admite volver a intentarlo, y sólo sabiendo cuál es se puede
+/// evitar el reintento a ciegas.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "resultado", rename_all = "camelCase")]
+pub enum RevisionObjetivo {
+    /// Athena aceptó la revisión. `applied` sigue siendo falso: escrito no es aplicado.
+    #[serde(rename_all = "camelCase")]
+    Aceptada { objetivo: ObjetivoRun },
+    /// Alguien escribió antes. Se devuelve el encargo vigente, ya releído.
+    #[serde(rename_all = "camelCase")]
+    Conflicto { vigente: ObjetivoRun },
 }
 
 /// Traduce un fallo de transporte registrando su clase, nunca su texto.
@@ -292,7 +326,13 @@ impl AthenaClient {
     /// el servicio— así que un 200 suyo no autoriza a nadie a decirse conectado.
     pub async fn credencial_valida(&self) -> Result<bool, AppError> {
         let respuesta = self
-            .enviar(Method::GET, "/v1/auth/check", "auth_check", None::<&Value>, None)
+            .enviar(
+                Method::GET,
+                "/v1/auth/check",
+                "auth_check",
+                None::<&Value>,
+                None,
+            )
             .await?;
         match respuesta.status() {
             StatusCode::OK => Ok(true),
@@ -331,6 +371,7 @@ impl AthenaClient {
             max_iterations: opciones.max_iteraciones,
             max_repair_cycles: opciones.max_ciclos_reparacion,
             session_timeout_seconds: opciones.tiempo_sesion_segundos,
+            profile: opciones.perfil.clone(),
         };
         let respuesta = self
             .enviar(
@@ -364,6 +405,197 @@ impl AthenaClient {
             .await?;
         let respuesta = Self::interpretar(respuesta, "read_run").await?;
         Self::leer_json(respuesta, "read_run").await
+    }
+
+    /// Lo que ocurrió en un run, leído del registro duradero.
+    ///
+    /// Distinto de `/events`, que es el flujo: aquél sirve mientras el run pasa y no
+    /// existe para quien llega tarde. Éste contesta después, incluso tras un reinicio, e
+    /// incluye lo que hicieron los delegados atribuido a quien lo hizo.
+    ///
+    /// Un 404 aquí **no** significa «run vacío»: significa que de ese run no consta
+    /// historia, porque no existió o porque es anterior al registro. Athena lo distingue
+    /// a propósito y aquí se conserva la distinción.
+    pub async fn leer_historia(&self, run_id: &str) -> Result<HistoriaRun, AppError> {
+        let ruta = format!("/v1/runs/{run_id}/history");
+        let respuesta = self
+            .enviar(Method::GET, &ruta, "read_history", None::<&Value>, None)
+            .await?;
+        let respuesta = Self::interpretar(respuesta, "read_history").await?;
+        Self::leer_json(respuesta, "read_history").await
+    }
+
+    /// Lo que Athena cree saber de un proyecto, para que alguien pueda mirarlo.
+    ///
+    /// El proyecto es el identificador de espacio de trabajo que usa el runtime, no la
+    /// ruta: dos carpetas distintas con la misma ruta relativa no comparten memoria.
+    pub async fn listar_memoria(
+        &self,
+        proyecto: &str,
+        limite: u32,
+    ) -> Result<Vec<RecuerdoProyecto>, AppError> {
+        if proyecto.trim().is_empty() {
+            return Err(AppError::Validation(
+                "falta el proyecto del que se quiere ver la memoria".to_owned(),
+            ));
+        }
+        let ruta = format!("/v1/memory?project={proyecto}&limit={limite}");
+        let respuesta = self
+            .enviar(Method::GET, &ruta, "list_memory", None::<&Value>, None)
+            .await?;
+        let respuesta = Self::interpretar(respuesta, "list_memory").await?;
+        let listado: ListadoMemoria = Self::leer_json(respuesta, "list_memory").await?;
+        Ok(listado.items)
+    }
+
+    /// Una persona responde por un recuerdo. Es el único camino a `user_confirmed`.
+    ///
+    /// Nada de esto lo puede hacer el runtime: hay un test en Athena que prohíbe que
+    /// ningún módulo suyo nombre ese estado. Que sólo se alcance desde aquí es el
+    /// motivo por el que este panel existe.
+    pub async fn confirmar_recuerdo(&self, id: &str) -> Result<RecuerdoProyecto, AppError> {
+        let ruta = format!("/v1/memory/{id}/confirm");
+        let respuesta = self
+            .enviar(Method::POST, &ruta, "confirm_memory", None::<&Value>, None)
+            .await?;
+        let respuesta = Self::interpretar(respuesta, "confirm_memory").await?;
+        Self::leer_json(respuesta, "confirm_memory").await
+    }
+
+    /// Retirar un recuerdo. No lo borra: lo marca, para que conste que se creyó.
+    pub async fn olvidar_recuerdo(&self, id: &str) -> Result<(), AppError> {
+        let ruta = format!("/v1/memory/{id}");
+        let respuesta = self
+            .enviar(Method::DELETE, &ruta, "forget_memory", None::<&Value>, None)
+            .await?;
+        Self::interpretar(respuesta, "forget_memory").await?;
+        logging::info(
+            "athena.memory_forgotten",
+            None,
+            &[("item", logging::id(id))],
+        );
+        Ok(())
+    }
+
+    /// Qué perfiles ofrece este despliegue, y cuál usa si no se pide ninguno.
+    ///
+    /// Sin esta lista un cliente elige a ciegas, y elegir a ciegas entre perfiles que
+    /// cambian qué herramientas existen y qué cuenta como prueba no es elegir: es
+    /// acertar.
+    pub async fn listar_perfiles(&self) -> Result<ListadoPerfiles, AppError> {
+        let respuesta = self
+            .enviar(
+                Method::GET,
+                "/v1/profiles",
+                "list_profiles",
+                None::<&Value>,
+                None,
+            )
+            .await?;
+        let respuesta = Self::interpretar(respuesta, "list_profiles").await?;
+        Self::leer_json(respuesta, "list_profiles").await
+    }
+
+    /// Lee el encargo vigente de un run, con su revisión.
+    ///
+    /// Se pide aparte de la instantánea porque la instantánea no lo lleva: el número de
+    /// revisión sólo vive aquí y en los eventos `goal.revised`. Sin él no se puede
+    /// revisar nada, porque no habría sobre qué decir que se escribe.
+    pub async fn leer_objetivo(&self, run_id: &str) -> Result<ObjetivoRun, AppError> {
+        let ruta = format!("/v1/runs/{run_id}/goal");
+        let respuesta = self
+            .enviar(Method::GET, &ruta, "read_goal", None::<&Value>, None)
+            .await?;
+        let respuesta = Self::interpretar(respuesta, "read_goal").await?;
+        Self::leer_json(respuesta, "read_goal").await
+    }
+
+    /// Revisa el encargo de un run diciendo sobre qué revisión se escribe.
+    ///
+    /// Un conflicto **no es un error de esta llamada**: es una respuesta. Alguien más
+    /// cambió el encargo antes, y quien llega tarde tiene derecho a ver el nuevo y
+    /// decidir. Devolverlo como `AppError` obligaría a la interfaz a leer una frase para
+    /// enterarse, y a reintentar a ciegas para recuperarse — que es exactamente lo que
+    /// el número de revisión existe para impedir.
+    pub async fn revisar_objetivo(
+        &self,
+        run_id: &str,
+        objetivo: &str,
+        base_revision: u32,
+        motivo: &str,
+    ) -> Result<RevisionObjetivo, AppError> {
+        if objetivo.trim().is_empty() {
+            return Err(AppError::Validation(
+                "el objetivo no puede estar vacío".to_owned(),
+            ));
+        }
+        let ruta = format!("/v1/runs/{run_id}/goal");
+        let cuerpo = SolicitudRevision {
+            objective: objetivo.trim().to_owned(),
+            base_revision,
+            reason: motivo.trim().to_owned(),
+        };
+        let respuesta = self
+            .enviar(Method::POST, &ruta, "revise_goal", Some(&cuerpo), None)
+            .await?;
+        if respuesta.status() == StatusCode::CONFLICT {
+            let bytes = respuesta.bytes().await.unwrap_or_default();
+            let (codigo, mensaje) = mensaje_rechazo(&bytes);
+            if codigo != "goal_conflict" {
+                // Un 409 que no es de revisión es otra cosa —un run que ya terminó, por
+                // ejemplo— y no se puede resolver refrescando el objetivo.
+                return Err(AppError::Conflict(mensaje));
+            }
+            let conflicto: ConflictoObjetivo = serde_json::from_slice(&bytes).map_err(|error| {
+                logging::warn(
+                    "athena.contract_mismatch",
+                    None,
+                    &[("operation", logging::code("revise_goal"))],
+                );
+                AppError::AthenaContract(error.to_string())
+            })?;
+            logging::info(
+                "athena.goal_conflict",
+                None,
+                &[
+                    ("run", logging::id(run_id)),
+                    ("base", logging::count(i64::from(base_revision))),
+                    (
+                        "current",
+                        logging::count(i64::from(conflicto.current_revision)),
+                    ),
+                ],
+            );
+            // El cuerpo del 409 trae la revisión y el texto, pero no el motivo ni la
+            // fecha. Se relee el objetivo entero para no enseñar media verdad; si esa
+            // lectura falla, se responde con lo que el conflicto sí traía.
+            let vigente = match self.leer_objetivo(run_id).await {
+                Ok(objetivo) if objetivo.revision == conflicto.current_revision => objetivo,
+                _ => ObjetivoRun {
+                    text: conflicto.current.clone(),
+                    revision: conflicto.current_revision,
+                    reason: String::new(),
+                    revised_at: String::new(),
+                },
+            };
+            return Ok(RevisionObjetivo::Conflicto { vigente });
+        }
+        let respuesta = Self::interpretar(respuesta, "revise_goal").await?;
+        let aceptada: RevisionAceptada = Self::leer_json(respuesta, "revise_goal").await?;
+        logging::info(
+            "athena.goal_revised",
+            None,
+            &[
+                ("run", logging::id(run_id)),
+                (
+                    "revision",
+                    logging::count(i64::from(aceptada.goal.revision)),
+                ),
+            ],
+        );
+        Ok(RevisionObjetivo::Aceptada {
+            objetivo: aceptada.goal,
+        })
     }
 
     /// Lista runs, opcionalmente filtrando por estado.

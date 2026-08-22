@@ -5,6 +5,12 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$BrokerToken,
 
+    # Modelo preferido para los runs de Athena. Sin esto el broker enruta por su cuenta y
+    # puede tocarle un modelo que contesta en prosa en vez de con la decision estructurada
+    # que Athena necesita; entonces el run falla en el primer turno. Preferencia, no
+    # imposicion: el broker sigue decidiendo.
+    [string]$PreferredModel = "",
+
     [string]$AthenaBaseUrl = "http://127.0.0.1:8770",
     [string]$AthenaRoot = ""
 )
@@ -126,7 +132,12 @@ if (Test-AthenaHealth) {
         Write-Warning "Athena responde pero no se pudo comprobar la credencial. Se intentará usar la guardada."
         exit 0
     }
+    # La credencial del broker que lleva un proceso vivo es la que recibio al arrancar:
+    # es una variable de entorno suya y no se relee. Si la credencial cambio desde
+    # entonces, esta Athena seguira usando la vieja y sus runs moriran con 403 aunque el
+    # arranque de ChatyGPT haya validado la nueva.
     Write-Host "Athena ya está disponible en $AthenaBaseUrl."
+    Write-Host "Nota: usa la credencial de Broker AI con la que se arrancó. Si la has renovado, ciérrala y vuelve a lanzar."
     exit 0
 }
 
@@ -174,6 +185,7 @@ $previous = @{
     ATHENA_BROKER_TOKEN = $env:ATHENA_BROKER_TOKEN
     ATHENA_SERVICE_TOKEN = $env:ATHENA_SERVICE_TOKEN
     ATHENA_STATE_DIR = $env:ATHENA_STATE_DIR
+    ATHENA_PREFERRED_MODEL = $env:ATHENA_PREFERRED_MODEL
 }
 
 try {
@@ -182,6 +194,7 @@ try {
     $env:ATHENA_BROKER_TOKEN = $BrokerToken
     $env:ATHENA_SERVICE_TOKEN = $serviceToken
     $env:ATHENA_STATE_DIR = Join-Path $env:LOCALAPPDATA "Athena\service"
+    $env:ATHENA_PREFERRED_MODEL = $PreferredModel
     $process = Start-Process -FilePath $pythonw -ArgumentList "-m", "athena_service" `
         -WorkingDirectory $AthenaRoot -WindowStyle Hidden -PassThru
 }
@@ -191,6 +204,7 @@ finally {
     $env:ATHENA_BROKER_TOKEN = $previous.ATHENA_BROKER_TOKEN
     $env:ATHENA_SERVICE_TOKEN = $previous.ATHENA_SERVICE_TOKEN
     $env:ATHENA_STATE_DIR = $previous.ATHENA_STATE_DIR
+    $env:ATHENA_PREFERRED_MODEL = $previous.ATHENA_PREFERRED_MODEL
     $serviceToken = $null
 }
 

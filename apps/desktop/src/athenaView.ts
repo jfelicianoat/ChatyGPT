@@ -70,6 +70,38 @@ export function nombreFase(fase: AthenaFase | undefined): string {
   }
 }
 
+/**
+ * Si conviene avisar de que la vista no está recibiendo lo que pasa en el run.
+ *
+ * Sólo mientras el run pueda cambiar. Cuando termina, Athena cierra el flujo
+ * porque ya no queda nada que contar, así que la vista se queda sin conexión
+ * **siempre**: anunciarlo entonces presentaba como avería el final normal de
+ * todos los runs, y se leía junto a «Fallido» como si fueran el mismo problema.
+ */
+export function debeAvisarDeDesconexion(run: AthenaRun): boolean {
+  return !run.conectado && !esFaseTerminal(run.fase);
+}
+
+/**
+ * Lo que un detalle tipado de Athena significa para quien tiene que arreglarlo.
+ *
+ * Los dos codigos que se traducen son los del broker y estan en su contrato:
+ * uno se arregla renovando la credencial y el otro no —pedir otro token no
+ * repara un llavero roto—, y esa diferencia es justo la que decide que hace
+ * quien lo lee. Lo que no se reconoce se enseña tal cual: inventar una
+ * explicacion para un codigo nuevo seria peor que enseñar el codigo.
+ */
+export function pistaDeDetalle(detalle: string): string {
+  switch (detalle) {
+    case "ADMIN_AUTH_REQUIRED":
+      return "Broker AI rechaza la credencial: renuévala en Inicio → Broker AI y reinicia Athena.";
+    case "ADMIN_AUTH_BACKEND_UNAVAILABLE":
+      return "El llavero de Broker AI no responde; otra credencial no lo arreglaría.";
+    default:
+      return detalle;
+  }
+}
+
 export function nombreEstadoTarea(estado: AthenaEstadoTarea): string {
   switch (estado) {
     case "pending":
@@ -231,6 +263,47 @@ export function politicaDiscrepa(estrategia: AthenaEstrategia): boolean {
   return politicaRepartiria !== (estrategia.seleccionada === "hierarchical");
 }
 
+/**
+ * Qué opinó la política de descomposición, en palabras.
+ *
+ * Se enseña siempre, coincida o no con lo que se hizo. Enseñarlo sólo cuando discrepa
+ * obligaba a quien mira a deducir del silencio que hubo acuerdo, y un silencio no
+ * distingue «la política dijo lo mismo» de «la política no llegó a pronunciarse».
+ */
+export function veredictoPolitica(estrategia: AthenaEstrategia): string {
+  switch (estrategia.veredictoPolitica) {
+    case "decompose":
+      return "Este objetivo se podía repartir en tareas.";
+    case "decline":
+      return "Este objetivo no necesitaba repartirse.";
+    case "":
+      return "La política no llegó a pronunciarse sobre este objetivo.";
+    default:
+      return estrategia.veredictoPolitica;
+  }
+}
+
+/**
+ * Nombre legible de una señal que Athena no pudo medir.
+ *
+ * Se enumeran una a una y no como cuenta: saber que «quedaron dos señales sin comprobar»
+ * no dice cuáles, y son justo las que habría que mirar si la decisión sorprende.
+ */
+export function nombreSenal(senal: string): string {
+  switch (senal) {
+    case "has_meaningful_dependencies":
+      return "Si hay partes que dependen de otras";
+    case "distinct_roles_required":
+      return "Si hace falta más de un especialista";
+    case "independently_verifiable_outputs":
+      return "Si los resultados se comprueban por separado";
+    case "high_implementation_risk":
+      return "Si el cambio es arriesgado";
+    default:
+      return senal;
+  }
+}
+
 /** Nombre legible de un criterio de descomposición. */
 export function nombreCriterio(criterio: string): string {
   switch (criterio) {
@@ -280,6 +353,16 @@ export function debeSeguirSondeando(run: AthenaRun | null): boolean {
  */
 export function puedeCancelarse(run: AthenaRun | null): boolean {
   return run !== null && !esFaseTerminal(run.fase);
+}
+
+/**
+ * Sólo se puede cambiar el encargo de un run que aún está corriendo.
+ *
+ * Un run terminado no lo recogería: Athena aplica las revisiones entre iteraciones, y
+ * ya no queda ninguna. Ofrecer el cambio ahí sería ofrecer una acción que no hace nada.
+ */
+export function puedeRevisarseElEncargo(run: AthenaRun | null): boolean {
+  return run !== null && !esFaseTerminal(run.fase) && run.fase !== "recovery_pending";
 }
 
 /** Solo se reanuda lo que Athena marcó como reanudable. */

@@ -22,9 +22,20 @@ class AthenaStartupTests(unittest.TestCase):
 
     def test_launcher_starts_and_stops_athena_around_the_application(self) -> None:
         launcher = (ROOT / "Arrancar ChatyGPT.bat").read_text(encoding="utf-8")
+        self.assertIn("Start-ChatyGPT.ps1", launcher)
 
-        self.assertIn("Start-AthenaForChatyGPT.ps1", launcher)
-        self.assertIn("Stop-AthenaForChatyGPT.ps1", launcher)
+        # Athena se levanta y se cierra desde el script de arranque, no desde el BAT.
+        arranque = (ROOT / "scripts" / "Start-ChatyGPT.ps1").read_text(encoding="utf-8")
+        self.assertIn("Start-AthenaForChatyGPT.ps1", arranque)
+        self.assertIn("Stop-AthenaForChatyGPT.ps1", arranque)
+        # El cierre va en un `finally`: si la aplicacion se va por las malas, el servicio
+        # administrado no puede quedarse vivo con el puerto cogido.
+        cierre = arranque.index("Stop-AthenaForChatyGPT.ps1")
+        self.assertIn("finally", arranque[:cierre])
+
+        # Athena necesita un modelo que devuelva su decision estructurada; sin decir cual,
+        # el broker enruta por su cuenta y un run puede morir en el primer turno.
+        self.assertIn("-PreferredModel", arranque)
 
     @unittest.skipUnless(os.name == "nt", "el servicio administrado es específico de Windows")
     def test_shutdown_terminates_the_durable_managed_process(self) -> None:

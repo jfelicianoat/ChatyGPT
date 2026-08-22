@@ -1,7 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AthenaEstadoArea,
+  AthenaHistoria,
+  AthenaListadoPerfiles,
+  AthenaObjetivo,
+  AthenaRecuerdo,
   AthenaResumenRun,
+  AthenaRevisionObjetivo,
   AthenaRun,
   BootstrapReport,
   AttachmentView,
@@ -804,12 +809,68 @@ export const platform = {
     objective: string,
     folderId: string,
     writes?: string,
-    execution?: string
+    execution?: string,
+    profile?: string
   ): Promise<string> {
-    return invoke<string>("start_athena_run", { objective, folderId, writes, execution });
+    return invoke<string>("start_athena_run", {
+      objective,
+      folderId,
+      writes,
+      execution,
+      profile
+    });
+  },
+  /** Todos los runs que Athena recuerda, incluidos los que no lanzó ChatyGPT. */
+  listAthenaRuns(): Promise<AthenaResumenRun[]> {
+    return invoke<AthenaResumenRun[]>("list_athena_runs");
+  },
+  /** Lo que ocurrió en un run, desde el registro duradero de Athena. */
+  getAthenaRunHistory(runId: string): Promise<AthenaHistoria> {
+    return invoke<AthenaHistoria>("get_athena_run_history", { runId });
+  },
+  /** Lo que Athena cree saber de un proyecto. */
+  listAthenaMemory(workspaceId: string): Promise<AthenaRecuerdo[]> {
+    return invoke<AthenaRecuerdo[]>("list_athena_memory", { workspaceId });
+  },
+  /**
+   * Una persona responde por un recuerdo: el único camino a `user_confirmed`.
+   *
+   * No lleva `confirmed`: confirmar un recuerdo ya *es* la decisión, y pedir una
+   * confirmación de la confirmación sólo enseñaría a pulsar sin leer.
+   */
+  confirmAthenaMemory(memoryId: string): Promise<AthenaRecuerdo> {
+    return invoke<AthenaRecuerdo>("confirm_athena_memory", { memoryId });
+  },
+  forgetAthenaMemory(memoryId: string): Promise<void> {
+    return invoke<void>("forget_athena_memory", { memoryId, confirmed: true });
+  },
+  /** Qué perfiles ofrece este Athena. La lista es suya, no una copia local. */
+  listAthenaProfiles(): Promise<AthenaListadoPerfiles> {
+    return invoke<AthenaListadoPerfiles>("list_athena_profiles");
   },
   getAthenaRun(runId: string): Promise<AthenaRun> {
     return invoke<AthenaRun>("get_athena_run", { runId });
+  },
+  /** Encargo vigente de un run, con su revisión. La instantánea no la trae. */
+  getAthenaGoal(runId: string): Promise<AthenaObjetivo> {
+    return invoke<AthenaObjetivo>("get_athena_goal", { runId });
+  },
+  /**
+   * Cambia el encargo de un run vivo.
+   *
+   * No se manda revisión: la pone el núcleo, que es quien la mantiene al día. Un
+   * conflicto vuelve como resultado —con el encargo vigente dentro— y no como error.
+   */
+  reviseAthenaGoal(
+    runId: string,
+    objective: string,
+    reason: string
+  ): Promise<AthenaRevisionObjetivo> {
+    return invoke<AthenaRevisionObjetivo>("revise_athena_goal", {
+      runId,
+      objective,
+      reason
+    });
   },
   listAthenaRecoveryRuns(): Promise<AthenaResumenRun[]> {
     return invoke<AthenaResumenRun[]>("list_athena_recovery_runs");

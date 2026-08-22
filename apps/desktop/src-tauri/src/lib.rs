@@ -310,6 +310,7 @@ async fn start_athena_run(
     folder_id: String,
     writes: Option<String>,
     execution: Option<String>,
+    profile: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<String, AppError> {
     let objective = validated_text(&objective, "el objetivo", 2_000)?;
@@ -331,6 +332,10 @@ async fn start_athena_run(
     let opciones = athena::OpcionesRun {
         escrituras: modo_capacidad(writes.as_deref())?,
         ejecucion: modo_capacidad(execution.as_deref())?,
+        // El nombre no se valida aquí: los perfiles los conoce Athena, y una lista
+        // copiada en el cliente caducaría en silencio en cuanto el despliegue añadiera
+        // uno. Un nombre que no exista vuelve como 400 de Athena, con los que sí existen.
+        perfil: profile.unwrap_or_default().trim().to_owned(),
         ..athena::OpcionesRun::default()
     };
     let run_id = state
@@ -429,6 +434,126 @@ fn cerrar_si_termino(
         state.database.close_athena_run(run_id, fase.palabra())?;
     }
     Ok(())
+}
+
+/// Todos los runs que Athena recuerda, para poder abrir uno de antes.
+///
+/// La lista es de Athena y no del apunte local: lo que ChatyGPT guarda es cómo volver a
+/// preguntar, no qué pasó. Un run lanzado desde Telegram aparece aquí igual, porque el
+/// run es del runtime y no de quien lo pidió.
+#[tauri::command]
+async fn list_athena_runs(state: State<'_, AppState>) -> Result<Vec<athena::ResumenRun>, AppError> {
+    state.athena.cliente().listar_runs(None).await
+}
+
+/// Lo que ocurrió en un run, reconstruido desde el registro duradero de Athena.
+///
+/// La proyección que devuelve se construye con el **mismo** lector que la vista en vivo:
+/// un run releído se lee igual que se leyó cuando pasaba. Un segundo lector garantizaría
+/// que antes o después los dos contaran cosas distintas del mismo run.
+#[tauri::command]
+async fn get_athena_run_history(
+    run_id: String,
+    state: State<'_, AppState>,
+) -> Result<athena::HistoriaVista, AppError> {
+    state.athena.historia(&run_id).await
+}
+
+/// Cuántos recuerdos se piden de una vez.
+///
+/// Athena tampoco devuelve la memoria entera: un panel que la cargara toda gastaría la
+/// pantalla en cosas que nadie vino a mirar.
+const LIMITE_MEMORIA_ATHENA: u32 = 50;
+
+/// Lo que Athena cree saber de un proyecto.
+///
+/// Se pide por el identificador de espacio de trabajo, que es lo que el runtime usa como
+/// proyecto. Pedirlo por ruta funcionaría hasta que dos máquinas montasen la misma
+/// carpeta en sitios distintos.
+#[tauri::command]
+async fn list_athena_memory(
+    workspace_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<athena::RecuerdoProyecto>, AppError> {
+    state
+        .athena
+        .cliente()
+        .listar_memoria(&workspace_id, LIMITE_MEMORIA_ATHENA)
+        .await
+}
+
+/// Una persona responde por un recuerdo.
+///
+/// Es el único camino a `user_confirmed`: ningún módulo del runtime puede alcanzarlo, y
+/// Athena tiene una prueba que lo prohíbe. La interfaz **no** confirma nada por su
+/// cuenta — una propuesta que se convirtiera sola en hecho haría que el escalón más alto
+/// de la memoria significara lo mismo que el más bajo.
+#[tauri::command]
+async fn confirm_athena_memory(
+    memory_id: String,
+    state: State<'_, AppState>,
+) -> Result<athena::RecuerdoProyecto, AppError> {
+    state.athena.cliente().confirmar_recuerdo(&memory_id).await
+}
+
+/// Retira un recuerdo. No lo borra: queda constancia de que se creyó.
+#[tauri::command]
+async fn forget_athena_memory(
+    memory_id: String,
+    confirmed: bool,
+    state: State<'_, AppState>,
+) -> Result<(), AppError> {
+    if !confirmed {
+        return Err(AppError::Validation(
+            "hace falta confirmar antes de olvidar un recuerdo".to_owned(),
+        ));
+    }
+    state.athena.cliente().olvidar_recuerdo(&memory_id).await
+}
+
+/// Los perfiles que ofrece este Athena, y cuál usa si no se pide ninguno.
+///
+/// La lista viene del servicio y no de una copia local: un perfil cambia qué
+/// herramientas existen y qué cuenta como prueba, y una lista escrita aquí caducaría en
+/// silencio en cuanto el despliegue añadiera uno.
+#[tauri::command]
+async fn list_athena_profiles(
+    state: State<'_, AppState>,
+) -> Result<athena::ListadoPerfiles, AppError> {
+    state.athena.cliente().listar_perfiles().await
+}
+
+/// Encargo vigente de un run, con su número de revisión.
+///
+/// Se pide aparte porque la instantánea no lo lleva. La interfaz lo necesita antes de
+/// ofrecer un cambio: sin revisión no hay sobre qué decir que se escribe.
+#[tauri::command]
+async fn get_athena_goal(
+    run_id: String,
+    state: State<'_, AppState>,
+) -> Result<athena::ObjetivoRun, AppError> {
+    state.athena.objetivo(&run_id).await
+}
+
+/// Cambia el encargo de un run vivo sobre la revisión que esta aplicación conoce.
+///
+/// El número de revisión **no viaja desde React**: lo pone el núcleo, que es quien lo
+/// mantiene al día con los eventos. Aceptarlo de la interfaz permitiría escribir sobre
+/// una revisión que la persona nunca llegó a ver.
+///
+/// Un conflicto vuelve como resultado, no como error: la interfaz recibe el encargo
+/// vigente y decide, y nada se reintenta solo.
+#[tauri::command]
+async fn revise_athena_goal(
+    run_id: String,
+    objective: String,
+    reason: String,
+    state: State<'_, AppState>,
+) -> Result<athena::RevisionObjetivo, AppError> {
+    state
+        .athena
+        .revisar_objetivo(&run_id, &objective, &reason)
+        .await
 }
 
 /// Runs que quedaron a medias cuando el runtime murió.
@@ -2898,6 +3023,14 @@ pub fn run() {
             clear_athena_credential,
             start_athena_run,
             get_athena_run,
+            list_athena_profiles,
+            list_athena_runs,
+            get_athena_run_history,
+            list_athena_memory,
+            confirm_athena_memory,
+            forget_athena_memory,
+            get_athena_goal,
+            revise_athena_goal,
             list_athena_recovery_runs,
             cancel_athena_run,
             resume_athena_run,

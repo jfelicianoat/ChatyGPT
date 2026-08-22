@@ -27,9 +27,20 @@ try {
         exit 0
     }
 
+    # El PID guardado es el del lanzador del entorno virtual, que arranca el interprete
+    # de verdad como hijo suyo: el socket del 8770 lo tiene el hijo. Matando solo al padre
+    # quedaba un huerfano con el puerto cogido, y el siguiente arranque veia «Athena ya
+    # esta arrancada» y se quedaba con la credencial de la sesion anterior.
+    $hijos = @(Get-CimInstance Win32_Process -Filter "ParentProcessId=$managedPid" -ErrorAction SilentlyContinue)
+    foreach ($hijo in $hijos) {
+        Stop-Process -Id $hijo.ProcessId -Force -ErrorAction SilentlyContinue
+    }
     Stop-Process -Id $managedPid -Force -ErrorAction Stop
     try {
         Wait-Process -Id $managedPid -Timeout 5 -ErrorAction SilentlyContinue
+        foreach ($hijo in $hijos) {
+            Wait-Process -Id $hijo.ProcessId -Timeout 5 -ErrorAction SilentlyContinue
+        }
     }
     catch {
         # Stop-Process ya envió el cierre; no se oculta el cierre de ChatyGPT si

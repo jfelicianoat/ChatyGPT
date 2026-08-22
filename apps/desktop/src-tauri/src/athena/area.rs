@@ -15,9 +15,9 @@ use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
 
-use super::contracts::MensajeFlujo;
+use super::contracts::{EventoHistorico, MensajeFlujo, ObjetivoRun, ResumenHistoria};
 use super::supervisor::{PermisoVista, ProyeccionRun};
-use super::{AthenaClient, OpcionesReconexion, OpcionesRun};
+use super::{AthenaClient, OpcionesReconexion, OpcionesRun, RevisionObjetivo};
 use crate::error::AppError;
 use crate::logging;
 
@@ -47,6 +47,49 @@ pub enum EstadoServicio {
     NoDisponible,
     /// Responde pero con un contrato que este cliente no sabe leer.
     Incompatible,
+}
+
+/// Un run terminado, tal y como consta en el registro duradero de Athena.
+///
+/// Tres cosas y no una: la proyección (lo mismo que se vio en vivo, reconstruido con el
+/// mismo lector), el resumen que hace Athena de sus propios hechos, y los hechos en
+/// bruto. El resumen no se recalcula aquí: quien escribe los hechos es quien mejor sabe
+/// leerlos, y dos lectores acabarían discrepando sin que nadie supiera cuál miente.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoriaVista {
+    pub proyeccion: ProyeccionRun,
+    pub resumen: ResumenHistoria,
+    pub hechos: Vec<HechoHistorico>,
+}
+
+/// Un hecho del registro, listo para enseñar en una línea.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HechoHistorico {
+    /// Su sitio en el orden. Lo asigna el registro, no quien publica.
+    pub secuencia: u64,
+    pub nombre: String,
+    pub cuando: String,
+    /// Quién lo hizo: el run, o el delegado que lo hizo por él.
+    pub actor: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tarea: Option<String>,
+    /// Cierto cuando lo hizo un delegado y no el propio run.
+    pub delegado: bool,
+}
+
+impl HechoHistorico {
+    fn desde(evento: &EventoHistorico) -> Self {
+        Self {
+            secuencia: evento.seq,
+            nombre: evento.name.clone(),
+            cuando: evento.occurred_at.clone(),
+            actor: evento.provenance.actor.clone(),
+            tarea: evento.provenance.task_id.clone(),
+            delegado: evento.provenance.delegated,
+        }
+    }
 }
 
 /// Lo que la interfaz necesita saber del servicio. Nunca incluye el token.
@@ -210,10 +253,20 @@ impl AreaAthena {
         let creado = self.cliente.crear_run(objetivo, carpeta, opciones).await?;
         let run_id = creado.run_id.clone();
         if let Ok(mut mapa) = self.runs.lock() {
-            mapa.insert(
-                run_id.clone(),
-                ProyeccionRun::nueva(&run_id, objetivo, carpeta),
-            );
+            let mut vista = ProyeccionRun::nueva(&run_id, objetivo, carpeta);
+            // El perfil se fija aquí y en ningún sitio más. Athena todavía no lo devuelve
+            // en la respuesta, así que se prefiere el suyo cuando lo mande y se conserva
+            // el pedido mientras no lo haga.
+            vista.perfil_solicitado = if creado.profile.is_empty() {
+                opciones.perfil.clone()
+            } else {
+                creado.profile.clone()
+            };
+            // Un run recién creado va por la primera revisión de su encargo: lo dice el
+            // contrato de `GoalBoard`, que empieza en 1, no una suposición de aquí.
+            vista.objetivo_revision = 1;
+            vista.workspace_id = creado.workspace_id.clone();
+            mapa.insert(run_id.clone(), vista);
         }
         self.seguir(&run_id);
         Ok(run_id)
@@ -272,6 +325,106 @@ impl AreaAthena {
         Ok(vista.clone())
     }
 
+    /// Reconstruye un run terminado a partir del registro duradero de Athena.
+    ///
+    /// **No es una segunda interpretación.** Los hechos se pasan por la misma
+    /// `ProyeccionRun` que alimenta la vista en vivo, así que un run releído se lee igual
+    /// que se leyó cuando pasaba. Escribir aquí un segundo lector garantizaría que
+    /// antes o después los dos dijeran cosas distintas del mismo run, y no habría forma
+    /// de saber cuál miente.
+    ///
+    /// La instantánea va primero y los hechos después: la instantánea es el estado que
+    /// Athena persistió —verificación, artefactos, ficheros— y los hechos añaden el
+    /// orden y la atribución que la instantánea no guarda.
+    pub async fn historia(&self, run_id: &str) -> Result<HistoriaVista, AppError> {
+        let historia = self.cliente.leer_historia(run_id).await?;
+        let instantanea = self.cliente.leer_run(run_id).await.ok();
+        let objetivo = instantanea
+            .as_ref()
+            .map(|valor| valor.objective.clone())
+            .unwrap_or_default();
+        let mut vista = ProyeccionRun::nueva(run_id, &objetivo, "");
+        if let Some(instantanea) = &instantanea {
+            vista.adoptar_instantanea(instantanea);
+        }
+        for hecho in &historia.events {
+            vista.aplicar(&MensajeFlujo::Evento(Box::new(hecho.como_evento())));
+        }
+        // El run ya no está vivo: decir lo contrario invitaría a esperar cambios que no
+        // van a llegar, y a ofrecer acciones que no harían nada.
+        vista.conectado = false;
+        Ok(HistoriaVista {
+            proyeccion: vista,
+            resumen: historia.summary,
+            hechos: historia.events.iter().map(HechoHistorico::desde).collect(),
+        })
+    }
+
+    /// Lee el encargo vigente de Athena y lo fija en la proyección.
+    ///
+    /// La instantánea no trae la revisión, así que sin esto ChatyGPT no tiene sobre qué
+    /// decir que escribe. Se llama al abrir un run y al recuperarse de un conflicto.
+    pub async fn objetivo(&self, run_id: &str) -> Result<ObjetivoRun, AppError> {
+        let objetivo = self.cliente.leer_objetivo(run_id).await?;
+        if let Ok(mut mapa) = self.runs.lock() {
+            if let Some(vista) = mapa.get_mut(run_id) {
+                vista.adoptar_objetivo(&objetivo.text, objetivo.revision, &objetivo.reason);
+            }
+        }
+        Ok(objetivo)
+    }
+
+    /// Revisa el encargo sobre la revisión que esta vista conoce.
+    ///
+    /// La revisión no la elige quien llama: la pone la proyección, que es quien la
+    /// mantiene al día con los eventos. Dejar que la interfaz mandase un número suyo
+    /// permitiría escribir sobre una revisión que nunca vio.
+    ///
+    /// Ante un conflicto **no se reintenta**. Se deja la vista con el encargo vigente y
+    /// se devuelve el conflicto: repetir con la revisión nueva es una decisión de quien
+    /// escribió, no una recuperación automática — el encargo de otro puede ser
+    /// incompatible con el suyo, y pisarlo en silencio es justo lo que ADR-029 impide.
+    pub async fn revisar_objetivo(
+        &self,
+        run_id: &str,
+        objetivo: &str,
+        motivo: &str,
+    ) -> Result<RevisionObjetivo, AppError> {
+        let conocida = self
+            .runs
+            .lock()
+            .ok()
+            .and_then(|mapa| mapa.get(run_id).map(|vista| vista.objetivo_revision))
+            .unwrap_or(0);
+        // Cero es «no lo sé», no «la primera». Se pregunta antes de escribir en vez de
+        // mandar un uno inventado que Athena rechazaría con un conflicto engañoso.
+        let base = if conocida == 0 {
+            self.objetivo(run_id).await?.revision
+        } else {
+            conocida
+        };
+        let resultado = self
+            .cliente
+            .revisar_objetivo(run_id, objetivo, base, motivo)
+            .await?;
+        if let Ok(mut mapa) = self.runs.lock() {
+            if let Some(vista) = mapa.get_mut(run_id) {
+                match &resultado {
+                    // Aceptada: se anota la revisión nueva, pero el encargo mostrado no
+                    // cambia todavía. Lo cambia `goal.revised`, cuando el bucle lo
+                    // recoge de verdad — antes de eso, el agente sigue con el anterior.
+                    RevisionObjetivo::Aceptada { objetivo } => {
+                        vista.objetivo_revision = objetivo.revision;
+                    }
+                    RevisionObjetivo::Conflicto { vigente } => {
+                        vista.adoptar_objetivo(&vigente.text, vigente.revision, &vigente.reason);
+                    }
+                }
+            }
+        }
+        Ok(resultado)
+    }
+
     /// Devuelve la vista después de contrastarla con la instantánea durable.
     ///
     /// El flujo SSE reduce la latencia, pero no es una fuente suficiente para
@@ -321,6 +474,100 @@ mod pruebas {
             .build()
             .expect("runtime")
             .block_on(futuro)
+    }
+
+    #[test]
+    fn la_historia_se_reconstruye_con_el_mismo_lector_que_la_vista_en_vivo() {
+        // Los hechos duraderos se pasan por la misma `ProyeccionRun` que alimenta la
+        // vista mientras el run pasa, asi que un run releido se lee igual que se leyo.
+        // Un segundo lector garantizaria que antes o despues los dos contaran cosas
+        // distintas del mismo run, y no habria forma de saber cual miente.
+        let simulado = AthenaSimulado::arrancar();
+        simulado.responder(
+            "/history",
+            RespuestaGuion::ok(json!({
+                "run_id": "run-1",
+                "events": [
+                    {"seq": 1, "event_id": "e1", "name": "agent.started", "version": 1,
+                     "correlation_id": null, "occurred_at": "2026-08-22T10:00:00+00:00",
+                     "provenance": {"run_id": "run-1", "session_id": "run-1",
+                                    "actor": "root", "task_id": null, "delegated": false},
+                     "payload": {}},
+                    {"seq": 2, "event_id": "e2", "name": "subagent.started", "version": 1,
+                     "correlation_id": "sub-1", "occurred_at": "2026-08-22T10:00:05+00:00",
+                     "provenance": {"run_id": "run-1", "session_id": "T01",
+                                    "actor": "root", "task_id": "T01", "delegated": false},
+                     "payload": {"role": "explorer", "session_id": "sub-1",
+                                 "parent_session_id": "T01", "provider": "native",
+                                 "max_follow_ups": 2}},
+                    {"seq": 3, "event_id": "e3", "name": "file.changed", "version": 1,
+                     "correlation_id": null, "occurred_at": "2026-08-22T10:00:09+00:00",
+                     "provenance": {"run_id": "run-1", "session_id": "sub-1",
+                                    "actor": "explorer", "task_id": "T01",
+                                    "delegated": true},
+                     "payload": {"path": "calc.py"}},
+                    {"seq": 4, "event_id": "e4", "name": "agent.completed", "version": 1,
+                     "correlation_id": null, "occurred_at": "2026-08-22T10:01:00+00:00",
+                     "provenance": {"run_id": "run-1", "session_id": "run-1",
+                                    "actor": "root", "task_id": null, "delegated": false},
+                     "payload": {"repair_cycles": 0}}
+                ],
+                "summary": {"status": "completed", "executed_as": "hierarchical",
+                            "tasks": {"T01": "completed"},
+                            "delegates": {"sub-1": "explorer"},
+                            "verification": "passed", "permission_requests": 1},
+            })),
+        );
+        simulado.responder(
+            "/v1/runs/run-1",
+            RespuestaGuion::ok(json!({
+                "run_id": "run-1", "workspace_id": "ws-1", "status": "completed",
+                "resumable": false, "degraded": false, "objective": "Arreglar calc.add",
+                "created_at": "2026-08-22T10:00:00+00:00",
+                "updated_at": "2026-08-22T10:01:00+00:00",
+                "working_memory": {"objective": "Arreglar calc.add", "files_modified": []},
+                "verification": {"status": "passed", "summary": "Todo pasa"},
+                "tool_references": [], "checkpoints": [],
+            })),
+        );
+
+        let historia = en_runtime(area(&simulado).historia("run-1")).expect("historia legible");
+
+        assert_eq!(historia.resumen.status, "completed");
+        assert_eq!(historia.resumen.executed_as, "hierarchical");
+        // El delegado consta como delegado, no como una tarea mas del plan.
+        assert_eq!(historia.proyeccion.delegados.len(), 1);
+        assert_eq!(historia.proyeccion.delegados[0].proveedor, "native");
+        // Y lo que hizo se le atribuye a el: con la raiz en su lugar, todo pareceria del
+        // padre, que es justo lo que la procedencia existe para evitar.
+        assert_eq!(
+            historia.proyeccion.delegados[0].ficheros,
+            vec!["calc.py".to_owned()]
+        );
+        assert!(historia.proyeccion.ficheros_modificados.is_empty());
+        assert!(
+            !historia.proyeccion.conectado,
+            "un run releido no esta vivo"
+        );
+        assert_eq!(historia.hechos.len(), 4);
+        assert!(historia.hechos[2].delegado);
+        assert_eq!(historia.hechos[2].actor, "explorer");
+    }
+
+    #[test]
+    fn un_run_del_que_no_consta_historia_no_se_enseña_como_run_vacio() {
+        // Athena responde 404 a proposito: o no existio, o es anterior al registro.
+        // Un 200 con lista vacia haria pasar la ausencia de historia por historia
+        // completa, que es la clase de mentira que este proyecto persigue.
+        let simulado = AthenaSimulado::arrancar();
+        simulado.responder(
+            "/history",
+            RespuestaGuion::error(404, "not_found", "No durable history for run-9"),
+        );
+
+        let resultado = en_runtime(area(&simulado).historia("run-9"));
+
+        assert!(matches!(resultado, Err(AppError::NotFound(_))));
     }
 
     #[test]
@@ -403,7 +650,10 @@ mod pruebas {
         let estado = en_runtime(area(&simulado).estado(true));
 
         assert_eq!(estado.estado, EstadoServicio::Conectado);
-        assert!(estado.detalle.is_some(), "debería decir por qué no se sabe más");
+        assert!(
+            estado.detalle.is_some(),
+            "debería decir por qué no se sabe más"
+        );
     }
 
     #[test]

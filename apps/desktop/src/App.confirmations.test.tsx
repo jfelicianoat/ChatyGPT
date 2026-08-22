@@ -72,6 +72,9 @@ const DEFAULTS: Record<string, unknown> = {
       revokedAt: null
     }
   ],
+  // El listado de perfiles es un objeto, no una lista: el valor por defecto del doble
+  // dejaría `profiles` sin definir, y el selector se cae al contarlos.
+  listAthenaProfiles: { default: "software_engineering", profiles: [] },
   getMemoryOverview: { enabled: false, items: [] },
   getLatestMemorySearch: null,
   getPerformanceReport: {

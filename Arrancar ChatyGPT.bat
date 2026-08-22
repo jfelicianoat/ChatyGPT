@@ -75,42 +75,7 @@ if "%NEED_BUILD%"=="1" (
 echo Broker AI: http://192.168.1.52:8765
 echo.
 
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command ^
-  "$ErrorActionPreference = 'Stop';" ^
-  "$env:CHATYGPT_BROKER_BASE_URL = 'http://192.168.1.52:8765';" ^
-  "$secretPath = Join-Path $env:LOCALAPPDATA 'es.jfeliciano.chatygpt\credentials\broker-token.dpapi';" ^
-  "if (-not $env:AI_BROKER_ADMIN_TOKEN -and (Test-Path -LiteralPath $secretPath)) {" ^
-  "  try {" ^
-  "    Add-Type -AssemblyName System.Security;" ^
-  "    $protected = [IO.File]::ReadAllBytes($secretPath);" ^
-  "    $plain = [Security.Cryptography.ProtectedData]::Unprotect($protected, $null, [Security.Cryptography.DataProtectionScope]::CurrentUser);" ^
-  "    $env:AI_BROKER_ADMIN_TOKEN = [Text.Encoding]::UTF8.GetString($plain);" ^
-  "    [Array]::Clear($plain, 0, $plain.Length);" ^
-  "    Write-Host 'Usando la credencial guardada en ChatyGPT.';" ^
-  "  } catch {" ^
-  "    Write-Host 'La credencial guardada no se pudo descifrar; se pedira el token.';" ^
-  "  }" ^
-  "}" ^
-  "if (-not $env:AI_BROKER_ADMIN_TOKEN) {" ^
-  "  $secureToken = Read-Host 'Token actual de Broker AI' -AsSecureString;" ^
-  "  $credential = New-Object System.Management.Automation.PSCredential('broker', $secureToken);" ^
-  "  $env:AI_BROKER_ADMIN_TOKEN = $credential.GetNetworkCredential().Password;" ^
-  "}" ^
-  "$headers = @{ 'x-admin-token' = $env:AI_BROKER_ADMIN_TOKEN };" ^
-  "$capabilitiesUrl = $env:CHATYGPT_BROKER_BASE_URL + '/api/v1/capabilities';" ^
-  "try {" ^
-  "  $capabilities = Invoke-RestMethod -UseBasicParsing -Uri $capabilitiesUrl -Headers $headers -TimeoutSec 10;" ^
-  "} catch {" ^
-  "  throw ('No se pudo validar Broker AI en ' + $capabilitiesUrl + '. Comprueba que esta arrancado y que el token es el actual. ' + $_.Exception.Message);" ^
-  "}" ^
-  "Write-Host ('Broker AI listo. Contrato ' + $capabilities.contract_version);" ^
-  "& (Join-Path (Get-Location) 'scripts\Start-AthenaForChatyGPT.ps1') -BrokerBaseUrl $env:CHATYGPT_BROKER_BASE_URL -BrokerToken $env:AI_BROKER_ADMIN_TOKEN;" ^
-  "$releaseExe = Join-Path (Get-Location) 'apps\desktop\src-tauri\target\release\chatygpt.exe';" ^
-  "$appExit = 1;" ^
-  "try { & $releaseExe; $appExit = $LASTEXITCODE } finally {" ^
-  "  & (Join-Path (Get-Location) 'scripts\Stop-AthenaForChatyGPT.ps1');" ^
-  "}" ^
-  "exit $appExit"
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "scripts\Start-ChatyGPT.ps1" -BrokerBaseUrl "http://192.168.1.52:8765"
 
 if errorlevel 1 goto :failed
 exit /b 0

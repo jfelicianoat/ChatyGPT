@@ -1725,11 +1725,173 @@ export type AthenaTarea = {
   ficheros: string[];
 };
 
+/** Un campo suelto de un resultado estructurado, ya legible. */
+/** Un hecho del registro duradero de un run, listo para enseñar en una línea. */
+export type AthenaHechoHistorico = {
+  /** Su sitio en el orden. Lo asigna el registro, no quien publica. */
+  secuencia: number;
+  nombre: string;
+  cuando: string;
+  /** Quién lo hizo: el run, o el delegado que lo hizo por él. */
+  actor: string;
+  tarea?: string;
+  delegado: boolean;
+};
+
+/**
+ * Lo esencial de un run según Athena, derivado de sus propios hechos.
+ *
+ * No se recalcula en el cliente: quien escribe los hechos es quien mejor sabe leerlos, y
+ * dos lectores acabarían discrepando sin que nadie supiera cuál miente.
+ */
+export type AthenaResumenHistoria = {
+  status: string;
+  /** `direct` o `hierarchical`. */
+  executedAs: string;
+  /** Estado final de cada tarea del plan, por id. */
+  tasks: Record<string, string>;
+  /** Rol de cada delegado, por sesión. */
+  delegates: Record<string, string>;
+  verification: string;
+  permissionRequests: number;
+};
+
+/**
+ * Un run terminado, reconstruido desde el registro duradero.
+ *
+ * `proyeccion` sale del **mismo** lector que la vista en vivo: un run releído se lee
+ * igual que se leyó cuando pasaba.
+ */
+export type AthenaHistoria = {
+  proyeccion: AthenaRun;
+  resumen: AthenaResumenHistoria;
+  hechos: AthenaHechoHistorico[];
+};
+
+/**
+ * Algo que Athena cree saber de un proyecto.
+ *
+ * Dos ejes, y no uno (ADR-031). `verificacion` dice cuánto peso ha ganado —lo que dijo
+ * un modelo, lo que algo comprobó, lo que una persona respaldó— y `estado` dice si sigue
+ * vigente, si otro lo reemplazó o si alguien lo retiró. Juntarlos en un solo campo haría
+ * indistinguible «nadie lo ha comprobado» de «ya no vale».
+ */
+export type AthenaRecuerdo = {
+  id: string;
+  projectId: string;
+  /** Comando verificado, convención, decisión de arquitectura… */
+  kind: string;
+  content: string;
+  /** De dónde salió. Un recuerdo sin origen no se puede juzgar. */
+  source: string;
+  sourceReference?: string | null;
+  confidence: number;
+  /** `proposed`, `verified` o `user_confirmed`. */
+  verificationState: string;
+  scope: string;
+  /** `active`, `superseded` o `forgotten`. */
+  status: string;
+  /** El recuerdo al que éste sustituye, si sustituye a alguno. */
+  supersedes?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  /** Si pasó el plazo de su tipo. Lo calcula Athena, no la interfaz. */
+  stale: boolean;
+};
+
+/**
+ * Un perfil de Athena: para qué clase de trabajo sirve un run.
+ *
+ * Cambia dos cosas a la vez —qué herramientas existen y qué cuenta como prueba— y por eso
+ * se elige al crear el run y no después (ADR-028). Athena **no publica una versión** del
+ * perfil, así que aquí no hay ninguna: un número que nadie mantiene invita a confiar en
+ * que subiría al cambiar el perfil, y no subiría.
+ */
+export type AthenaPerfil = {
+  name: string;
+  /** Sobre qué trabaja: un repositorio, una carpeta de documentos… */
+  subject: string;
+  /** Qué clase de evidencia da por buena. */
+  evidence: string;
+  /** Qué demuestra esa evidencia, incluido lo que no demuestra. */
+  proves: string;
+  /** Las herramientas que existen bajo este perfil: un filtro estructural. */
+  tools: string[];
+  description: string;
+};
+
+export type AthenaListadoPerfiles = {
+  /** El que se usa si no se pide ninguno. */
+  default: string;
+  profiles: AthenaPerfil[];
+};
+
+/**
+ * Un delegado del run: un especialista al que se le encargó una parte.
+ *
+ * Aparte de `AthenaTarea` a propósito. Una tarea del plan *usa* un subagente; no *es*
+ * uno. Mezclarlos hacía que un run jerárquico enseñara el doble de trabajo del que había.
+ *
+ * Nada de esto es el razonamiento del delegado ni su conversación: Athena entrega un
+ * resumen, y el transcript del hijo no sale nunca de su sesión.
+ */
+export type AthenaDelegado = {
+  /** Sesión del delegado, que es su nombre para todo lo demás. */
+  sesion: string;
+  /** Sesión de quien lo encargó: el run, o la tarea que lo usa. */
+  padre: string;
+  /** Tarea del plan a la que pertenece, si el padre es una tarea. */
+  tarea?: string;
+  rol: string;
+  /** Quién lo ejecuta. Vacío si el despliegue no lo publica. */
+  proveedor: string;
+  estado: AthenaEstadoTarea;
+  encargo: string;
+  /** Cierto mientras se le pueda volver a preguntar. */
+  continuable: boolean;
+  seguimientos: number;
+  seguimientosRestantes?: number;
+  /** Qué está haciendo, derivado de sus propios eventos. */
+  actividad: string[];
+  /** Lo que informó al terminar. Un resumen, no un transcript. */
+  resumen?: string;
+  ficheros: string[];
+  llamadasHerramienta?: number;
+  /** Por qué su tarea no puede avanzar, según el ejecutor del grafo. */
+  bloqueos: string[];
+  error?: AthenaError;
+};
+
+export type AthenaHecho = {
+  nombre: string;
+  valor: string;
+};
+
+/**
+ * Cómo enseñar el resultado de una herramienta, según Athena.
+ *
+ * `clase` es un conjunto cerrado —`text`, `items`, `change`, `record`, `reference`— y lo
+ * decide el runtime (ADR-026). La interfaz elige las palabras; no elige la forma. Antes
+ * la deducía leyendo el resultado, que es lo mismo que decir que cada cliente la
+ * inventaba por su cuenta.
+ */
+export type AthenaPresentacion = {
+  clase: string;
+  titulo: string;
+  resumen: string;
+  elementos: string[];
+  hechos: AthenaHecho[];
+  /** Dónde vive el cuerpo cuando no cupo en el evento. */
+  referencia?: string;
+};
+
 export type AthenaHerramienta = {
   nombre: string;
   estado: string;
   correlacion?: string;
   externalizado: boolean;
+  /** Ausente mientras la tool está en curso, y cuando Athena no publicó ninguna. */
+  presentacion?: AthenaPresentacion;
 };
 
 /**
@@ -1781,6 +1943,12 @@ export type AthenaError = {
    * esto se sabe que no se comprobo y no se sabe que arreglar.
    */
   razon?: string;
+  /**
+   * El dato tipado que Athena adjunta al fallo (`ADMIN_AUTH_REQUIRED` y
+   * similares). Suele ser lo unico accionable: dice si hay que renovar una
+   * credencial, no solo que la peticion fue rechazada.
+   */
+  detalle?: string;
   recuperacion?: string;
 };
 
@@ -1822,9 +1990,50 @@ export type AthenaEstrategia = {
   senalesSupuestas: string[];
 };
 
+/**
+ * El encargo de un run, en su versión número `revision`.
+ *
+ * La revisión es lo único que impide que dos personas mirando el mismo run se pisen sin
+ * enterarse (ADR-029): quien cambia el encargo dice sobre cuál escribe, y quien llegó
+ * tarde recibe un conflicto en vez de sobrescribir lo que nunca vio.
+ */
+export type AthenaObjetivo = {
+  text: string;
+  revision: number;
+  /** Por qué se cambió, dicho por quien lo cambió. Vacío en la primera. */
+  reason: string;
+  revisedAt: string;
+};
+
+/**
+ * Cómo acabó un intento de revisar el encargo.
+ *
+ * Dos respuestas y no una respuesta con error: que otro haya escrito antes es algo que
+ * pasa, no un fallo de quien lo intenta, y sólo una de las dos ramas admite volver a
+ * intentarlo. Nada se reintenta solo — repetir sobre la revisión nueva es una decisión
+ * de quien escribió, porque el encargo del otro puede ser incompatible con el suyo.
+ */
+export type AthenaRevisionObjetivo =
+  | { resultado: "aceptada"; objetivo: AthenaObjetivo }
+  | { resultado: "conflicto"; vigente: AthenaObjetivo };
+
 export type AthenaRun = {
   runId: string;
   objetivo: string;
+  /** Revisión del encargo. Cero mientras no se sabe: la instantánea no la trae. */
+  objetivoRevision: number;
+  /** Por qué se cambió el encargo la última vez. */
+  motivoRevision?: string;
+  /**
+   * El perfil con el que se pidió este run. Vacío = el de por defecto del despliegue.
+   *
+   * Queda fijado al crear el run: no hay forma de cambiarlo después, porque cambiar de
+   * perfil a mitad cambiaría qué cuenta como prueba y la evidencia ya reunida dejaría de
+   * significar lo que decía.
+   */
+  perfilSolicitado: string;
+  /** El identificador de espacio de trabajo de Athena, que hace de proyecto. */
+  workspaceId: string;
   fase?: AthenaFase;
   carpeta: string;
   degradado: boolean;
@@ -1833,6 +2042,8 @@ export type AthenaRun = {
   suscriptor?: string;
   controla: boolean;
   tareas: AthenaTarea[];
+  /** Los especialistas a los que se les encargó parte del trabajo. */
+  delegados: AthenaDelegado[];
   herramientas: AthenaHerramienta[];
   permisos: AthenaPermiso[];
   comprobaciones: AthenaComprobacion[];

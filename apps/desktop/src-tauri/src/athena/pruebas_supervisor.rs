@@ -168,6 +168,169 @@ fn una_herramienta_pasa_de_en_curso_a_terminada() {
 }
 
 #[test]
+fn revisar_el_encargo_tira_la_evidencia_que_lo_precedia() {
+    // ADR-029: la evidencia obtenida bajo una revisión no demuestra la siguiente. Dejar
+    // el «verificado» de ayer junto al encargo de hoy sería la forma más barata de dar
+    // por bueno un trabajo que nadie pidió.
+    let mut vista = base();
+    vista.aplicar(&evento(
+        "verification.check.completed",
+        None,
+        json!({"check": "pytest", "passed": true}),
+    ));
+    vista.aplicar(&evento(
+        "verification.completed",
+        None,
+        json!({"status": "passed"}),
+    ));
+    assert_eq!(vista.verificacion.as_deref(), Some("passed"));
+
+    vista.aplicar(&evento(
+        "goal.revised",
+        None,
+        json!({
+            "revision": 2,
+            "supersedes": 1,
+            "reason": "faltaba la migración",
+            "objective": "Arreglar calc.add y migrar la base",
+            "superseded_objective": "Arreglar calc.add",
+        }),
+    ));
+
+    assert_eq!(vista.objetivo_revision, 2);
+    assert_eq!(vista.objetivo, "Arreglar calc.add y migrar la base");
+    assert_eq!(
+        vista.motivo_revision.as_deref(),
+        Some("faltaba la migración")
+    );
+    assert!(
+        vista.verificacion.is_none(),
+        "la evidencia vieja no se hereda"
+    );
+    assert!(vista.resumen_verificacion.is_none());
+    assert!(vista.comprobaciones.is_empty());
+    assert!(vista.evidencia.is_empty());
+}
+
+#[test]
+fn la_revision_se_ignora_si_el_evento_no_dice_cual_es() {
+    // Sin número no hay revisión que fijar, y adoptar el texto sin él dejaría la vista
+    // creyendo trabajar sobre una revisión que no sabe nombrar: la siguiente escritura
+    // saldría con una base equivocada.
+    let mut vista = base();
+    vista.aplicar(&evento(
+        "goal.revised",
+        None,
+        json!({"objective": "otra cosa"}),
+    ));
+
+    assert_eq!(vista.objetivo_revision, 0);
+    assert_eq!(vista.objetivo, "Arreglar calc.add");
+}
+
+#[test]
+fn saber_la_revision_no_es_lo_mismo_que_haberla_cambiado() {
+    // Leer el encargo de Athena fija el número y nada más. Tirar la evidencia al
+    // enterarse de la revisión vigente borraría el trabajo de un run que nadie revisó.
+    let mut vista = base();
+    vista.aplicar(&evento(
+        "verification.completed",
+        None,
+        json!({"status": "passed"}),
+    ));
+
+    vista.adoptar_objetivo("Arreglar calc.add", 1, "");
+
+    assert_eq!(vista.objetivo_revision, 1);
+    assert_eq!(vista.verificacion.as_deref(), Some("passed"));
+}
+
+#[test]
+fn el_resultado_se_dibuja_con_la_forma_que_dijo_athena() {
+    // ADR-026: `display` viaja en `tool.completed` para que ningún cliente vuelva a
+    // deducir la presentación leyendo el resultado. Esta prueba fija que se copia, no
+    // que se interpreta: `clase` es la que vino, aunque los elementos parezcan otra cosa.
+    let mut vista = base();
+    vista.aplicar(&evento(
+        "tool.started",
+        Some("c1"),
+        json!({"tool_name": "grep"}),
+    ));
+    vista.aplicar(&evento(
+        "tool.completed",
+        Some("c1"),
+        json!({
+            "tool_name": "grep",
+            "externalized": false,
+            "display": {
+                "kind": "items",
+                "title": "3 coincidencias de `add`",
+                "summary": "En 2 ficheros",
+                "items": ["calc.py:10", "calc.py:14", "test_calc.py:3"],
+                "facts": {"matches": 3, "files": 2},
+                "reference_uri": null,
+            },
+        }),
+    ));
+
+    let presentacion = vista.herramientas[0]
+        .presentacion
+        .as_ref()
+        .expect("la presentación llegó y se conserva");
+    assert_eq!(presentacion.clase, "items");
+    assert_eq!(presentacion.titulo, "3 coincidencias de `add`");
+    assert_eq!(presentacion.elementos.len(), 3);
+    // Los hechos se aplanan a texto legible sin perder el número.
+    let hechos: Vec<&str> = presentacion
+        .hechos
+        .iter()
+        .map(|hecho| hecho.valor.as_str())
+        .collect();
+    assert!(hechos.contains(&"3"), "{hechos:?}");
+    assert!(presentacion.referencia.is_none());
+}
+
+#[test]
+fn sin_presentacion_no_se_inventa_ninguna() {
+    // Un `tool.completed` de un despliegue anterior a ADR-026 no trae `display`. La
+    // alternativa —fabricar un título con el nombre de la tool— no se distinguiría de
+    // una presentación real, que es exactamente el problema que ADR-026 vino a cerrar.
+    let mut vista = base();
+    vista.aplicar(&evento(
+        "tool.started",
+        Some("c1"),
+        json!({"tool_name": "read_file"}),
+    ));
+    vista.aplicar(&evento(
+        "tool.completed",
+        Some("c1"),
+        json!({"tool_name": "read_file"}),
+    ));
+
+    assert!(vista.herramientas[0].presentacion.is_none());
+}
+
+#[test]
+fn una_presentacion_vacia_no_dibuja_una_cabecera_sin_nada_debajo() {
+    let mut vista = base();
+    vista.aplicar(&evento(
+        "tool.started",
+        Some("c1"),
+        json!({"tool_name": "read_file"}),
+    ));
+    vista.aplicar(&evento(
+        "tool.completed",
+        Some("c1"),
+        json!({
+            "tool_name": "read_file",
+            "display": {"kind": "text", "title": "", "summary": "", "items": [], "facts": {}},
+        }),
+    ));
+
+    assert!(vista.herramientas[0].presentacion.is_none());
+}
+
+#[test]
 fn una_herramienta_fallida_deja_su_error_a_la_vista() {
     let mut vista = base();
     vista.aplicar(&evento(
@@ -334,25 +497,214 @@ fn el_plan_de_la_memoria_de_trabajo_se_muestra_como_tareas() {
 }
 
 #[test]
-fn los_subagentes_aparecen_con_su_estado() {
+fn los_delegados_se_siguen_aparte_del_plan() {
+    // Athena lo dice en su propio catálogo de eventos: una tarea *usa* un subagente, no
+    // *es* uno. Mezclarlos hacía que un run jerárquico enseñara el doble de trabajo del
+    // que había, y que el plan tuviera nodos que ningún planificador puso.
     let mut vista = base();
 
     vista.aplicar(&evento(
         "subagent.started",
         Some("sub-1"),
-        json!({"role": "explorer", "max_iterations": 8}),
+        json!({
+            "role": "explorer", "session_id": "sub-1", "parent_session_id": "run-1",
+            "provider": "native", "max_follow_ups": 2, "max_iterations": 8,
+            "objective": "Encontrar por qué falla calc.add",
+        }),
     ));
-    assert_eq!(vista.tareas[0].estado, EstadoTarea::Running);
+
+    assert!(
+        vista.tareas.is_empty(),
+        "un delegado no es una tarea del plan"
+    );
+    assert_eq!(vista.delegados.len(), 1);
+    let delegado = &vista.delegados[0];
+    assert_eq!(delegado.rol, "explorer");
+    assert_eq!(delegado.proveedor, "native");
+    assert_eq!(delegado.padre, "run-1");
+    assert!(delegado.continuable, "max_follow_ups 2 admite seguimientos");
+    assert_eq!(delegado.estado, EstadoTarea::Running);
 
     vista.aplicar(&evento(
         "subagent.completed",
         Some("sub-1"),
-        json!({"role": "explorer", "status": "completed", "tool_calls": 3}),
+        json!({"role": "explorer", "status": "completed", "tool_calls": 3,
+               "session_id": "sub-1", "files_modified": []}),
     ));
 
-    assert_eq!(vista.tareas.len(), 1, "el subagente no se duplica");
-    assert_eq!(vista.tareas[0].estado, EstadoTarea::Completed);
-    assert_eq!(vista.tareas[0].nombre, "explorer");
+    assert_eq!(vista.delegados.len(), 1, "el delegado no se duplica");
+    assert_eq!(vista.delegados[0].estado, EstadoTarea::Completed);
+    assert_eq!(vista.delegados[0].llamadas_herramienta, Some(3));
+}
+
+#[test]
+fn un_delegado_sin_proveedor_declarado_no_se_lo_inventa() {
+    // Un despliegue anterior a este campo no dice quién ejecuta al delegado. Rellenarlo
+    // con «native» sería afirmar algo que nadie afirmó, y justo en el dato que existe
+    // para saber si el delegado es de Athena o de otro.
+    let mut vista = base();
+
+    vista.aplicar(&evento(
+        "subagent.started",
+        Some("sub-1"),
+        json!({"role": "coder", "session_id": "sub-1"}),
+    ));
+
+    assert_eq!(vista.delegados[0].proveedor, "");
+    assert!(
+        !vista.delegados[0].continuable,
+        "sin tope declarado, un solo encargo"
+    );
+}
+
+#[test]
+fn un_seguimiento_no_crea_un_delegado_nuevo() {
+    // ADR-030: continuar es preguntarle otra vez al mismo, con su presupuesto. Contarlo
+    // como delegado nuevo inflaría el número de agentes y escondería que comparten cupo.
+    let mut vista = base();
+    vista.aplicar(&evento(
+        "subagent.started",
+        Some("sub-1"),
+        json!({"role": "explorer", "session_id": "sub-1", "max_follow_ups": 2}),
+    ));
+
+    vista.aplicar(&evento(
+        "subagent.continued",
+        Some("sub-1"),
+        json!({"role": "explorer", "session_id": "sub-1", "follow_up": 1,
+               "question": "¿Y en qué fichero?", "tool_calls_spent": 7}),
+    ));
+
+    assert_eq!(vista.delegados.len(), 1);
+    assert_eq!(vista.delegados[0].seguimientos, 1);
+    assert_eq!(vista.delegados[0].llamadas_herramienta, Some(7));
+    assert!(vista.delegados[0]
+        .actividad
+        .iter()
+        .any(|linea| linea.contains("¿Y en qué fichero?")));
+}
+
+#[test]
+fn lo_que_hace_un_delegado_no_se_cuenta_como_del_run() {
+    // Los eventos del hijo viajan con su propia sesión. Antes no llegaban siquiera; ahora
+    // llegan, y contarlos como del padre enseñaría como propias del run las escrituras de
+    // otro agente — que es exactamente lo que la delegación separa.
+    let mut vista = base();
+    vista.aplicar(&evento(
+        "subagent.started",
+        Some("sub-1"),
+        json!({"role": "coder", "session_id": "sub-1"}),
+    ));
+
+    let mut suyo = evento("file.changed", None, json!({"path": "calc.py"}));
+    if let MensajeFlujo::Evento(interno) = &mut suyo {
+        interno.run_id = "sub-1".to_owned();
+    }
+    vista.aplicar(&suyo);
+
+    assert!(
+        vista.ficheros_modificados.is_empty(),
+        "el fichero lo tocó el delegado, no el run"
+    );
+    assert_eq!(vista.delegados[0].ficheros, vec!["calc.py".to_owned()]);
+}
+
+#[test]
+fn el_informe_del_delegado_sale_de_la_presentacion_del_resultado() {
+    // `subagent.completed` no lleva resumen: lo lleva la presentación de `delegate_task`
+    // (ADR-026). Sin leerlo de ahí, la interfaz tendría delegados que terminan sin decir
+    // nada, o tendría que inventarse un resumen a partir de los ficheros.
+    let mut vista = base();
+    vista.aplicar(&evento(
+        "subagent.started",
+        Some("sub-1"),
+        json!({"role": "explorer", "session_id": "sub-1", "max_follow_ups": 2}),
+    ));
+    vista.aplicar(&evento(
+        "tool.started",
+        Some("c1"),
+        json!({"tool_name": "delegate_task"}),
+    ));
+
+    vista.aplicar(&evento(
+        "tool.completed",
+        Some("c1"),
+        json!({
+            "tool_name": "delegate_task",
+            "display": {
+                "kind": "record",
+                "title": "explorer · completed",
+                "summary": "El operador está invertido en calc.py:14",
+                "items": [],
+                "facts": {"role": "explorer", "status": "completed",
+                          "delegate_session_id": "sub-1", "follow_ups_left": 1,
+                          "files_changed": 0},
+            },
+        }),
+    ));
+
+    let delegado = &vista.delegados[0];
+    assert_eq!(
+        delegado.resumen.as_deref(),
+        Some("El operador está invertido en calc.py:14")
+    );
+    assert_eq!(delegado.seguimientos_restantes, Some(1));
+    assert!(delegado.continuable);
+}
+
+#[test]
+fn un_delegado_sin_preguntas_restantes_deja_de_ofrecerse_como_continuable() {
+    // Athena manda la cuenta. Seguir diciendo «continuable» porque su perfil lo era
+    // invitaría a gastar una llamada en descubrir que ya no.
+    let mut vista = base();
+    vista.aplicar(&evento(
+        "subagent.started",
+        Some("sub-1"),
+        json!({"role": "explorer", "session_id": "sub-1", "max_follow_ups": 2}),
+    ));
+    vista.aplicar(&evento(
+        "tool.completed",
+        Some("c1"),
+        json!({
+            "tool_name": "delegate_task",
+            "display": {"kind": "record", "title": "explorer", "summary": "Listo",
+                        "items": [], "facts": {"delegate_session_id": "sub-1",
+                                               "follow_ups_left": 0}},
+        }),
+    ));
+
+    assert!(!vista.delegados[0].continuable);
+    assert_eq!(vista.delegados[0].seguimientos_restantes, Some(0));
+}
+
+#[test]
+fn una_tarea_bloqueada_lo_dice_en_su_delegado_sin_llamarlo_fallo() {
+    // Bloqueada no es fallida: quien la bloquea no tiene la culpa de nada, y contarlo
+    // como fallo culparía a la tarea equivocada.
+    let mut vista = base();
+    vista.aplicar(&evento(
+        "task.started",
+        Some("T02"),
+        json!({"task_id": "T02", "role": "coder", "goal": "Arreglar"}),
+    ));
+    vista.aplicar(&evento(
+        "subagent.started",
+        Some("sub-1"),
+        json!({"role": "coder", "session_id": "sub-1", "parent_session_id": "T02"}),
+    ));
+
+    vista.aplicar(&evento(
+        "task.blocked",
+        None,
+        json!({"task_id": "T02", "role": "coder", "blocked_by": "T01"}),
+    ));
+
+    assert_eq!(vista.delegados[0].tarea.as_deref(), Some("T02"));
+    assert_eq!(
+        vista.delegados[0].bloqueos,
+        vec!["Esperando a T01".to_owned()]
+    );
+    assert_ne!(vista.delegados[0].estado, EstadoTarea::Failed);
 }
 
 #[test]
@@ -685,7 +1037,11 @@ fn el_plan_de_una_instantanea_no_duplica_las_tareas_que_llegan_despues() {
         json!({"task_id": "T02", "role": "coder", "dependencies": ["T01"]}),
     ));
 
-    assert_eq!(vista.tareas.len(), 2, "la del plan y la del evento son la misma");
+    assert_eq!(
+        vista.tareas.len(),
+        2,
+        "la del plan y la del evento son la misma"
+    );
     let segunda = vista
         .tareas
         .iter()
@@ -929,6 +1285,45 @@ fn un_fallo_de_verdad_sigue_siendo_un_fallo() {
 
     assert_eq!(vista.fase, Some(FaseRun::Failed));
     assert!(vista.errores.last().unwrap().razon.is_none());
+}
+
+#[test]
+fn el_detalle_tipado_del_fallo_llega_hasta_la_vista() {
+    // Un run real murio con «AI_Broker rejected the task with HTTP 403» y el unico
+    // dato que decia que hacer —ADMIN_AUTH_REQUIRED, o sea renovar la credencial—
+    // se perdia aqui: la proyeccion leia code, message y reason, y no detail.
+    let mut vista = base();
+
+    vista.aplicar(&evento(
+        "agent.failed",
+        None,
+        json!({
+            "error_code": "model_permanent_error",
+            "message": "AI_Broker rejected the task with HTTP 403",
+            "detail": "ADMIN_AUTH_REQUIRED",
+        }),
+    ));
+
+    let error = vista.errores.last().expect("un error registrado");
+    assert_eq!(error.codigo, "model_permanent_error");
+    assert_eq!(
+        error.detalle.as_deref(),
+        Some("ADMIN_AUTH_REQUIRED"),
+        "sin el detalle, el fallo se lee como un problema de permisos cualquiera"
+    );
+}
+
+#[test]
+fn un_fallo_sin_detalle_no_se_inventa_ninguno() {
+    let mut vista = base();
+
+    vista.aplicar(&evento(
+        "agent.failed",
+        None,
+        json!({"error_code": "verification_failure", "message": "los tests fallan"}),
+    ));
+
+    assert!(vista.errores.last().unwrap().detalle.is_none());
 }
 
 #[test]

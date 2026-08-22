@@ -1472,6 +1472,81 @@ body {
 :root[data-theme="dark"] .athena-estrategia dd { color: #e6ddd0; }
 :root[data-theme="dark"] .athena-estrategia .athena-motivo,
 :root[data-theme="dark"] .athena-senales { color: #cfc4b5; }
+.athena-estrategia code { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 12px; }
+
+/* Runs de antes, leídos del registro duradero (ADR-025). */
+.athena-historial { margin: 20px 0 0; }
+.athena-historial-lista { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 6px; }
+.athena-historial-lista li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; border: 1px solid #e4d9c6; border-radius: 10px; background: #fffdf9; padding: 8px 10px; }
+.athena-historial-lista li > span:first-child { flex: 1 1 220px; color: #3d3529; font-size: 13px; }
+.athena-historia { margin: 12px 0 0; border: 1px solid #e4d9c6; border-radius: 10px; background: #fffdf9; padding: 12px 14px; }
+.athena-historia-resumen { display: grid; gap: 6px; margin: 10px 0 0; }
+.athena-historia-resumen dt { color: #8b8277; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+.athena-historia-resumen dd { margin: 1px 0 0; color: #4a423a; font-size: 13px; }
+.athena-historia-hechos { margin: 12px 0 0; }
+.athena-historia-hechos ol { margin: 8px 0 0; padding-left: 20px; color: #5c544b; font-size: 12px; line-height: 1.6; }
+.athena-historia-hechos code { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; }
+:root[data-theme="dark"] .athena-historial-lista li,
+:root[data-theme="dark"] .athena-historia { border-color: #4a433a; background: #241d14; }
+:root[data-theme="dark"] .athena-historial-lista li > span:first-child,
+:root[data-theme="dark"] .athena-historia-resumen dd { color: #e6ddd0; }
+:root[data-theme="dark"] .athena-historia-hechos ol { color: #cfc4b5; }
+
+/* Lo que Athena recuerda del proyecto (ADR-031). */
+.athena-memoria ul { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 10px; }
+.athena-memoria li { border: 1px solid #e4d9c6; border-radius: 10px; background: #fffdf9; padding: 10px 12px; }
+.athena-memoria li[data-estado="proposed"] { border-left: 3px solid #c9a227; }
+.athena-memoria li[data-estado="user_confirmed"] { border-left: 3px solid #6a8a30; }
+.athena-recuerdo-contenido { margin: 0; color: #3d3529; font-size: 13px; line-height: 1.55; }
+.athena-memoria dl { display: grid; gap: 4px; margin: 8px 0 0; }
+.athena-memoria dt { color: #8b8277; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+.athena-memoria dd { margin: 1px 0 0; color: #4a423a; font-size: 12px; }
+:root[data-theme="dark"] .athena-memoria li { border-color: #4a433a; background: #241d14; }
+:root[data-theme="dark"] .athena-recuerdo-contenido,
+:root[data-theme="dark"] .athena-memoria dd { color: #e6ddd0; }
+
+/* Qué clase de trabajo es el run (ADR-028). */
+.athena-perfil-detalle { margin: 8px 0 0; border-left: 2px solid #e4d9c6; padding-left: 10px; }
+.athena-perfil-detalle p { margin: 0; color: #5c544b; font-size: 13px; line-height: 1.55; }
+.athena-perfil-detalle dl { display: grid; gap: 6px; margin: 8px 0 0; }
+.athena-perfil-detalle dt { color: #8b8277; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+.athena-perfil-detalle dd { margin: 2px 0 0; color: #4a423a; font-size: 12px; }
+:root[data-theme="dark"] .athena-perfil-detalle { border-left-color: #4a433a; }
+:root[data-theme="dark"] .athena-perfil-detalle p { color: #cfc4b5; }
+:root[data-theme="dark"] .athena-perfil-detalle dd { color: #e6ddd0; }
+
+/* Los delegados del run: panel propio, no una rama del plan. */
+.athena-delegados ul { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 10px; }
+.athena-delegados li { border: 1px solid #e4d9c6; border-radius: 10px; background: #fffdf9; padding: 10px 12px; }
+.athena-delegado-cabecera { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; margin: 0; }
+.athena-delegado-informe { margin: 8px 0 0; border-left: 2px solid #c9a227; padding-left: 10px; color: #4a423a; font-size: 13px; line-height: 1.55; }
+.athena-delegado-actividad { margin: 8px 0 0; padding-left: 18px; color: #5c544b; font-size: 12px; line-height: 1.6; }
+:root[data-theme="dark"] .athena-delegados li { border-color: #4a433a; background: #241d14; }
+:root[data-theme="dark"] .athena-delegado-informe { color: #e6ddd0; }
+:root[data-theme="dark"] .athena-delegado-actividad { color: #cfc4b5; }
+
+/* Cambiar el encargo de un run vivo (ADR-029). */
+.athena-encargo { margin: 16px 0 0; border: 1px solid #e4d9c6; border-radius: 10px; background: #fffdf9; padding: 10px 12px; }
+.athena-encargo summary { display: flex; align-items: center; gap: 8px; color: #4a423a; font-size: 13px; font-weight: 600; cursor: pointer; }
+.athena-encargo label { display: block; margin: 10px 0 0; color: #8b8277; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+.athena-encargo textarea,
+.athena-encargo input { display: block; width: 100%; margin: 4px 0 0; border: 1px solid #c1b8ab; border-radius: 8px; background: #fff; color: #3d3529; padding: 8px 10px; font: inherit; font-size: 13px; text-transform: none; letter-spacing: normal; }
+:root[data-theme="dark"] .athena-encargo { border-color: #4a433a; background: #241d14; }
+:root[data-theme="dark"] .athena-encargo summary { color: #e6ddd0; }
+:root[data-theme="dark"] .athena-encargo textarea,
+:root[data-theme="dark"] .athena-encargo input { border-color: #4a433a; background: #1b1610; color: #e6ddd0; }
+
+/* El resultado de una tool, dibujado con la forma que dijo Athena (ADR-026). */
+.athena-resultado { margin: 6px 0 0 0; border-left: 2px solid #e4d9c6; padding-left: 10px; }
+.athena-resultado-titulo { margin: 0; color: #4a423a; font-size: 12px; font-weight: 600; }
+.athena-resultado-lista { margin: 4px 0 0; padding-left: 18px; color: #5c544b; font-size: 12px; line-height: 1.6; }
+.athena-resultado-hechos { display: grid; gap: 4px; margin: 6px 0 0; }
+.athena-resultado-hechos dt { color: #8b8277; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+.athena-resultado-hechos dd { margin: 1px 0 0; color: #4a423a; font-size: 12px; }
+:root[data-theme="dark"] .athena-resultado { border-left-color: #4a433a; }
+:root[data-theme="dark"] .athena-resultado-titulo,
+:root[data-theme="dark"] .athena-resultado-hechos dd { color: #e6ddd0; }
+:root[data-theme="dark"] .athena-resultado-lista { color: #cfc4b5; }
 
 .athena-decision { display: flex; gap: 10px; margin: 16px 0 0; }
 .athena-decision button { border: 1px solid #c1b8ab; border-radius: 10px; background: #fffdf9; color: #4a423a; padding: 9px 16px; font-size: 13px; font-weight: 600; cursor: pointer; }
