@@ -36,6 +36,32 @@ class AthenaStartupTests(unittest.TestCase):
         # Athena necesita un modelo que devuelva su decision estructurada; sin decir cual,
         # el broker enruta por su cuenta y un run puede morir en el primer turno.
         self.assertIn("-PreferredModel", arranque)
+        # Y la lista entre la que se puede elegir desde la aplicacion (ADR-034). Sin
+        # pasarla, la pantalla de Athena no ofrece selector.
+        self.assertIn("-AllowedModels", arranque)
+
+    def test_the_default_model_is_one_that_was_measured_to_do_the_work(self) -> None:
+        """El modelo de partida es una decision con medicion detras, no una costumbre.
+
+        `qwen3-coder:30b` fue el de por defecto hasta el 23-ago-2026 y es el que, ante un
+        encargo de crear una aplicacion kanban, produjo el andamiaje de una libreria de
+        redes neuronales, se repitio tres iteraciones y murio por presupuesto. Medido
+        despues sobre dos encargos con veredicto de `pytest`, no arreglo el bug.
+
+        Este test no defiende un nombre concreto: defiende que el de partida sea uno de
+        los que se comprobaron de punta a punta.
+        """
+        arranque = (ROOT / "scripts" / "Start-ChatyGPT.ps1").read_text(encoding="utf-8")
+
+        medidos_y_buenos = ("qwen3.8:27b", "nemotron-3.5-lightning:30b")
+        linea = next(
+            line for line in arranque.splitlines() if line.strip().startswith("[string]$PreferredModel")
+        )
+        self.assertTrue(
+            any(nombre in linea for nombre in medidos_y_buenos),
+            f"el modelo de partida no es ninguno de los que completaron el trabajo: {linea}",
+        )
+        self.assertNotIn("qwen3-coder:30b", linea)
 
     @unittest.skipUnless(os.name == "nt", "el servicio administrado es específico de Windows")
     def test_shutdown_terminates_the_durable_managed_process(self) -> None:

@@ -28,12 +28,31 @@ param(
     # preferencia el broker enruto a `gemma4:31b-cloud`, que contesto con una tabla en
     # markdown comparando Electron, PyQt y .NET.
     #
-    # Comprobados contra este broker con el esquema de decision real de Athena:
-    # `qwen3-coder:30b` y `qwen3-coder-next:latest` devuelven la decision. Tambien la
-    # devuelve `nemotron-3.5-lightning:30b`, pero tarda mas de los 600 s de timeout del
-    # broker en cargarse en frio y el run muere esperandolo, asi que no es el de partida.
-    # Es preferencia, no imposicion: el broker sigue siendo quien enruta.
-    [string]$PreferredModel = "qwen3-coder:30b",
+    # **Medido de punta a punta el 23-ago-2026**, no por lo que anuncia el catalogo. Se
+    # corrieron dos encargos reales por modelo —arreglar un test en rojo y crear un modulo
+    # desde cero— y el veredicto lo dio `pytest` sobre el arbol resultante, no Athena:
+    #
+    #   qwen3.8:27b                  arregla Y crea, run completado las dos veces   <- este
+    #   nemotron-3.5-lightning:30b   arregla limpio (148 s, el mas rapido); al crear
+    #                                deja el trabajo hecho pero no cierra el run
+    #   qwen3.6:35b                  arregla pero el run acaba en fallo; al crear, no
+    #   qwen3-coder:30b              NO arregla. Era el de por defecto hasta hoy, y es el
+    #                                que produjo una libreria de redes neuronales cuando
+    #                                se le pidio un kanban el 22-ago
+    #   granite4.1:30b               NO arregla, y ademas el run salia «completado»
+    #   ornith:35b, gemma4:12b, qwen3-coder-next:latest   NO
+    #
+    # Es preferencia, no imposicion: el broker sigue siendo quien enruta. Cuando alguien
+    # elige modelo desde la aplicacion, esa eleccion si se impone (ADR-034).
+    [string]$PreferredModel = "qwen3.8:27b",
+
+    # Entre que modelos puede elegir un run desde la pantalla de Athena. El primero es el
+    # de por defecto. Se escribe aqui y no se saca del catalogo del broker: ese anuncia
+    # 156 modelos, embeddings incluidos, y ofrecerlos todos no seria ofrecer una eleccion.
+    # `DeepSeek-V4-Pro` es el unico de nube que contesto bien en las pruebas y **cuesta
+    # dinero** (0,10 $ por una sola llamada de 1.400 tokens), asi que se ofrece pero no es
+    # el de partida.
+    [string]$AllowedModels = "qwen3.8:27b,nemotron-3.5-lightning:30b,DeepSeek-V4-Pro",
 
     # Comprueba la credencial y sale. No levanta Athena ni abre la aplicacion.
     [switch]$ValidateOnly
@@ -203,7 +222,8 @@ if ($ValidateOnly) {
 
 $raiz = Split-Path -Parent $PSScriptRoot
 & (Join-Path $PSScriptRoot "Start-AthenaForChatyGPT.ps1") `
-    -BrokerBaseUrl $BrokerBaseUrl -BrokerToken $token -PreferredModel $PreferredModel
+    -BrokerBaseUrl $BrokerBaseUrl -BrokerToken $token -PreferredModel $PreferredModel `
+    -AllowedModels $AllowedModels
 
 $releaseExe = Join-Path $raiz "apps\desktop\src-tauri\target\release\chatygpt.exe"
 $appExit = 1

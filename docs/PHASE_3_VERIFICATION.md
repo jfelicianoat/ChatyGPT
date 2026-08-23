@@ -1,5 +1,8 @@
 # Evidencias de Fase 3
 
+> **Evidencia histórica de fase.** No es un parte de estado actual; véase
+> [CURRENT_STATE.md](CURRENT_STATE.md).
+
 Fecha: 2026-07-30.
 
 Estado: **Fase 3 completada**. Permite crear y editar GPTs personales

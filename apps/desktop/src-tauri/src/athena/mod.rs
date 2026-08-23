@@ -47,8 +47,8 @@ pub use area::{AreaAthena, EstadoAreaAthena, HechoHistorico, HistoriaVista};
 #[allow(unused_imports)]
 pub use contracts::{
     ConflictoObjetivo, DecisionPermiso, EstadoRun, EventoHistorico, HistoriaRun, InstantaneaRun,
-    ListadoMemoria, ListadoPerfiles, ListadoRuns, MensajeFlujo, ModoCapacidad, ObjetivoRun,
-    PerfilAthena, PermisoPendiente, Procedencia, RecuerdoProyecto, ResumenHistoria, ResumenRun,
+    ListadoMemoria, ListadoModelos, ListadoPerfiles, ListadoRuns, MensajeFlujo, ModeloAthena,
+    ModoCapacidad, ObjetivoRun, PerfilAthena, PermisoPendiente, Procedencia, RecuerdoProyecto, ResumenHistoria, ResumenRun,
     RevisionAceptada, RunCreado, SaludServicio, SolicitudRevision, SolicitudRun,
     WIRE_VERSION_SOPORTADA,
 };
@@ -93,6 +93,13 @@ pub struct OpcionesRun {
     /// `documents` y recibe el de software no se entera hasta que Athena intenta
     /// ejecutar los tests de una carpeta de textos.
     pub perfil: String,
+    /// Modelo pedido. Vacío = el de por defecto del despliegue.
+    ///
+    /// Mismo trato que el perfil, y por el mismo motivo: un nombre que Athena no ofrece
+    /// se rechaza, no se sustituye. Y cuando se elige uno, Athena le dice al broker que
+    /// **no** lo enrute a otro sitio: un selector que puede ignorarse en silencio no es
+    /// un selector.
+    pub modelo: String,
 }
 
 impl Default for OpcionesRun {
@@ -104,6 +111,7 @@ impl Default for OpcionesRun {
             max_ciclos_reparacion: 2,
             tiempo_sesion_segundos: 3_600.0,
             perfil: String::new(),
+            modelo: String::new(),
         }
     }
 }
@@ -372,6 +380,7 @@ impl AthenaClient {
             max_repair_cycles: opciones.max_ciclos_reparacion,
             session_timeout_seconds: opciones.tiempo_sesion_segundos,
             profile: opciones.perfil.clone(),
+            model: opciones.modelo.clone(),
         };
         let respuesta = self
             .enviar(
@@ -482,6 +491,22 @@ impl AthenaClient {
     /// Sin esta lista un cliente elige a ciegas, y elegir a ciegas entre perfiles que
     /// cambian qué herramientas existen y qué cuenta como prueba no es elegir: es
     /// acertar.
+    /// Los modelos entre los que este despliegue deja elegir.
+    ///
+    /// Un 404 no es un fallo: significa que este Athena no ofrece elección y corre
+    /// siempre con lo que tenga configurado. Se traduce a un listado vacío para que la
+    /// interfaz no enseñe un error donde no lo hay.
+    pub async fn listar_modelos(&self) -> Result<ListadoModelos, AppError> {
+        let respuesta = self
+            .enviar(Method::GET, "/v1/models", "list_models", None::<&Value>, None)
+            .await?;
+        if respuesta.status() == StatusCode::NOT_FOUND {
+            return Ok(ListadoModelos::default());
+        }
+        let respuesta = Self::interpretar(respuesta, "list_models").await?;
+        Self::leer_json(respuesta, "list_models").await
+    }
+
     pub async fn listar_perfiles(&self) -> Result<ListadoPerfiles, AppError> {
         let respuesta = self
             .enviar(

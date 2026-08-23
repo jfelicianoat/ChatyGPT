@@ -5,12 +5,14 @@ sin acoplar la interfaz a su API HTTP.
 
 ## Estado
 
-Fase 4 en curso. La base durable de las fases anteriores, los GPTs personales y
-el primer workflow de investigación incluyen:
+Producto local en evolución, revisado contra el código el **23 de agosto de 2026**.
+Las fases 0 a 4 son cortes históricos de entrega, no una versión del producto. El estado
+normativo y los límites actuales están en [`docs/CURRENT_STATE.md`](docs/CURRENT_STATE.md).
+La base durable, los GPTs personales, la investigación y el cliente Athena incluyen:
 
 - shell Tauri 2 + React + TypeScript;
 - SQLite local con migración inicial y recuperación de tareas activas;
-- adaptador tipado de AI Broker 2.8;
+- adaptador tipado con petición baseline AI Broker 2.8 y lectura aditiva 2.9;
 - descubrimiento automático al arrancar de salud, carriles, frontera de datos,
   sandbox, ingesta y soporte de documentos largos;
 - recorrido durable opcional: persistir, enviar, sondear, cancelar y recuperar;
@@ -364,7 +366,7 @@ Servicio Athena:
   servicio conectado, basta con escribir el objetivo, elegir la carpeta
   autorizada y pulsar **Lanzar**.
 
-Compatibilidad con el contrato 2.8:
+Compatibilidad con AI Broker 2.8/2.9:
 
 - La especificación de cliente vigente es [Client_API.md](../docs/Client_API.md).
 - Las capacidades nuevas son aditivas. Si no pueden verificarse, ChatyGPT avisa
@@ -395,10 +397,15 @@ Compatibilidad con el contrato 2.8:
 
 ## Documentación
 
+- [Estado vigente y límites](docs/CURRENT_STATE.md)
+- [Compatibilidad con AI Broker](docs/BROKER_COMPATIBILITY.md)
 - [Arquitectura y plan](docs/ARCHITECTURE.md)
 - [Endurecimiento de Fase 0](docs/PHASE_0_HARDENING.md)
 - [Cierre de huecos de Fase 3](docs/PHASE_3_COMPLETION.md)
 - [Evidencias de Fase 0](docs/PHASE_0_VERIFICATION.md)
 - [Evidencias de Fase 1](docs/PHASE_1_VERIFICATION.md)
 - [Evidencias de Fase 2](docs/PHASE_2_VERIFICATION.md)
-- [Contrato local AI Broker 2.8](contracts/broker/2.8/single-task.request.json)
+- [Fixture local de petición AI Broker 2.8](contracts/broker/2.8/single-task.request.json)
+
+Los documentos `PHASE_*` son evidencias del corte que nombran. No deben usarse para
+deducir el estado actual sin consultar primero `CURRENT_STATE.md`.

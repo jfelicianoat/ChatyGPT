@@ -75,6 +75,9 @@ const DEFAULTS: Record<string, unknown> = {
   // El listado de perfiles es un objeto, no una lista: el valor por defecto del doble
   // dejaría `profiles` sin definir, y el selector se cae al contarlos.
   listAthenaProfiles: { default: "software_engineering", profiles: [] },
+  // Una orden que devuelve un objeto necesita su entrada aqui: el doble contesta `[]`
+  // por defecto y el componente lee `.models` de esa lista.
+  listAthenaModels: { default: "", models: [] },
   getMemoryOverview: { enabled: false, items: [] },
   getLatestMemorySearch: null,
   getPerformanceReport: {

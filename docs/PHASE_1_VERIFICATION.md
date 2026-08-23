@@ -1,5 +1,8 @@
 # Evidencias de Fase 1
 
+> **Evidencia histórica de fase.** No es un parte de estado actual; véase
+> [CURRENT_STATE.md](CURRENT_STATE.md).
+
 Fecha: 2026-07-21.
 
 Estado: **Fase 1 en curso**. Este documento cubre organización local y el corte

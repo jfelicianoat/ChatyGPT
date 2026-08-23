@@ -1,5 +1,8 @@
 # Cierre de huecos de la Fase 3
 
+> **Documento histórico de fase.** El estado vigente se resume en
+> [CURRENT_STATE.md](CURRENT_STATE.md).
+
 Fecha: 2026-08-01.
 
 La Fase 3 se declaró completada con GPTs versionados, seleccionables y

@@ -1,5 +1,8 @@
 # Evidencias de Fase 2
 
+> **Evidencia histórica de fase.** No es un parte de estado actual; véase
+> [CURRENT_STATE.md](CURRENT_STATE.md).
+
 Fecha: 2026-07-26.
 
 Estado: **Fase 2 en curso**. Este corte cubre memoria visible, manual, opt-in,

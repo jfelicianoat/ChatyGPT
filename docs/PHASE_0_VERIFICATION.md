@@ -1,5 +1,8 @@
 # Evidencias de Fase 0
 
+> **Evidencia histórica.** La indicación «en curso» pertenece al corte original. Consulta
+> [CURRENT_STATE.md](CURRENT_STATE.md) para el estado vigente.
+
 Este documento se actualiza solo con resultados observados. Estado inicial:
 **Fase 0 en curso**.
 

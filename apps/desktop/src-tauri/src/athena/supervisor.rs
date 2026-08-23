@@ -764,6 +764,12 @@ impl ProyeccionRun {
                         self.ciclos_reparacion += 1;
                         self.anotar("Reparando tras la verificación fallida");
                     }
+                    // Athena avisa de que se está repitiendo antes de abandonar. Sin esto
+                    // el aviso existe en el runtime y no llega a la persona que mira la
+                    // pantalla, que es justo cuando podría intervenir.
+                    if accion == "no_progress" {
+                        self.anotar("Repitiendo las mismas acciones sin avanzar");
+                    }
                     if let Some(ultimo) = self.errores.last_mut() {
                         if ultimo.recuperacion.is_none() {
                             ultimo.recuperacion = Some(accion);

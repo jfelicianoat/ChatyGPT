@@ -1,6 +1,35 @@
 # Arquitectura y plan de producto
 
-Fecha de auditoría: 2026-07-26.
+> **Estado documental:** arquitectura vigente con una auditoría histórica conservada.
+> La síntesis normativa actual está en [CURRENT_STATE.md](CURRENT_STATE.md) y la
+> compatibilidad del cliente Broker en [BROKER_COMPATIBILITY.md](BROKER_COMPATIBILITY.md).
+> Las observaciones fechadas del 26 de julio se mantienen como evidencia del entorno de
+> aquel corte y no prevalecen sobre el código o los documentos anteriores.
+
+Última reconciliación con el código: **2026-08-23**. Auditoría original: 2026-07-26.
+
+## 0. Arquitectura vigente
+
+```text
+React 19 + TypeScript
+  └─ comandos y eventos tipados Tauri
+      └─ núcleo Rust
+          ├─ SQLite + migraciones + recuperación
+          ├─ permisos, confirmaciones y filesystem
+          ├─ cliente HTTP durable de AI Broker
+          ├─ cliente HTTP/SSE del servicio Athena
+          ├─ automatizaciones, memoria, adjuntos y exportaciones
+          └─ DPAPI y operaciones nativas Windows
+```
+
+React no posee secretos, sesiones SQLite ni clientes HTTP. El núcleo Rust es la frontera
+de confianza. AI Broker ejecuta inferencias del chat normal; Athena es un runtime autónomo
+independiente al que ChatyGPT encarga runs sobre una carpeta autorizada. La elección de
+modelo de Athena es por run y solo se ofrece con el catálogo publicado por el despliegue.
+
+La petición estable a AI Broker conserva el baseline 2.8 y el lector acepta extensiones
+2.9. El wire protocol del servicio Athena es 1. Los contratos se validan en la frontera y
+los campos desconocidos aditivos no convierten una respuesta válida en fallo.
 
 ## 1. Estado real del repositorio y el entorno
 

@@ -311,6 +311,7 @@ async fn start_athena_run(
     writes: Option<String>,
     execution: Option<String>,
     profile: Option<String>,
+    model: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<String, AppError> {
     let objective = validated_text(&objective, "el objetivo", 2_000)?;
@@ -336,6 +337,9 @@ async fn start_athena_run(
         // copiada en el cliente caducaría en silencio en cuanto el despliegue añadiera
         // uno. Un nombre que no exista vuelve como 400 de Athena, con los que sí existen.
         perfil: profile.unwrap_or_default().trim().to_owned(),
+        // Igual que el perfil, y por lo mismo: los modelos los conoce Athena. Copiar
+        // aquí una lista la dejaría caducada en cuanto el despliegue cambiara la suya.
+        modelo: model.unwrap_or_default().trim().to_owned(),
         ..athena::OpcionesRun::default()
     };
     let run_id = state
@@ -516,6 +520,18 @@ async fn forget_athena_memory(
 /// La lista viene del servicio y no de una copia local: un perfil cambia qué
 /// herramientas existen y qué cuenta como prueba, y una lista escrita aquí caducaría en
 /// silencio en cuanto el despliegue añadiera uno.
+/// Los modelos entre los que este despliegue deja elegir.
+///
+/// Se pregunta en vez de escribirse aquí por el mismo motivo que los perfiles: la lista
+/// la decide quien despliega Athena, y una copia en el cliente ofrecería los modelos de
+/// otro Athena. Un despliegue sin elección devuelve la lista vacía y no un error.
+#[tauri::command]
+async fn list_athena_models(
+    state: State<'_, AppState>,
+) -> Result<athena::ListadoModelos, AppError> {
+    state.athena.cliente().listar_modelos().await
+}
+
 #[tauri::command]
 async fn list_athena_profiles(
     state: State<'_, AppState>,
@@ -596,6 +612,40 @@ async fn resume_athena_run(
 /// El acuse va antes que la decisión a propósito: es lo que detiene el reloj
 /// corto de entrega y arranca el largo, de modo que una red lenta no se coma el
 /// tiempo de pensar de la persona.
+/// Avisa a Athena de que la pregunta ya está delante de la persona.
+///
+/// Athena mide con tres relojes (ADR-017): uno corto de entrega —«¿ha llegado esto a una
+/// pantalla?»— y uno largo de decisión, que **sólo arranca con este aviso**. Sin él, el
+/// corto vence a los 30 s y la respuesta se da por no llegada aunque haya alguien
+/// leyéndola: se vio en un run real, donde cinco permisos murieron exactamente a los 30,0
+/// segundos porque este aviso se mandaba al *responder* y no al *mostrar*, así que el
+/// reloj de pensar no llegaba a empezar nunca.
+///
+/// Un fallo aquí no se propaga: no haber podido avisar no es motivo para no enseñar la
+/// pregunta, y lo peor que pasa es que se vuelva a la conducta anterior.
+#[tauri::command]
+async fn acknowledge_athena_permission(
+    run_id: String,
+    request_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), AppError> {
+    let Some(suscriptor) = state
+        .athena
+        .proyeccion(&run_id)
+        .and_then(|vista| vista.suscriptor)
+    else {
+        // Todavía no hay conexión con el run. No es un error que enseñar: el aviso se
+        // repetirá en cuanto la haya.
+        return Ok(());
+    };
+    let _ = state
+        .athena
+        .cliente()
+        .confirmar_recepcion_permiso(&run_id, &request_id, &suscriptor)
+        .await;
+    Ok(())
+}
+
 #[tauri::command]
 async fn resolve_athena_permission(
     run_id: String,
@@ -3024,6 +3074,7 @@ pub fn run() {
             start_athena_run,
             get_athena_run,
             list_athena_profiles,
+            list_athena_models,
             list_athena_runs,
             get_athena_run_history,
             list_athena_memory,
@@ -3034,6 +3085,7 @@ pub fn run() {
             list_athena_recovery_runs,
             cancel_athena_run,
             resume_athena_run,
+            acknowledge_athena_permission,
             resolve_athena_permission,
             list_athena_tracked_runs,
             fetch_athena_artifact,

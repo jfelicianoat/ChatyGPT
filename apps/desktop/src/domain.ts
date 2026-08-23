@@ -1827,6 +1827,30 @@ export type AthenaListadoPerfiles = {
 };
 
 /**
+ * Un modelo entre los que este despliegue deja elegir.
+ *
+ * Sólo el nombre y si es el de por defecto. Athena no publica adjetivos —«rápido», «bueno
+ * para código»— y escribirlos aquí sería inventar una recomendación que nadie mantiene y
+ * que envejecería en cuanto cambiara el despliegue.
+ */
+export type AthenaModelo = {
+  name: string;
+  /** Si es el que corre cuando no se elige ninguno. */
+  default: boolean;
+};
+
+/**
+ * Los modelos ofrecidos, o una lista vacía si este Athena no ofrece elección.
+ *
+ * Vacío no es un error: hay despliegues que corren con un modelo fijo. La interfaz no
+ * enseña selector en ese caso, que es distinto de enseñar uno vacío.
+ */
+export type AthenaListadoModelos = {
+  default: string;
+  models: AthenaModelo[];
+};
+
+/**
  * Un delegado del run: un especialista al que se le encargó una parte.
  *
  * Aparte de `AthenaTarea` a propósito. Una tarea del plan *usa* un subagente; no *es*

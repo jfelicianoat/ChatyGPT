@@ -1,5 +1,8 @@
 # Evidencias de Fase 4
 
+> **Evidencia histórica de fase.** La etiqueta «en curso» describe este corte, no el
+> producto completo. Estado vigente: [CURRENT_STATE.md](CURRENT_STATE.md).
+
 Fecha: 2026-08-04 (primer corte: 2026-07-31).
 
 Estado: **Fase 4 en curso**. El primer corte incorpora Investigación profunda

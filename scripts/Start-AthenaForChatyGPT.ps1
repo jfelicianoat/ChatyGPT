@@ -11,6 +11,11 @@ param(
     # imposicion: el broker sigue decidiendo.
     [string]$PreferredModel = "",
 
+    # Entre que modelos puede elegir un run. Vacio = no se elige y todos los runs usan el
+    # preferido, que es la conducta anterior. Athena rechaza con 400 un modelo que no este
+    # en esta lista en vez de caer al de por defecto en silencio (ADR-034).
+    [string]$AllowedModels = "",
+
     [string]$AthenaBaseUrl = "http://127.0.0.1:8770",
     [string]$AthenaRoot = ""
 )
@@ -186,6 +191,7 @@ $previous = @{
     ATHENA_SERVICE_TOKEN = $env:ATHENA_SERVICE_TOKEN
     ATHENA_STATE_DIR = $env:ATHENA_STATE_DIR
     ATHENA_PREFERRED_MODEL = $env:ATHENA_PREFERRED_MODEL
+    ATHENA_ALLOWED_MODELS = $env:ATHENA_ALLOWED_MODELS
 }
 
 try {
@@ -195,6 +201,7 @@ try {
     $env:ATHENA_SERVICE_TOKEN = $serviceToken
     $env:ATHENA_STATE_DIR = Join-Path $env:LOCALAPPDATA "Athena\service"
     $env:ATHENA_PREFERRED_MODEL = $PreferredModel
+    $env:ATHENA_ALLOWED_MODELS = $AllowedModels
     $process = Start-Process -FilePath $pythonw -ArgumentList "-m", "athena_service" `
         -WorkingDirectory $AthenaRoot -WindowStyle Hidden -PassThru
 }
@@ -203,6 +210,7 @@ finally {
     $env:ATHENA_BROKER_BASE_URL = $previous.ATHENA_BROKER_BASE_URL
     $env:ATHENA_BROKER_TOKEN = $previous.ATHENA_BROKER_TOKEN
     $env:ATHENA_SERVICE_TOKEN = $previous.ATHENA_SERVICE_TOKEN
+    $env:ATHENA_ALLOWED_MODELS = $previous.ATHENA_ALLOWED_MODELS
     $env:ATHENA_STATE_DIR = $previous.ATHENA_STATE_DIR
     $env:ATHENA_PREFERRED_MODEL = $previous.ATHENA_PREFERRED_MODEL
     $serviceToken = $null

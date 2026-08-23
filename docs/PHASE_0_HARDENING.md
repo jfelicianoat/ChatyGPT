@@ -1,5 +1,8 @@
 # Endurecimiento de Fase 0
 
+> **Documento histórico de fase.** Registra decisiones y pruebas de este corte; el estado
+> vigente está en [CURRENT_STATE.md](CURRENT_STATE.md).
+
 Fecha de inicio: 2026-08-01.
 
 La Fase 0 se declaró operativa con la aplicación arrancando, migrando y

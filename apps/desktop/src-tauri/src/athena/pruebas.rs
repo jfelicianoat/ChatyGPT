@@ -842,6 +842,78 @@ fn un_encargo_vacio_no_llega_a_salir_de_la_aplicacion() {
     assert!(simulado.peticiones().is_empty());
 }
 
+// -- modelos --------------------------------------------------------------
+
+#[test]
+fn los_modelos_los_dice_athena_y_no_una_lista_local() {
+    let simulado = AthenaSimulado::arrancar();
+    simulado.responder(
+        "/v1/models",
+        RespuestaGuion::ok(json!({
+            "default": "qwen3.8:27b",
+            "models": [
+                {"name": "qwen3.8:27b", "default": true},
+                {"name": "DeepSeek-V4-Pro", "default": false}
+            ],
+        })),
+    );
+
+    let listado = en_runtime(cliente(&simulado).listar_modelos()).expect("listado legible");
+
+    assert_eq!(listado.default, "qwen3.8:27b");
+    assert_eq!(listado.models.len(), 2);
+    assert!(listado.models[0].default);
+    assert_eq!(listado.models[1].name, "DeepSeek-V4-Pro");
+}
+
+#[test]
+fn un_despliegue_sin_eleccion_de_modelo_no_es_un_error() {
+    // Athena contesta 404 cuando corre con un modelo fijo. Eso no es un fallo del que
+    // avisar a nadie: es una respuesta, y se traduce a «no hay nada que elegir».
+    let simulado = AthenaSimulado::arrancar();
+    simulado.responder(
+        "/v1/models",
+        RespuestaGuion::error(404, "models_fixed", "This deployment does not offer a choice"),
+    );
+
+    let listado = en_runtime(cliente(&simulado).listar_modelos()).expect("404 no es un error");
+
+    assert!(listado.models.is_empty());
+    assert!(listado.default.is_empty());
+}
+
+#[test]
+fn el_modelo_elegido_viaja_en_la_peticion_y_el_vacio_se_omite() {
+    // Mandar `model: ""` seria pedir un modelo sin nombre, y Athena lo rechazaria con
+    // razon. La ausencia del campo es lo que significa «decide tu».
+    let simulado = AthenaSimulado::arrancar();
+    // Dos guiones: cada respuesta se consume una vez y aqui se crean dos runs.
+    for _ in 0..2 {
+        simulado.responder(
+            "/v1/runs",
+            RespuestaGuion::creado(json!({
+                "run_id": "run-1", "workspace_id": "ws-1", "writes": "ask", "exec": "ask"
+            })),
+        );
+    }
+
+    let elegido = OpcionesRun {
+        modelo: "DeepSeek-V4-Pro".to_owned(),
+        ..OpcionesRun::default()
+    };
+    en_runtime(cliente(&simulado).crear_run("arregla el bug", "C:/repo", &elegido))
+        .expect("run creado");
+    en_runtime(cliente(&simulado).crear_run("arregla el bug", "C:/repo", &OpcionesRun::default()))
+        .expect("run creado");
+
+    let peticiones = simulado.peticiones();
+    assert!(peticiones[0].cuerpo.contains("\"model\":\"DeepSeek-V4-Pro\""));
+    assert!(
+        !peticiones[1].cuerpo.contains("\"model\""),
+        "sin eleccion el campo no viaja: una cadena vacia seria pedir un modelo sin nombre"
+    );
+}
+
 // -- perfiles -------------------------------------------------------------
 
 #[test]

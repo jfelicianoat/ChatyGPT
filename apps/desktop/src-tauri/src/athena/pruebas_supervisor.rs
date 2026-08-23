@@ -371,6 +371,28 @@ fn la_accion_de_recuperacion_se_anota_en_el_error_que_la_provoco() {
     );
 }
 
+#[test]
+fn el_estancamiento_se_ve_en_la_actividad_aunque_no_haya_error() {
+    // Athena avisa de que se repite antes de abandonar, y en ese momento todavía no hay
+    // ningún error registrado al que colgar la recuperación. Si sólo se colgase del
+    // último error, el aviso no se vería en ninguna parte: es justo el instante en que
+    // la persona podría intervenir.
+    let mut vista = base();
+
+    vista.aplicar(&evento(
+        "recovery.action",
+        None,
+        json!({"action": "no_progress", "verdict": "repeating",
+               "tools": ["read_file"], "repeats": 2}),
+    ));
+
+    assert!(vista.errores.is_empty());
+    assert!(vista
+        .actividad
+        .iter()
+        .any(|linea| linea.contains("sin avanzar")));
+}
+
 // -- permisos -------------------------------------------------------------
 
 #[test]

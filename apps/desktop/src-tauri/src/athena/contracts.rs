@@ -96,6 +96,10 @@ pub struct SolicitudRun {
     /// nombre, y Athena lo rechazaría con razón.
     #[serde(skip_serializing_if = "str::is_empty")]
     pub profile: String,
+    /// Con qué modelo corre el run. Se omite cuando no se eligió, igual que el perfil:
+    /// una cadena vacía sería pedir un modelo sin nombre y Athena la rechazaría.
+    #[serde(skip_serializing_if = "str::is_empty")]
+    pub model: String,
 }
 
 /// Respuesta a la apertura de un run.
@@ -401,6 +405,33 @@ pub struct PerfilAthena {
     pub tools: Vec<String>,
     #[serde(default)]
     pub description: String,
+}
+
+/// Un modelo que este despliegue admite para un run.
+///
+/// Sin adjetivos ni descripciones: Athena publica el nombre y nada más, y rellenar aquí
+/// un «rápido» o un «el mejor para código» sería inventar una recomendación que nadie
+/// mantiene. Lo que sí es un hecho es cuál corre si no se elige, y eso viaja en `default`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all(serialize = "camelCase", deserialize = "snake_case"))]
+pub struct ModeloAthena {
+    pub name: String,
+    /// Si es el que se usa cuando no se pide ninguno.
+    #[serde(default)]
+    pub default: bool,
+}
+
+/// Los modelos que ofrece este despliegue, y cuál usa si no se pide ninguno.
+///
+/// Vacío significa que este Athena no ofrece elección —contesta 404 a `/v1/models`— y no
+/// que no tenga modelos. La interfaz no enseña selector en ese caso, que es distinto de
+/// enseñar uno vacío.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ListadoModelos {
+    #[serde(default)]
+    pub default: String,
+    #[serde(default)]
+    pub models: Vec<ModeloAthena>,
 }
 
 /// Los perfiles que ofrece este despliegue, y cuál usa si no se pide ninguno.

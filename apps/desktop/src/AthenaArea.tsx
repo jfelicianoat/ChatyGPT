@@ -18,6 +18,7 @@ import type {
 import { AthenaDelegados } from "./AthenaDelegados";
 import { AthenaHistorial } from "./AthenaHistorial";
 import { AthenaMemoria } from "./AthenaMemoria";
+import { AthenaModeloSelector } from "./AthenaModelo";
 import { AthenaPerfilSelector } from "./AthenaPerfil";
 import { AthenaEncargo } from "./AthenaEncargo";
 import { platform } from "./platform";
@@ -80,6 +81,7 @@ export function AthenaArea({
   const [objetivo, setObjetivo] = useState("");
   const [carpetaId, setCarpetaId] = useState("");
   const [perfil, setPerfil] = useState("");
+  const [modelo, setModelo] = useState("");
   const [credencial, setCredencial] = useState("");
   const [guardandoCredencial, setGuardandoCredencial] = useState(false);
   const [runId, setRunId] = useState<string | null>(null);
@@ -123,6 +125,7 @@ export function AthenaArea({
   // Estable entre renders: el selector la usa como dependencia de su efecto, y una
   // función nueva en cada render lo haría volver a consultar la lista sin parar.
   const listarPerfiles = useCallback(() => platform.listAthenaProfiles(), []);
+  const listarModelos = useCallback(() => platform.listAthenaModels(), []);
   const listarRuns = useCallback(() => platform.listAthenaRuns(), []);
   const abrirHistoria = useCallback(
     (runId: string) => platform.getAthenaRunHistory(runId),
@@ -211,7 +214,8 @@ export function AthenaArea({
         carpetaId,
         undefined,
         undefined,
-        perfil || undefined
+        perfil || undefined,
+        modelo || undefined
       );
       setRunId(identificador);
       setRun(null);
@@ -315,6 +319,26 @@ export function AthenaArea({
 
   const permiso = permisoActivo(run);
   const bloqueoPermiso = permiso ? motivoBloqueoPermiso(run, permiso) : null;
+
+  // Avisar a Athena de que la pregunta ya está en pantalla. Athena mide con dos relojes:
+  // uno corto de entrega y uno largo para pensar, y el largo **sólo arranca con este
+  // aviso**. Antes se mandaba al responder, así que no arrancaba nunca y todo permiso
+  // tenía en la práctica 30 segundos: en un run real cinco murieron exactamente ahí.
+  //
+  // Se manda una vez por petición —de ahí la referencia— porque repetirlo en cada
+  // repintado sería contarle a Athena la misma cosa muchas veces, y el segundo aviso no
+  // significa nada que el primero no dijera ya.
+  const permisoAvisado = useRef<string | null>(null);
+  const permisoId = permiso?.requestId ?? null;
+  useEffect(() => {
+    if (!runId || !permisoId || permisoAvisado.current === permisoId) {
+      return;
+    }
+    permisoAvisado.current = permisoId;
+    // Sin `informar`: no haber podido avisar no es algo que la persona pueda arreglar, y
+    // taparle la pregunta con un error la dejaría sin poder contestarla.
+    void platform.acknowledgeAthenaPermission(runId, permisoId).catch(() => {});
+  }, [runId, permisoId]);
   const veredicto = nombreVerificacion(run?.verificacion);
 
   return (
@@ -441,6 +465,13 @@ export function AthenaArea({
           valor={perfil}
           onCambiar={setPerfil}
           onListar={listarPerfiles}
+          deshabilitado={ocupado}
+        />
+
+        <AthenaModeloSelector
+          valor={modelo}
+          onCambiar={setModelo}
+          onListar={listarModelos}
           deshabilitado={ocupado}
         />
 

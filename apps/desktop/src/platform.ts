@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   AthenaEstadoArea,
   AthenaHistoria,
+  AthenaListadoModelos,
   AthenaListadoPerfiles,
   AthenaObjetivo,
   AthenaRecuerdo,
@@ -810,14 +811,16 @@ export const platform = {
     folderId: string,
     writes?: string,
     execution?: string,
-    profile?: string
+    profile?: string,
+    model?: string
   ): Promise<string> {
     return invoke<string>("start_athena_run", {
       objective,
       folderId,
       writes,
       execution,
-      profile
+      profile,
+      model
     });
   },
   /** Todos los runs que Athena recuerda, incluidos los que no lanzó ChatyGPT. */
@@ -847,6 +850,10 @@ export const platform = {
   /** Qué perfiles ofrece este Athena. La lista es suya, no una copia local. */
   listAthenaProfiles(): Promise<AthenaListadoPerfiles> {
     return invoke<AthenaListadoPerfiles>("list_athena_profiles");
+  },
+
+  listAthenaModels(): Promise<AthenaListadoModelos> {
+    return invoke<AthenaListadoModelos>("list_athena_models");
   },
   getAthenaRun(runId: string): Promise<AthenaRun> {
     return invoke<AthenaRun>("get_athena_run", { runId });
@@ -884,6 +891,9 @@ export const platform = {
   },
   resumeAthenaRun(runId: string, folderId: string): Promise<void> {
     return invoke<void>("resume_athena_run", { runId, folderId });
+  },
+  acknowledgeAthenaPermission(runId: string, requestId: string): Promise<void> {
+    return invoke<void>("acknowledge_athena_permission", { runId, requestId });
   },
   resolveAthenaPermission(runId: string, requestId: string, allow: boolean): Promise<void> {
     return invoke<void>("resolve_athena_permission", { runId, requestId, allow });
