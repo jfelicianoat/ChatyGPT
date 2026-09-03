@@ -873,7 +873,11 @@ fn un_despliegue_sin_eleccion_de_modelo_no_es_un_error() {
     let simulado = AthenaSimulado::arrancar();
     simulado.responder(
         "/v1/models",
-        RespuestaGuion::error(404, "models_fixed", "This deployment does not offer a choice"),
+        RespuestaGuion::error(
+            404,
+            "models_fixed",
+            "This deployment does not offer a choice",
+        ),
     );
 
     let listado = en_runtime(cliente(&simulado).listar_modelos()).expect("404 no es un error");
@@ -907,7 +911,9 @@ fn el_modelo_elegido_viaja_en_la_peticion_y_el_vacio_se_omite() {
         .expect("run creado");
 
     let peticiones = simulado.peticiones();
-    assert!(peticiones[0].cuerpo.contains("\"model\":\"DeepSeek-V4-Pro\""));
+    assert!(peticiones[0]
+        .cuerpo
+        .contains("\"model\":\"DeepSeek-V4-Pro\""));
     assert!(
         !peticiones[1].cuerpo.contains("\"model\""),
         "sin eleccion el campo no viaja: una cadena vacia seria pedir un modelo sin nombre"

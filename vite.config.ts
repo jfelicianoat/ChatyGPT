@@ -2,9 +2,14 @@
 import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 
+import paquete from "./package.json";
+
 export default defineConfig({
   plugins: [react()],
   root: "apps/desktop",
+  // La version se inyecta desde package.json: la ventana la ensena y nadie
+  // tiene que mantenerla en dos sitios.
+  define: { __APP_VERSION__: JSON.stringify(paquete.version) },
   clearScreen: false,
   server: {
     host: "127.0.0.1",
@@ -38,6 +43,11 @@ export default defineConfig({
       include: ["src/**/*.{ts,tsx}"],
       exclude: [
         "src/App.tsx",
+        // Los paneles salieron de `App.tsx` al partirlo: son el mismo JSX de
+        // presentacion, movido de sitio. Incluirlos aqui bajaria el umbral de
+        // la logica que si esta cubierta solo por haber cambiado de fichero,
+        // que es exactamente lo contrario de lo que mide esta puerta.
+        "src/paneles/**",
         "src/platform.ts",
         "src/main.tsx",
         "src/env.d.ts",

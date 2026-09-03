@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
   attachmentFailureGuidance,
+  type Loadable,
   attachmentContextSummary,
   attachmentNeedsSandbox,
   attachmentSelectionOnConversationOpen,
@@ -114,6 +115,11 @@ import {
 } from "./ingestionPreferences";
 import { isEditableKeyboardTarget, keyboardShortcutAction } from "./keyboard";
 import { AthenaArea } from "./AthenaArea";
+import { AyudaTeclado } from "./paneles/AyudaTeclado";
+import { Dialogo } from "./paneles/Dialogo";
+import { VistaPreviaGpt } from "./paneles/VistaPreviaGpt";
+import { ResumenConversacion } from "./paneles/ResumenConversacion";
+import { ConocimientoProyecto } from "./paneles/ConocimientoProyecto";
 import { WorkflowStudio } from "./WorkflowStudio";
 import { dialogCopy, type DialogState } from "./dialogs";
 import { describeError } from "./errors";
@@ -147,11 +153,6 @@ import {
   type PerformanceMetric
 } from "./performance";
 
-type Loadable<T> =
-  | { state: "loading" }
-  | { state: "ready"; value: T }
-  | { state: "error"; message: string };
-
 type MemoryEditDraft = {
   content: string;
   category: MemoryItemView["category"];
@@ -174,6 +175,9 @@ type WorkspaceDestination =
   | "automations"
   | "settings";
 
+// La version sale del package.json al compilar: lo primero que hace falta
+// para leer un informe de fallo es saber contra que build se estaba mirando.
+const APP_VERSION = __APP_VERSION__;
 const INITIAL_VISIBLE_MESSAGES = 80;
 const EARLIER_MESSAGE_PAGE_SIZE = 50;
 
@@ -3750,7 +3754,7 @@ export function App() {
       <aside className="sidebar">
         <div className="brand">
           <span className="brand-mark">C</span>
-          <div><strong>ChatyGPT</strong><small>Espacio personal</small></div>
+          <div><strong>ChatyGPT</strong><small>Espacio personal · v{APP_VERSION}</small></div>
         </div>
 
         <button
@@ -8008,636 +8012,55 @@ export function App() {
         </main>
       </section>
 
-      {customGptPreview && (
-        <div className="modal-backdrop" role="presentation">
-          <section
-            ref={activeModalRef}
-            className="modal custom-gpt-preview-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="custom-gpt-preview-title"
-            aria-describedby="custom-gpt-preview-description"
-            tabIndex={-1}
-          >
-            <span className="kicker">Vista previa</span>
-            <h2 id="custom-gpt-preview-title">
-              {customGptPreview.state === "ready"
-                ? `${customGptIconGlyph(customGptPreview.value.iconRef)} ${customGptPreview.value.name} · versión ${customGptPreview.value.versionNo}`
-                : "GPT personal"}
-            </h2>
-            <p id="custom-gpt-preview-description">
-              Esto es exactamente lo que recibiría el modelo. No se ha enviado nada a
-              Broker AI ni se ha generado ningún coste.
-            </p>
-            {customGptPreview.state === "loading" && <small>Preparando la vista previa…</small>}
-            {customGptPreview.state === "error" && (
-              <p className="error" role="alert">{customGptPreview.message}</p>
-            )}
-            {customGptPreview.state === "ready" && (
-              <div className="custom-gpt-preview-body">
-                {customGptPreview.value.warnings.length > 0 && (
-                  <ul className="custom-gpt-preview-warnings">
-                    {customGptPreview.value.warnings.map((warning) => (
-                      <li key={warning}>{warning}</li>
-                    ))}
-                  </ul>
-                )}
-                <dl className="custom-gpt-preview-facts">
-                  <div>
-                    <dt>Modelo preferido</dt>
-                    <dd>{customGptPreview.value.preferredModel ?? "Lo elige el Broker"}</dd>
-                  </div>
-                  <div>
-                    <dt>Perfil de ejecución</dt>
-                    <dd>{customGptPreview.value.executionProfile
-                      ? `${customGptPreview.value.executionProfile.strategy} · hasta ${customGptPreview.value.executionProfile.maxCostUsd.toFixed(2)} USD`
-                      : "Hereda los ajustes del chat"}</dd>
-                  </div>
-                  <div>
-                    <dt>Proyecto predeterminado</dt>
-                    <dd>{customGptPreview.value.defaultProjectName ?? "Ninguno"}</dd>
-                  </div>
-                  <div>
-                    <dt>Código aislado</dt>
-                    <dd>
-                      {customGptPreview.value.toolPermissions.runCode === "confirm"
-                        ? "Puede solicitarlo, con tu confirmación"
-                        : "Denegado"}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>Renombrar conversación</dt>
-                    <dd>
-                      {customGptPreview.value.toolPermissions.renameConversation === "confirm"
-                        ? "Puede proponerlo, con tu confirmación"
-                        : "Denegado"}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>Cantidad de contexto</dt>
-                    <dd>
-                      {customGptPreview.value.contextProfile === "focused"
-                        ? "Enfocado · hasta 6 mensajes, 5 recuerdos y 4 fragmentos"
-                        : customGptPreview.value.contextProfile === "broad"
-                          ? "Amplio · hasta 20 mensajes, 30 recuerdos y 12 fragmentos"
-                          : "Equilibrado · hasta 12 mensajes, 20 recuerdos y 8 fragmentos"}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>Tareas programadas</dt>
-                    <dd>
-                      {customGptPreview.value.toolPermissions.createScheduledTasks === "confirm"
-                        ? "Puede proponerlas, con tu confirmación"
-                        : "Denegado"}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>APIs externas</dt>
-                    <dd>
-                      {customGptPreview.value.toolPermissions.callExternalApis === "confirm"
-                        ? "HTTPS GET, con tu confirmación para cada URL"
-                        : "Denegado"}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>Conocimiento</dt>
-                    <dd>
-                      {customGptPreview.value.activeKnowledgeCount} activo(s),{" "}
-                      {customGptPreview.value.disabledKnowledgeCount} desactivado(s),{" "}
-                      {customGptPreview.value.sensitiveKnowledgeCount} sensible(s)
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>Archivos</dt>
-                    <dd>
-                      {customGptPreview.value.readyFileCount} preparado(s),{" "}
-                      {customGptPreview.value.pendingFileCount} pendiente(s)
-                    </dd>
-                  </div>
-                </dl>
-                <h3>Bloque exacto que se antepone al mensaje</h3>
-                <pre>{customGptPreview.value.promptBlock}</pre>
-                {customGptPreview.value.conversationStarters.length > 0 && (
-                  <>
-                    <h3>Iniciadores visibles en un chat vacío</h3>
-                    <ul className="custom-gpt-preview-starters">
-                      {customGptPreview.value.conversationStarters.map((starter) => (
-                        <li key={starter}>{starter}</li>
-                      ))}
-                    </ul>
-                  </>
-                )}
-              </div>
-            )}
-            <div className="modal-actions">
-              <button className="primary" autoFocus onClick={() => setCustomGptPreview(null)}>
-                Cerrar
-              </button>
-            </div>
-          </section>
-        </div>
-      )}
-      {keyboardHelpOpen && (
-        <div className="modal-backdrop" role="presentation">
-          <section
-            ref={activeModalRef}
-            className="modal keyboard-help-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="keyboard-help-title"
-            aria-describedby="keyboard-help-description"
-            tabIndex={-1}
-          >
-            <span className="kicker">Navegación accesible</span>
-            <h2 id="keyboard-help-title">Atajos de teclado</h2>
-            <p id="keyboard-help-description">
-              Funcionan en toda la aplicación, pero las teclas sin modificadores no interrumpen
-              la escritura ni se ejecutan encima de otra ventana.
-            </p>
-            <dl className="keyboard-shortcut-list">
-              <div><dt><kbd>Ctrl</kbd> + <kbd>N</kbd></dt><dd>Nueva conversación</dd></div>
-              <div><dt><kbd>Ctrl</kbd> + <kbd>F</kbd></dt><dd>Buscar conversaciones</dd></div>
-              <div><dt><kbd>/</kbd></dt><dd>Buscar cuando no estás escribiendo</dd></div>
-              <div><dt><kbd>Ctrl</kbd> + <kbd>Mayús</kbd> + <kbd>M</kbd></dt><dd>Ir al mensaje</dd></div>
-              <div><dt><kbd>Alt</kbd> + <kbd>1</kbd></dt><dd>Volver a Inicio</dd></div>
-              <div><dt><kbd>?</kbd></dt><dd>Abrir esta ayuda</dd></div>
-              <div><dt><kbd>Esc</kbd></dt><dd>Cerrar una ventana abierta</dd></div>
-            </dl>
-            <div className="modal-actions">
-              <button className="primary" autoFocus onClick={() => setKeyboardHelpOpen(false)}>
-                Cerrar
-              </button>
-            </div>
-          </section>
-        </div>
-      )}
+      <VistaPreviaGpt
+        customGptPreview={customGptPreview}
+        activeModalRef={activeModalRef}
+        setCustomGptPreview={setCustomGptPreview}
+      />
+      <AyudaTeclado
+        keyboardHelpOpen={keyboardHelpOpen}
+        activeModalRef={activeModalRef}
+        setKeyboardHelpOpen={setKeyboardHelpOpen}
+      />
 
-      {dialog && (
-        <div className="modal-backdrop" role="presentation">
-          <section
-            ref={activeModalRef}
-            className="modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="dialog-title"
-            tabIndex={-1}
-          >
-            <span className="kicker">Gestión local</span>
-            <h2 id="dialog-title">{dialogCopy(dialog).title}</h2>
-            <p>{dialogCopy(dialog).description}</p>
-            {dialogCopy(dialog).fieldLabel && (
-              <label>
-                <span>{dialogCopy(dialog).fieldLabel}</span>
-                {dialogCopy(dialog).multiline ? (
-                  <textarea
-                    autoFocus
-                    value={dialogValue}
-                    onChange={(event) => setDialogValue(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Escape") setDialog(null);
-                    }}
-                    maxLength={dialogCopy(dialog).maxLength}
-                    rows={9}
-                    placeholder={dialogCopy(dialog).placeholder ?? "Ejemplo: responde en español, cita siempre las fuentes y separa claramente hechos de hipótesis."}
-                  />
-                ) : (
-                  <input
-                    autoFocus
-                    value={dialogValue}
-                    onChange={(event) => setDialogValue(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") void submitDialog();
-                      if (event.key === "Escape") setDialog(null);
-                    }}
-                    maxLength={dialogCopy(dialog).maxLength ?? 120}
-                  />
-                )}
-              </label>
-            )}
-            <div className="modal-actions">
-              <button className="secondary" onClick={() => setDialog(null)} disabled={dialogBusy}>
-                Cancelar
-              </button>
-              <button
-                className={dialogCopy(dialog).destructive ? "danger-button" : "primary"}
-                onClick={submitDialog}
-                disabled={
-                  dialogBusy ||
-                  Boolean(
-                    dialogCopy(dialog).fieldLabel
-                    && !dialogCopy(dialog).allowEmpty
-                    && !dialogValue.trim()
-                  )
-                }
-              >
-                {dialogBusy ? dialogCopy(dialog).busyLabel ?? "Guardando…" : dialogCopy(dialog).action}
-              </button>
-            </div>
-          </section>
-        </div>
-      )}
+      <Dialogo
+        dialog={dialog}
+        dialogValue={dialogValue}
+        dialogBusy={dialogBusy}
+        activeModalRef={activeModalRef}
+        setDialog={setDialog}
+        setDialogValue={setDialogValue}
+        submitDialog={submitDialog}
+      />
 
-      {projectKnowledge && (
-        <div className="modal-backdrop" role="presentation">
-          <section
-            ref={activeModalRef}
-            className="modal project-knowledge-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="project-knowledge-title"
-            tabIndex={-1}
-          >
-            {projectKnowledge.state === "loading" && (
-              <>
-                <span className="kicker">Conocimiento del proyecto</span>
-                <h2 id="project-knowledge-title">Reuniendo fuentes…</h2>
-                <p>Consultando instrucciones, archivos y recuerdos guardados.</p>
-              </>
-            )}
-            {projectKnowledge.state === "error" && (
-              <>
-                <span className="kicker">Conocimiento del proyecto</span>
-                <h2 id="project-knowledge-title">No se pudo abrir la vista</h2>
-                <p className="error">{projectKnowledge.message}</p>
-              </>
-            )}
-            {projectKnowledge.state === "ready" && (
-              <>
-                <span className="kicker">Conocimiento del proyecto</span>
-                <h2 id="project-knowledge-title">{projectKnowledge.value.project.name}</h2>
-                <div className="project-knowledge-stats">
-                  <span>
-                    <strong>{projectKnowledge.value.project.conversationCount}</strong>
-                    chats
-                  </span>
-                  <span>
-                    <strong>{projectKnowledge.value.files.length}</strong>
-                    archivos
-                  </span>
-                  <span>
-                    <strong>{projectKnowledge.value.memories.length}</strong>
-                    recuerdos
-                  </span>
-                </div>
+      <ConocimientoProyecto
+        projectKnowledge={projectKnowledge}
+        filteredProjectKnowledge={filteredProjectKnowledge}
+        projectKnowledgeQuery={projectKnowledgeQuery}
+        projectKnowledgeFilter={projectKnowledgeFilter}
+        projectKnowledgeBusyId={projectKnowledgeBusyId}
+        projectKnowledgeActionError={projectKnowledgeActionError}
+        activeModalRef={activeModalRef}
+        setProjectKnowledge={setProjectKnowledge}
+        setProjectKnowledgeQuery={setProjectKnowledgeQuery}
+        setProjectKnowledgeFilter={setProjectKnowledgeFilter}
+        openDialog={openDialog}
+        openConversationFromProjectKnowledge={openConversationFromProjectKnowledge}
+        removeFileFromProjectKnowledge={removeFileFromProjectKnowledge}
+        toggleProjectMemoryFromKnowledge={toggleProjectMemoryFromKnowledge}
+      />
 
-                <div className="project-knowledge-search">
-                  <label htmlFor="project-knowledge-query">
-                    Buscar archivos y recuerdos
-                  </label>
-                  <div>
-                    <input
-                      id="project-knowledge-query"
-                      type="search"
-                      value={projectKnowledgeQuery}
-                      onChange={(event) => setProjectKnowledgeQuery(event.target.value)}
-                      placeholder="Nombre del archivo o contenido del recuerdo"
-                      autoComplete="off"
-                    />
-                    {projectKnowledgeQuery && (
-                      <button
-                        type="button"
-                        onClick={() => setProjectKnowledgeQuery("")}
-                        aria-label="Limpiar búsqueda"
-                      >
-                        Limpiar
-                      </button>
-                    )}
-                  </div>
-                  <div
-                    className="project-knowledge-filters"
-                    role="group"
-                    aria-label="Tipo de conocimiento"
-                  >
-                    {([
-                      ["all", "Todo"],
-                      ["files", "Archivos"],
-                      ["memories", "Recuerdos"]
-                    ] as const).map(([value, label]) => (
-                      <button
-                        type="button"
-                        key={value}
-                        className={projectKnowledgeFilter === value ? "active" : ""}
-                        aria-pressed={projectKnowledgeFilter === value}
-                        onClick={() => setProjectKnowledgeFilter(value)}
-                      >
-                        {label}
-                      </button>
-                    ))}
-                    <span aria-live="polite">
-                      {filteredProjectKnowledge?.total ?? 0} resultado(s)
-                    </span>
-                  </div>
-                </div>
-
-                <div className="project-knowledge-sections">
-                  {projectKnowledgeFilter === "all" && (
-                  <section>
-                    <header>
-                      <strong>Instrucciones</strong>
-                      <span>
-                        {projectKnowledge.value.project.instructions
-                          ? "Configuradas"
-                          : "Sin configurar"}
-                      </span>
-                    </header>
-                    <p>
-                      {projectKnowledge.value.project.instructions
-                        ?? "Este proyecto todavía no tiene instrucciones reutilizables."}
-                    </p>
-                  </section>
-                  )}
-
-                  {projectKnowledgeFilter !== "memories" && (
-                  <section>
-                    <header>
-                      <strong>Archivos reutilizables</strong>
-                      <span>
-                        {filteredProjectKnowledge?.files.length ?? 0}
-                        {" de "}
-                        {projectKnowledge.value.files.length}
-                      </span>
-                    </header>
-                    {filteredProjectKnowledge?.files.length === 0 ? (
-                      <p>
-                        {projectKnowledgeQuery
-                          ? "Ningún archivo coincide con la búsqueda."
-                          : "No hay archivos guardados en este proyecto."}
-                      </p>
-                    ) : (
-                      <div className="project-knowledge-list">
-                        {filteredProjectKnowledge?.files.map((file) => {
-                          const conversations =
-                            projectKnowledge.value.fileUsages.find(
-                              (usage) => usage.attachmentId === file.id
-                            )?.conversations ?? [];
-                          return (
-                            <article className="project-knowledge-item" key={file.id}>
-                              <div>
-                                <strong>{file.displayName}</strong>
-                                <span>
-                                  {attachmentStatusLabel(file.ingestionStatus)}
-                                  {attachmentImagePolicyLabel(file) &&
-                                    ` · ${attachmentImagePolicyLabel(file)}`}
-                                  {" · "}
-                                  {file.chunkCount} fragmentos
-                                </span>
-                                <div className="project-knowledge-uses">
-                                  <span>
-                                    {conversations.length === 0
-                                      ? "Todavía no se usa en ningún chat activo"
-                                      : conversations.length === 1
-                                        ? "Usado en 1 chat"
-                                        : `Usado en ${conversations.length} chats`}
-                                  </span>
-                                  {conversations.length > 0 && (
-                                    <div className="project-knowledge-chat-links">
-                                      {conversations.map((usedBy) => (
-                                        <button
-                                          key={usedBy.id}
-                                          onClick={() => void openConversationFromProjectKnowledge(
-                                            usedBy.id
-                                          )}
-                                          title={`Abrir ${usedBy.title}`}
-                                        >
-                                          {usedBy.title}
-                                        </button>
-                                      ))}
-                                    </div>
-                                  )}
-                                </div>
-                              </div>
-                              <button
-                                className="danger-text"
-                                onClick={() => void removeFileFromProjectKnowledge(
-                                  projectKnowledge.value.project.id,
-                                  file.id,
-                                  file.displayName
-                                )}
-                                disabled={projectKnowledgeBusyId === file.id}
-                              >
-                                {projectKnowledgeBusyId === file.id
-                                  ? "Retirando…"
-                                  : "Retirar del proyecto"}
-                              </button>
-                            </article>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </section>
-                  )}
-
-                  {projectKnowledgeFilter !== "files" && (
-                  <section>
-                    <header>
-                      <strong>Recuerdos del proyecto</strong>
-                      <span>
-                        {projectKnowledge.value.memoryEnabled
-                          ? "Memoria activada"
-                          : "Memoria desactivada"}
-                      </span>
-                    </header>
-                    {filteredProjectKnowledge?.memories.length === 0 ? (
-                      <p>
-                        {projectKnowledgeQuery
-                          ? "Ningún recuerdo coincide con la búsqueda."
-                          : "No hay recuerdos limitados a este proyecto."}
-                      </p>
-                    ) : (
-                      <div className="project-knowledge-list">
-                        {filteredProjectKnowledge?.memories.map((item) => (
-                          <article className="project-knowledge-item" key={item.id}>
-                            <div>
-                              <strong>{item.content}</strong>
-                              <span>
-                                {item.category === "preference"
-                                  ? "Preferencia"
-                                  : item.category === "instruction"
-                                    ? "Instrucción"
-                                    : "Dato"}
-                                {" · "}
-                                {item.enabled ? "Activo" : "Desactivado"}
-                                {item.sensitivity === "sensitive" ? " · Sensible" : ""}
-                              </span>
-                            </div>
-                            <button
-                              onClick={() => void toggleProjectMemoryFromKnowledge(
-                                projectKnowledge.value.project.id,
-                                item.id,
-                                !item.enabled
-                              )}
-                              disabled={projectKnowledgeBusyId === item.id}
-                            >
-                              {projectKnowledgeBusyId === item.id
-                                ? "Guardando…"
-                                : item.enabled
-                                  ? "Desactivar"
-                                  : "Activar"}
-                            </button>
-                          </article>
-                        ))}
-                      </div>
-                    )}
-                  </section>
-                  )}
-                </div>
-                {projectKnowledgeActionError && (
-                  <p className="project-knowledge-error" role="alert">
-                    {projectKnowledgeActionError}
-                  </p>
-                )}
-              </>
-            )}
-            <div className="modal-actions">
-              {projectKnowledge.state === "ready" && (
-                <button
-                  className="secondary"
-                  onClick={() => {
-                    const project = projectKnowledge.value.project;
-                    setProjectKnowledge(null);
-                    openDialog({ kind: "project-instructions", project });
-                  }}
-                >
-                  Editar instrucciones
-                </button>
-              )}
-              <button className="primary" onClick={() => setProjectKnowledge(null)}>
-                Cerrar
-              </button>
-            </div>
-          </section>
-        </div>
-      )}
-
-      {summaryPanel && (
-        <div className="modal-backdrop" role="presentation">
-          <section
-            ref={activeModalRef}
-            className="modal summary-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="summary-title"
-            tabIndex={-1}
-          >
-            <span className="kicker">Contexto controlado</span>
-            <h2 id="summary-title">Resumen de la conversación</h2>
-            <p>
-              El historial original siempre se conserva. Solo un resumen que edites y apruebes
-              se utilizará para representar los mensajes anteriores que cubre.
-            </p>
-            {summaryPanel.state === "loading" && <p className="muted">Cargando resumen…</p>}
-            {summaryPanel.state === "error" && <p className="error">{summaryPanel.message}</p>}
-            {summaryPanel.state !== "ready" && (
-              <div className="modal-actions">
-                <button className="secondary" onClick={() => setSummaryPanel(null)}>
-                  Cerrar
-                </button>
-              </div>
-            )}
-            {summaryPanel.state === "ready" && (
-              <>
-                {summaryPanel.value.active && (
-                  <div className="summary-active">
-                    <strong>Resumen activo</strong>
-                    <p>{summaryPanel.value.active.approvedText}</p>
-                    <small>
-                      Cubre {summaryPanel.value.activeCoveredMessageCount} de{" "}
-                      {summaryPanel.value.totalMessageCount} mensajes · quedan{" "}
-                      {summaryPanel.value.remainingMessageCount}
-                    </small>
-                  </div>
-                )}
-                {summaryPanel.value.candidate?.status === "generating" && (
-                  <div className="summary-progress">
-                    <span className="spinner" aria-hidden="true" />
-                    <div>
-                      <strong>Preparando borrador…</strong>
-                      <p>Puedes cerrar esta ventana; la tarea continuará y se recuperará al reiniciar.</p>
-                      {summaryPanel.value.candidateCoveredMessageCount !== undefined && (
-                        <small>
-                          Este lote avanzará hasta{" "}
-                          {summaryPanel.value.candidateCoveredMessageCount} de{" "}
-                          {summaryPanel.value.totalMessageCount} mensajes.
-                        </small>
-                      )}
-                    </div>
-                  </div>
-                )}
-                {summaryPanel.value.candidate?.status === "draft" && (
-                  <label className="summary-editor">
-                    <span>Borrador pendiente de aprobación</span>
-                    <textarea
-                      autoFocus
-                      value={summaryDraft}
-                      onChange={(event) => setSummaryDraft(event.target.value)}
-                      maxLength={10_000}
-                    />
-                    <small>{summaryDraft.length.toLocaleString("es-ES")} / 10.000 caracteres</small>
-                    {summaryPanel.value.candidateCoveredMessageCount !== undefined && (
-                      <small className="summary-coverage">
-                        Al aprobarlo cubrirá{" "}
-                        {summaryPanel.value.candidateCoveredMessageCount} de{" "}
-                        {summaryPanel.value.totalMessageCount} mensajes y conservará{" "}
-                        {summaryPanel.value.totalMessageCount -
-                          summaryPanel.value.candidateCoveredMessageCount} recientes.
-                      </small>
-                    )}
-                  </label>
-                )}
-                {!summaryPanel.value.candidate && (
-                  <p className="muted">
-                    {summaryPanel.value.totalMessageCount === 0
-                      ? "Todavía no hay mensajes que resumir."
-                      : summaryPanel.value.active && summaryPanel.value.remainingMessageCount === 0
-                        ? "El resumen está al día y ya cubre todos los mensajes disponibles."
-                        : summaryPanel.value.active
-                      ? "Puedes generar un nuevo borrador sin desactivar el resumen actual."
-                      : "Todavía no hay ningún resumen. La generación crea un borrador, nunca uno activo."}
-                  </p>
-                )}
-                <div className="modal-actions">
-                  <button
-                    className="secondary"
-                    onClick={() => setSummaryPanel(null)}
-                    disabled={summaryBusy}
-                  >
-                    Cerrar
-                  </button>
-                  {!summaryPanel.value.candidate &&
-                    summaryPanel.value.totalMessageCount > 0 &&
-                    summaryPanel.value.remainingMessageCount > 0 && (
-                    <button className="primary" onClick={generateSummary} disabled={summaryBusy}>
-                      {summaryBusy
-                        ? "Preparando…"
-                        : summaryPanel.value.active
-                          ? "Actualizar borrador"
-                          : "Generar borrador"}
-                    </button>
-                  )}
-                  {summaryPanel.value.candidate?.status === "draft" && (
-                    <>
-                      <button
-                        className="secondary"
-                        onClick={saveSummaryDraft}
-                        disabled={summaryBusy || !summaryDraft.trim()}
-                      >
-                        Guardar borrador
-                      </button>
-                      <button
-                        className="primary"
-                        onClick={approveSummaryDraft}
-                        disabled={summaryBusy || !summaryDraft.trim()}
-                      >
-                        {summaryBusy ? "Guardando…" : "Guardar y aprobar"}
-                      </button>
-                    </>
-                  )}
-                </div>
-              </>
-            )}
-          </section>
-        </div>
-      )}
+      <ResumenConversacion
+        summaryPanel={summaryPanel}
+        summaryDraft={summaryDraft}
+        summaryBusy={summaryBusy}
+        activeModalRef={activeModalRef}
+        setSummaryPanel={setSummaryPanel}
+        setSummaryDraft={setSummaryDraft}
+        generateSummary={generateSummary}
+        saveSummaryDraft={saveSummaryDraft}
+        approveSummaryDraft={approveSummaryDraft}
+      />
     </div>
   );
 }

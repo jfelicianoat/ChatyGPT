@@ -48,9 +48,9 @@ pub use area::{AreaAthena, EstadoAreaAthena, HechoHistorico, HistoriaVista};
 pub use contracts::{
     ConflictoObjetivo, DecisionPermiso, EstadoRun, EventoHistorico, HistoriaRun, InstantaneaRun,
     ListadoMemoria, ListadoModelos, ListadoPerfiles, ListadoRuns, MensajeFlujo, ModeloAthena,
-    ModoCapacidad, ObjetivoRun, PerfilAthena, PermisoPendiente, Procedencia, RecuerdoProyecto, ResumenHistoria, ResumenRun,
-    RevisionAceptada, RunCreado, SaludServicio, SolicitudRevision, SolicitudRun,
-    WIRE_VERSION_SOPORTADA,
+    ModoCapacidad, ObjetivoRun, PerfilAthena, PermisoPendiente, Procedencia, RecuerdoProyecto,
+    ResumenHistoria, ResumenRun, RevisionAceptada, RunCreado, SaludServicio, SolicitudRevision,
+    SolicitudRun, WIRE_VERSION_SOPORTADA,
 };
 pub use events::{FlujoEventos, OpcionesReconexion};
 #[allow(unused_imports)]
@@ -498,7 +498,13 @@ impl AthenaClient {
     /// interfaz no enseñe un error donde no lo hay.
     pub async fn listar_modelos(&self) -> Result<ListadoModelos, AppError> {
         let respuesta = self
-            .enviar(Method::GET, "/v1/models", "list_models", None::<&Value>, None)
+            .enviar(
+                Method::GET,
+                "/v1/models",
+                "list_models",
+                None::<&Value>,
+                None,
+            )
             .await?;
         if respuesta.status() == StatusCode::NOT_FOUND {
             return Ok(ListadoModelos::default());

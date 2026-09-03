@@ -21,6 +21,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 LIB_RS = ROOT / "apps" / "desktop" / "src-tauri" / "src" / "lib.rs"
+#: Las ordenes viven en `comandos/`; `lib.rs` solo las registra. Se leen
+#: todos los modulos porque basta con que una se declare fuera de sitio
+#: para que el contrato con la interfaz deje de estar comprobado.
+COMANDOS_RS = sorted(
+    (ROOT / "apps" / "desktop" / "src-tauri" / "src" / "comandos").glob("*.rs")
+)
 PLATFORM_TS = ROOT / "apps" / "desktop" / "src" / "platform.ts"
 APP_TSX = ROOT / "apps" / "desktop" / "src" / "App.tsx"
 WORKFLOW_STUDIO_TSX = ROOT / "apps" / "desktop" / "src" / "WorkflowStudio.tsx"
@@ -82,10 +88,10 @@ def split_top_level(text: str, separator: str = ",") -> list[str]:
 
 def declared_commands() -> dict[str, set[str]]:
     """Órdenes declaradas en Rust con los argumentos que espera del frontend."""
-    source = LIB_RS.read_text(encoding="utf-8")
+    source = "\n".join(ruta.read_text(encoding="utf-8") for ruta in COMANDOS_RS)
     commands: dict[str, set[str]] = {}
     pattern = re.compile(
-        r"#\[tauri::command\]\s*(?:#\[[^\]]*\]\s*)*(?:pub\s+)?(?:async\s+)?fn\s+(\w+)\s*\("
+        r"#\[tauri::command\]\s*(?:#\[[^\]]*\]\s*)*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+(\w+)\s*\("
     )
     for match in pattern.finditer(source):
         raw_params = balanced_block(source, match.end() - 1, "(", ")")
