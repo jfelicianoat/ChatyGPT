@@ -66,6 +66,36 @@ describe("contrato 2.8 del Broker", () => {
   it("presenta el uso nuevo sin depender de un único estilo de claves", () => {
     expect(formatResponseUsage({ total_tokens: 1234, cost_usd: 0.0123 }))
       .toBe("1234 tokens · 0,0123 USD");
+    expect(formatResponseUsage({ totalTokens: 10, costUsd: 1 }))
+      .toBe("10 tokens · 1 USD");
+    expect(formatResponseUsage({ tokens: 7, estimated_cost_usd: 0.5 }))
+      .toBe("7 tokens · 0,5 USD");
+  });
+
+  it("calla en vez de inventarse un uso que el Broker no ha enviado", () => {
+    expect(formatResponseUsage()).toBeNull();
+    // Un uso presente pero sin ninguna clave util no debe pintar un separador solo.
+    expect(formatResponseUsage({ modelo: "deepseek" })).toBeNull();
+    expect(formatResponseUsage({ total_tokens: Number.NaN })).toBeNull();
+  });
+
+  it("no ofrece adjuntos mientras las capacidades no esten verificadas", () => {
+    // Sin verificar, el selector no puede prometer formatos: el envio fallaria
+    // despues de que la persona haya elegido el fichero.
+    expect(brokerAttachmentExtensions()).toEqual([]);
+    expect(brokerAttachmentExtensions({
+      reachable: true,
+      ready: false,
+      baseUrl: "http://broker",
+      capabilitiesVerified: false,
+      ingestionFormats: { documents: [".pdf"] },
+      strategies: [],
+      presets: {},
+      workLanes: [],
+      agentSkills: [],
+      latencyMs: 1,
+      message: "sin verificar"
+    })).toEqual([]);
   });
 });
 
@@ -74,6 +104,17 @@ describe("response duration", () => {
     expect(formatResponseDuration()).toBeNull();
     expect(formatResponseDuration(12_500)).toBe("12,5 s");
     expect(formatResponseDuration(64_000)).toBe("1 min 4 s");
+  });
+
+  it("descarta una duración imposible en vez de enseñarla", () => {
+    expect(formatResponseDuration(-1)).toBeNull();
+    expect(formatResponseDuration(Number.NaN)).toBeNull();
+    expect(formatResponseDuration(Number.POSITIVE_INFINITY)).toBeNull();
+  });
+
+  it("nunca enseña «0 s» para una respuesta instantánea", () => {
+    // Redondear a cero haría pensar que no se ha medido nada.
+    expect(formatResponseDuration(0)).toBe("0,1 s");
   });
 });
 

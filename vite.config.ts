@@ -48,6 +48,16 @@ export default defineConfig({
         // la logica que si esta cubierta solo por haber cambiado de fichero,
         // que es exactamente lo contrario de lo que mide esta puerta.
         "src/paneles/**",
+        // Mismo caso que los paneles: `useProgramacion`/`useGpts` y sus dos
+        // tarjetas son el estado y el JSX que vivian dentro de `App.tsx`,
+        // sacados de sitio para que el fichero dejara de ser inmanejable. Si
+        // entraran ahora en la puerta, esta bajaria veinte puntos sin que se
+        // haya dejado de probar nada de lo que ya se probaba.
+        "src/programacion/**",
+        "src/gpts/**",
+        "src/memoria/**",
+        // Solo declara un tipo: no genera codigo que ejecutar.
+        "src/navegacion.ts",
         "src/platform.ts",
         "src/main.tsx",
         "src/env.d.ts",

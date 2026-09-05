@@ -30,16 +30,18 @@ COMANDOS_RS = sorted(
 PLATFORM_TS = ROOT / "apps" / "desktop" / "src" / "platform.ts"
 APP_TSX = ROOT / "apps" / "desktop" / "src" / "App.tsx"
 WORKFLOW_STUDIO_TSX = ROOT / "apps" / "desktop" / "src" / "WorkflowStudio.tsx"
-#: Los componentes que llaman al núcleo sin pasar por `App.tsx`.
+#: Todo el frontend, no una lista escrita a mano.
 #:
-#: El área de Athena creció en piezas propias, y cada una llama a `platform` por su
-#: cuenta. Si la lista se quedara en `App.tsx`, una acción destructiva nueva pasaría la
-#: comprobación por no ser vista, que es la peor forma de pasarla.
-FRONTEND_SOURCES = [
-    APP_TSX,
-    WORKFLOW_STUDIO_TSX,
-    *sorted((ROOT / "apps" / "desktop" / "src").glob("Athena*.tsx")),
-]
+#: Antes se enumeraban `App.tsx`, el estudio de flujos y los ficheros de Athena.
+#: Al partir `App.tsx` en hooks y tarjetas, media docena de llamadas a `platform`
+#: cambiaron de fichero y dejaron de mirarse: la comprobación seguía en verde
+#: por no ver el código, que es la peor forma de estar en verde. Recorrer el
+#: árbol entero deja de depender de que alguien acuerde de ampliar la lista.
+FRONTEND_SOURCES = sorted(
+    ruta
+    for ruta in (ROOT / "apps" / "desktop" / "src").rglob("*.ts*")
+    if ruta.is_file() and ".test." not in ruta.name and ruta != PLATFORM_TS
+)
 
 # Tipos que Tauri inyecta al invocar: no viajan desde el frontend.
 INJECTED_TYPES = ("State<", "AppHandle", "Window", "WebviewWindow")

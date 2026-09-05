@@ -471,13 +471,14 @@ class BuildConfigurationTests(unittest.TestCase):
         self.assertLess(index.index(storage_key), index.index('src="/src/main.tsx"'))
 
     def test_keyboard_navigation_exposes_landmarks_help_and_modal_focus_management(self) -> None:
-        # La ayuda de teclado vive ahora en su propio panel: se leen App.tsx y
-        # los paneles juntos, porque la garantia es de la interfaz entera y no
-        # de un fichero concreto.
+        # La garantia es de la interfaz entera, no de un fichero: al partir
+        # `App.tsx` el marcado se repartio entre paneles, tarjetas y hooks, y
+        # una lista escrita a mano se queda corta en cuanto se mueve otra pieza.
         raiz = ROOT / "apps" / "desktop" / "src"
         app = chr(10).join(
             ruta.read_text(encoding="utf-8")
-            for ruta in [raiz / "App.tsx", *sorted((raiz / "paneles").glob("*.tsx"))]
+            for ruta in sorted(raiz.rglob("*.tsx"))
+            if ".test." not in ruta.name
         )
         self.assertIn('className="skip-link" href="#main-content"', app)
         self.assertIn('id="main-content" tabIndex={-1}', app)
