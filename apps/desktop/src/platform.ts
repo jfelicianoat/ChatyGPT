@@ -31,6 +31,7 @@ import type {
   ExportPathSelection,
   ExportReport,
   LocalTaskSnapshot,
+  TaskArtifact,
   MemoryItemView,
   MemoryOverview,
   MemorySearchView,
@@ -245,6 +246,12 @@ export const platform = {
   },
   cancelLocalTask(localTaskId: string): Promise<LocalTaskSnapshot> {
     return invoke<LocalTaskSnapshot>("cancel_local_task", { localTaskId });
+  },
+  listTaskArtifacts(remoteTaskId: string): Promise<TaskArtifact[]> {
+    return invoke<TaskArtifact[]>("list_task_artifacts", { remoteTaskId });
+  },
+  saveTaskArtifact(remoteTaskId: string, artifactId: string): Promise<string> {
+    return invoke<string>("save_task_artifact", { remoteTaskId, artifactId });
   },
   listScheduledTasks(): Promise<ScheduledTaskView[]> {
     return invoke<ScheduledTaskView[]>("list_scheduled_tasks");

@@ -273,6 +273,11 @@ export function App() {
     setMemorySearch
   } = memoria;
   const [smokeTask, setSmokeTask] = useState<Loadable<LocalTaskSnapshot> | null>(null);
+  /** Ficheros que produjo la tarea (contrato 2.10, 8.3). Empieza como "idle"
+   *  porque no se piden solos: son otra petición al Broker. */
+  const [taskArtifacts, setTaskArtifacts] = useState<Loadable<TaskArtifact[]>>({
+    state: "idle"
+  });
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [projectKnowledge, setProjectKnowledge] =
     useState<Loadable<ProjectKnowledgeOverview> | null>(null);
@@ -1512,6 +1517,9 @@ export function App() {
 
   const startSmokeTask = async () => {
     setSmokeTask({ state: "loading" });
+    // Los ficheros listados pertenecen a la tarea anterior: enseñarlos junto a
+    // una nueva los atribuiría a una ejecución que no los produjo.
+    setTaskArtifacts({ state: "idle" });
     try {
       setSmokeTask({ state: "ready", value: await platform.startSmokeTask() });
     } catch (error) {
@@ -1528,6 +1536,45 @@ export function App() {
       });
     } catch (error) {
       setSmokeTask({ state: "error", message: describeError(error) });
+    }
+  };
+
+  /** Lista los ficheros que produjo la tarea (contrato 2.10, 8.3).
+   *
+   *  La respuesta de texto llega en `result`, pero lo que un modelo devuelve
+   *  como fichero —una imagen, sobre todo— no cabe ahí: el resultado se lee
+   *  entero en cada sondeo del estado. Va aparte, y hay que pedirlo.
+   */
+  const loadTaskArtifacts = async () => {
+    if (smokeTask?.state !== "ready" || !smokeTask.value.remoteTaskId) return;
+    setTaskArtifacts({ state: "loading" });
+    try {
+      setTaskArtifacts({
+        state: "ready",
+        value: await platform.listTaskArtifacts(smokeTask.value.remoteTaskId)
+      });
+    } catch (error) {
+      setTaskArtifacts({ state: "error", message: describeError(error) });
+    }
+  };
+
+  /** Guarda un fichero de la tarea en el almacén local de adjuntos.
+   *
+   *  Un artefacto que el Broker ya podó responde 410 y no 404: existió y se
+   *  borró a propósito. El mensaje que llega del backend lo dice así, y se
+   *  muestra tal cual en vez de traducirlo a un "no encontrado" que mandaría a
+   *  buscar donde no hay nada.
+   */
+  const saveArtifact = async (artifactId: string) => {
+    if (smokeTask?.state !== "ready" || !smokeTask.value.remoteTaskId) return;
+    try {
+      const path = await platform.saveTaskArtifact(
+        smokeTask.value.remoteTaskId,
+        artifactId
+      );
+      window.alert(`Guardado en:\n${path}`);
+    } catch (error) {
+      setTaskArtifacts({ state: "error", message: describeError(error) });
     }
   };
 
@@ -4056,6 +4103,20 @@ export function App() {
                           ? "map-reduce disponible"
                           : "sin map-reduce"}
                       </span>
+                      <span>
+                        Exclusividad de contenido: {broker.value.contentExclusivity === undefined
+                          ? "no consta"
+                          : broker.value.contentExclusivity
+                            ? "solo la ve el modelo que responde"
+                            : "el Broker puede sondear otro modelo local"}
+                      </span>
+                      <span>
+                        Ejecución demostrable: {broker.value.demonstrableExecution === undefined
+                          ? "no consta"
+                          : broker.value.demonstrableExecution
+                            ? "contrato 2.10"
+                            : "no la declara"}
+                      </span>
                     </div>
                   )}
                   {broker?.state === "error" && <p className="error">{broker.message}</p>}
@@ -4377,6 +4438,50 @@ export function App() {
                       JSON.stringify(smokeTask.value.result, null, 2)
                     )}
                   </pre>
+                )}
+                {smokeTask?.state === "ready" &&
+                  smokeTask.value.result &&
+                  smokeTask.value.remoteTaskId && (
+                    <div className="task-actions">
+                      <button
+                        className="secondary"
+                        onClick={loadTaskArtifacts}
+                        disabled={taskArtifacts.state === "loading"}
+                      >
+                        {taskArtifacts.state === "loading"
+                          ? "Consultando…"
+                          : "Ver ficheros de la tarea"}
+                      </button>
+                    </div>
+                  )}
+                {taskArtifacts.state === "ready" && (
+                  <div className="diagnostic">
+                    {taskArtifacts.value.length === 0 ? (
+                      <span>La tarea no produjo ficheros aparte de su respuesta.</span>
+                    ) : (
+                      taskArtifacts.value.map((artifact) => (
+                        <span key={artifact.artifactId}>
+                          {artifact.filename || artifact.artifactId}
+                          {" · "}
+                          {artifact.final ? "entregable" : artifact.artifactType}
+                          {" · "}
+                          {artifact.available ? (
+                            <button
+                              className="secondary"
+                              onClick={() => void saveArtifact(artifact.artifactId)}
+                            >
+                              Guardar
+                            </button>
+                          ) : (
+                            "ya no está en el Broker"
+                          )}
+                        </span>
+                      ))
+                    )}
+                  </div>
+                )}
+                {taskArtifacts.state === "error" && (
+                  <p className="error">{taskArtifacts.message}</p>
                 )}
                 {smokeTask?.state === "error" && (
                   <p className="error">{smokeTask.message}</p>

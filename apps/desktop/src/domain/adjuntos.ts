@@ -257,8 +257,36 @@ export type BrokerDiagnostic = {
   fileIngestion?: boolean;
   longContextMapReduce?: boolean;
   maxActiveWorkflows?: number;
+  /** Contrato 2.10 (8.4): si se puede exigir que solo el modelo que responde
+   *  vea el contenido. `undefined` es «no consta» —no se pudieron leer las
+   *  capacidades—, que no es lo mismo que `false`. */
+  contentExclusivity?: boolean;
+  /** Contrato 2.10 (8.1 y 8.5): si este Broker puede demostrar CÓMO ejecutó,
+   *  no solo qué respondió. */
+  demonstrableExecution?: boolean;
   latencyMs: number;
   message: string;
+};
+
+/** Un fichero que produjo una tarea del Broker (contrato 2.10, 8.3).
+ *
+ *  Aquí llegan las imágenes que devuelve un modelo: no viajan en `result`
+ *  porque el resultado se lee entero en cada sondeo del estado.
+ */
+export type TaskArtifact = {
+  artifactId: string;
+  artifactType: string;
+  filename: string;
+  mediaType?: string | null;
+  sizeBytes?: number | null;
+  sha256?: string | null;
+  downloadUrl?: string | null;
+  /** `false` = existió y ya se borró (retención del Broker). Descargarlo da
+   *  410, no 404: no es lo mismo que no haber existido nunca. */
+  available: boolean;
+  /** Marca el entregable. Se filtra por esto y no por `artifactType`: la lista
+   *  de tipos crece con cada estrategia nueva. */
+  final?: boolean | null;
 };
 
 export const brokerSupportsPreset = (
