@@ -1,4 +1,13 @@
-"""Verificación reproducible y sin persistencia de secretos para AI Broker 2.8."""
+"""Verificación reproducible y sin persistencia de secretos para AI Broker.
+
+Comprueba un **mínimo** de contrato, no una versión exacta. El contrato del
+Broker crece de forma aditiva: un 2.10 sirve todo lo que servía un 2.8, así
+que exigir igualdad convertía cada versión nueva en un "fallo" que no lo era
+—y que además tapaba los fallos de verdad, porque la verificación no pasaba
+de la primera comprobación.
+
+Ojo con comparar cadenas: `"2.10" < "2.9"` es cierto y `2.10 < 2.9` no.
+"""
 
 from __future__ import annotations
 
@@ -43,6 +52,24 @@ REQUIRED_PATHS = {
     "/api/v1/queue": {"get"},
     "/health/ready": {"get"},
 }
+
+
+#: Contrato mínimo que ChatyGPT necesita. No es "el último": es el más antiguo
+#: con el que todo lo que hace la aplicación sigue siendo cierto.
+MINIMUM_CONTRACT_VERSION = "2.8"
+
+
+def _contract_at_least(observed: object, required: str) -> bool:
+    """Compara versiones de contrato por número, nunca por cadena."""
+    if not isinstance(observed, str) or not observed.strip():
+        return False
+    try:
+        left = tuple(int(part) for part in observed.strip().split("."))
+        right = tuple(int(part) for part in required.split("."))
+    except ValueError:
+        return False
+    width = max(len(left), len(right))
+    return left + (0,) * (width - len(left)) >= right + (0,) * (width - len(right))
 
 
 class VerificationError(RuntimeError):
@@ -93,16 +120,47 @@ class BrokerProbe:
             raise VerificationError(f"{method} {path}: {error}") from error
 
 
+#: Almacén de credenciales del sistema donde el Broker publica el token de la
+#: sesión en marcha (Client_API.md, 3.1). Los dos nombres son parte del
+#: contrato: no cambian sin nota en su sección 12.
+KEYRING_SERVICE = "ai-broker"
+#: El token se regenera EN CADA ARRANQUE del Broker y se publica aquí cuando su
+#: configuración lleva `server.publish_session_token: keyring`. No es
+#: persistente y no debe cachearse entre reinicios.
+KEYRING_SESSION_USER = "session_admin_token"
+#: Entrada del OPERADOR, para fijar un token estable. El propio Broker solo la
+#: consulta como último recurso, y el contrato pide explícitamente no leerla en
+#: su lugar: si hay una sesión publicada, esa es la buena.
+KEYRING_OPERATOR_USER = "dashboard_admin_token"
+
+
 def resolve_token() -> str | None:
+    """Resuelve la credencial sin inventarse ninguna fuente.
+
+    Orden: variable de entorno —que es como se fija un token estable desde
+    fuera— y después el almacén de credenciales del sistema, primero la sesión
+    en marcha y solo después la entrada del operador.
+
+    El orden importa: leer `dashboard_admin_token` antes que
+    `session_admin_token` devuelve un token que puede llevar meses caducado
+    mientras hay uno válido al lado, y el síntoma es un 403 que parece un fallo
+    de integración cuando en realidad es que el Broker se reinició.
+    """
     token = os.environ.get("AI_BROKER_ADMIN_TOKEN")
     if token:
         return token
     try:
         import keyring  # type: ignore[import-not-found]
-
-        return keyring.get_password("ai-broker", "dashboard_admin_token") or None
     except Exception:
         return None
+    for username in (KEYRING_SESSION_USER, KEYRING_OPERATOR_USER):
+        try:
+            stored = keyring.get_password(KEYRING_SERVICE, username)
+        except Exception:
+            return None
+        if stored:
+            return stored
+    return None
 
 
 def smoke_payload(idempotency_key: str) -> dict[str, Any]:
@@ -144,8 +202,11 @@ def verify_read_contract(probe: BrokerProbe) -> list[Check]:
 
     _, capabilities = probe.request("GET", "/api/v1/capabilities")
     contract_version = capabilities.get("contract_version")
-    if contract_version != "2.8":
-        raise VerificationError(f"versión contractual inesperada: {contract_version!r}")
+    if not _contract_at_least(contract_version, MINIMUM_CONTRACT_VERSION):
+        raise VerificationError(
+            f"contrato por debajo del mínimo: {contract_version!r} "
+            f"(se necesita {MINIMUM_CONTRACT_VERSION} o posterior)"
+        )
     ingestion_formats = capabilities.get("ingestion_formats")
     if not isinstance(ingestion_formats, dict) or any(
         not isinstance(group, str)
@@ -160,7 +221,9 @@ def verify_read_contract(probe: BrokerProbe) -> list[Check]:
     if not isinstance(egress, list) or any(not isinstance(skill, str) for skill in egress):
         raise VerificationError("agent_skills_egress debe ser una lista de nombres")
     if capabilities.get("task_dependencies") is not True:
-        raise VerificationError("task_dependencies debe estar anunciado para el contrato 2.8")
+        raise VerificationError(
+            "task_dependencies debe estar anunciado desde el contrato 2.8"
+        )
     checks.append(
         Check(
             "capabilities",
@@ -176,6 +239,17 @@ def verify_read_contract(probe: BrokerProbe) -> list[Check]:
                 "agent_skills_egress": egress,
                 "task_dependencies": capabilities.get("task_dependencies"),
                 "long_context_map_reduce": capabilities.get("long_context_map_reduce"),
+                # Contrato 2.10: qué puede demostrar este Broker sobre CÓMO
+                # ejecutó, y si acepta que el contenido lo vea solo el modelo
+                # que responde. Se informan tal cual: no son requisitos, son
+                # hechos sobre el Broker que hay enfrente.
+                "invocation_contract": capabilities.get("invocation_contract"),
+                "prompt_compression_echo": capabilities.get("prompt_compression_echo"),
+                "canonical_artifacts": capabilities.get("canonical_artifacts"),
+                "auxiliary_invocations": capabilities.get("auxiliary_invocations"),
+                "auxiliary_invocations_optout": capabilities.get(
+                    "auxiliary_invocations_optout"
+                ),
             },
         )
     )

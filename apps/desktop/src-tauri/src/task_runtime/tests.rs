@@ -1638,10 +1638,18 @@ fn sandbox_is_explicit_and_requires_broker_capability() {
         long_context_map_reduce: true,
         max_active_workflows: Some(1),
         client_tool_passthrough: Some(true),
-        // Un Broker 2.6 no publica nada de 2.9.
+        // Un Broker 2.6 no publica nada de 2.9 ni de 2.10.
         exclude_from_model_learning: false,
         invocation_telemetry: false,
         execution_fingerprint: false,
+        task_artifacts: false,
+        canonical_artifacts: false,
+        invocation_contract: false,
+        prompt_compression_echo: false,
+        // Ojo: `true` es lo correcto aquí. Un Broker anterior al 2.10 SÍ hacía
+        // invocaciones auxiliares, solo que sin anunciarlas (Client_API.md, 8.4).
+        auxiliary_invocations: true,
+        auxiliary_invocations_optout: false,
     };
     assert!(validate_sandbox_capability(&unavailable).is_err());
     let available = BrokerCapabilities {

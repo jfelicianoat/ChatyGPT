@@ -191,6 +191,9 @@ pub fn run() {
             record_performance_samples,
             get_performance_report,
             clear_performance_samples,
+            // Contrato 2.10 (8.3): los ficheros que produce una tarea.
+            list_task_artifacts,
+            save_task_artifact,
             list_scheduled_tasks,
             list_scheduled_runs,
             list_scheduled_task_templates,

@@ -790,6 +790,17 @@ pub(super) fn chat_request_with_project_instruction(
         "risk": {
             "data_classification": data_classification
         },
+        // Contrato 2.10 (Client_API.md, 8.4). Cuando la persona ha marcado la
+        // conversación como confidencial, el Broker ya mantiene el sondeo en
+        // sombra dentro de modelos locales — pero «local» no es «el modelo que
+        // atiende esta conversación», y quien pidió privacidad no pidió eso.
+        //
+        // Va siempre en el cuerpo; el cliente lo retira si este Broker no
+        // anuncia el opt-out. Pedir la garantía no puede costar el mensaje.
+        "auxiliary_invocations": !matches!(
+            data_classification,
+            "confidential" | "local_only"
+        ),
         "priority": execution_preferences.priority
     }))
 }

@@ -415,6 +415,86 @@ fn store_captured_image(
     })
 }
 
+/// Guarda un artefacto del Broker en el almacén gestionado (contrato 2.10, 8.3).
+///
+/// Un artefacto son bytes que produjo un modelo: la respuesta final, o una
+/// imagen que no cabía en `result`. No se valida que sea una imagen —a
+/// diferencia de una captura de pantalla, aquí el tipo lo declara el Broker— y
+/// el nombre se sanea igual, porque llega de fuera.
+///
+/// El `sha256` que se calcula aquí es sobre los bytes recibidos; el Broker
+/// publica el suyo en el artefacto, y quien quiera cerrar la trazabilidad debe
+/// compararlos. Recalcularlo y darlo por bueno sin comparar sería fingir la
+/// verificación.
+pub async fn store_broker_artifact(
+    attachments_dir: PathBuf,
+    display_name: String,
+    bytes: Vec<u8>,
+) -> Result<String, AppError> {
+    let stored = tauri::async_runtime::spawn_blocking(move || {
+        write_managed_bytes(&attachments_dir, &display_name, &bytes)
+    })
+    .await
+    .map_err(|error| AppError::DataDirectory(error.to_string()))??;
+    Ok(stored.path.to_string_lossy().into_owned())
+}
+
+fn write_managed_bytes(
+    root: &Path,
+    display_name: &str,
+    bytes: &[u8],
+) -> Result<ImportedFile, AppError> {
+    if bytes.is_empty() {
+        return Err(AppError::Validation("el artefacto está vacío".to_owned()));
+    }
+    if bytes.len() > MAX_CAPTURE_BYTES {
+        return Err(AppError::Validation(
+            "el artefacto supera el límite local de 20 MB".to_owned(),
+        ));
+    }
+    let requested = Path::new(display_name)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or("artefacto");
+    let safe_name: String = requested
+        .chars()
+        .take(120)
+        .map(|character| match character {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
+            other => other,
+        })
+        .collect();
+
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let sha256 = format!("{:x}", hasher.finalize());
+    let target_dir = root.join(&sha256);
+    let target = target_dir.join(&safe_name);
+    fs::create_dir_all(&target_dir).map_err(|error| AppError::DataDirectory(error.to_string()))?;
+    if !target.exists() {
+        let temporary = root.join(format!(".artifact-{}.tmp", Uuid::new_v4().simple()));
+        let mut output =
+            File::create(&temporary).map_err(|error| AppError::DataDirectory(error.to_string()))?;
+        output
+            .write_all(bytes)
+            .map_err(|error| AppError::DataDirectory(error.to_string()))?;
+        output
+            .sync_all()
+            .map_err(|error| AppError::DataDirectory(error.to_string()))?;
+        fs::rename(&temporary, &target)
+            .map_err(|error| AppError::DataDirectory(error.to_string()))?;
+    }
+
+    Ok(ImportedFile {
+        path: target,
+        display_name: safe_name,
+        media_type: None,
+        size_bytes: bytes.len() as u64,
+        sha256,
+    })
+}
+
 fn copy_into_managed_storage(root: &Path, source: &Path) -> Result<ImportedFile, AppError> {
     let canonical = source
         .canonicalize()

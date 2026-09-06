@@ -328,7 +328,7 @@ dependencies = [
 
 [[package]]
 name = "chatygpt"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "mime_guess",
  "reqwest 0.12.28",

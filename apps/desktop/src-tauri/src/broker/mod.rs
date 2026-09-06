@@ -11,8 +11,10 @@ use serde_json::Value;
 use std::collections::HashMap;
 use url::Url;
 
+#[cfg_attr(not(test), allow(unused_imports))]
 pub use contracts::{
-    BrokerCapabilities, FileAccepted, FileState, TaskAccepted, TaskState, TaskStatus,
+    final_artifact, BrokerCapabilities, FileAccepted, FileState, InvocationTelemetry, TaskAccepted,
+    TaskArtifact, TaskState, TaskStatus,
 };
 
 use crate::error::AppError;
@@ -46,6 +48,13 @@ pub struct BrokerClient {
     http: Client,
     /// Token compartido y recargable: rotarlo no obliga a reiniciar la aplicación.
     admin_token: Arc<RwLock<Option<HeaderValue>>>,
+    /// Lo último que anunció el Broker en `/api/v1/capabilities`.
+    ///
+    /// Gobierna qué campos opcionales del contrato 2.10 pueden viajar en una
+    /// petición: la validación del Broker es estricta (`extra="forbid"`), así
+    /// que un campo que ese Broker no conoce **no se ignora** — hace fallar la
+    /// petición entera con un 422 y se lleva por delante el mensaje del usuario.
+    capabilities: Arc<RwLock<Option<BrokerCapabilities>>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -68,6 +77,15 @@ pub struct BrokerDiagnostic {
     pub ingestion_formats: HashMap<String, Vec<String>>,
     pub long_context_map_reduce: Option<bool>,
     pub max_active_workflows: Option<u64>,
+    /// Contrato 2.10 (8.4): si se puede exigir que solo el modelo que responde
+    /// vea el contenido. `false` no es un fallo del Broker: significa que una
+    /// conversación marcada confidencial puede acabar vista por otro modelo
+    /// local bajo el mismo `task_id`, y quien la marcó merece saberlo.
+    pub content_exclusivity: Option<bool>,
+    /// Contrato 2.10 (8.1 y 8.5): si este Broker puede demostrar CÓMO ejecutó
+    /// —separar sus propias llamadas de las de la tarea y acusar recibo de la
+    /// poda del prompt—, no solo qué respondió.
+    pub demonstrable_execution: Option<bool>,
     pub latency_ms: u128,
     pub message: String,
 }
@@ -174,6 +192,7 @@ impl BrokerClient {
             base_url,
             http,
             admin_token: Arc::new(RwLock::new(admin_token)),
+            capabilities: Arc::new(RwLock::new(None)),
         })
     }
 
@@ -199,6 +218,7 @@ impl BrokerClient {
             base_url,
             http,
             admin_token: Arc::new(RwLock::new(None)),
+            capabilities: Arc::new(RwLock::new(None)),
         })
     }
 
@@ -291,20 +311,146 @@ impl BrokerClient {
             .send()
             .await
             .map_err(|error| transport_failure("capabilities", error))?;
-        Self::decode("capabilities", response).await
+        let capabilities: BrokerCapabilities = Self::decode("capabilities", response).await?;
+        if let Ok(mut guard) = self.capabilities.write() {
+            *guard = Some(capabilities.clone());
+        }
+        Ok(capabilities)
+    }
+
+    /// Lo que prometía el Broker la última vez que se negoció. `None` mientras
+    /// no se haya negociado nada: entonces no se supone ninguna capacidad.
+    pub fn capabilities_snapshot(&self) -> Option<BrokerCapabilities> {
+        self.capabilities
+            .read()
+            .ok()
+            .and_then(|guard| guard.clone())
+    }
+
+    /// Si se puede exigir que solo el modelo que responde vea el contenido.
+    ///
+    /// Sin negociación previa devuelve `false`, que es la respuesta prudente:
+    /// no pedir la garantía deja la tarea sin ella, pero pedirla a un Broker
+    /// que no la ofrece deja al usuario sin respuesta (Client_API.md, 5.1).
+    pub fn content_exclusivity_available(&self) -> bool {
+        self.capabilities_snapshot()
+            .map(|capabilities| capabilities.auxiliary_invocations_optout)
+            .unwrap_or(false)
     }
 
     pub async fn create_task(&self, request: &Value) -> Result<TaskAccepted, AppError> {
+        let request = self.strip_unsupported_fields(request);
         let response = self
             .authorize(
                 self.http
                     .post(self.endpoint("/api/v1/tasks")?)
-                    .json(request),
+                    .json(&request),
             )
             .send()
             .await
             .map_err(|error| transport_failure("create_task", error))?;
         Self::decode("create_task", response).await
+    }
+
+    /// Quita los campos que este Broker no anuncia (Client_API.md, 5.1).
+    ///
+    /// Su validación es estricta: un campo que no exista en su contrato hace
+    /// fallar la petición con 422, no se ignora. Perder la garantía adicional
+    /// es malo; perder el mensaje del usuario por haberla pedido es peor.
+    fn strip_unsupported_fields(&self, request: &Value) -> Value {
+        if request.get("auxiliary_invocations").is_none() || self.content_exclusivity_available() {
+            return request.clone();
+        }
+        let mut filtered = request.clone();
+        if let Some(object) = filtered.as_object_mut() {
+            object.remove("auxiliary_invocations");
+        }
+        filtered
+    }
+
+    /// Telemetría por invocación (contrato 2.10, 8.1).
+    ///
+    /// Bajo un mismo `task_id` conviven las llamadas que ejecutan la tarea y
+    /// las que el Broker lanza por su cuenta para medir su catálogo. Quien
+    /// necesite separarlas debe usar `InvocationTelemetry::is_contractual`,
+    /// nunca una lista negra de nombres de rol.
+    pub async fn invocations(&self, task_id: &str) -> Result<Vec<InvocationTelemetry>, AppError> {
+        let path = format!("/api/v1/tasks/{task_id}/invocations");
+        let response = self
+            .authorize(self.http.get(self.endpoint(&path)?))
+            .send()
+            .await
+            .map_err(|error| transport_failure("invocations", error))?;
+        let payload: Value = Self::decode("invocations", response).await?;
+        Ok(Self::items(&payload))
+    }
+
+    /// Ficheros que produjo la tarea (contrato 2.10, 8.3).
+    ///
+    /// Es la vía canónica para recoger el entregable: viene tipado y con su
+    /// `sha256`. Aquí están además las **imágenes** que devuelve un modelo
+    /// (`image_output`), que no viajan en `result` porque el resultado JSON se
+    /// lee entero en cada sondeo del estado y un PNG en base64 dentro lo
+    /// convertiría en megabytes por lectura.
+    pub async fn artifacts(&self, task_id: &str) -> Result<Vec<TaskArtifact>, AppError> {
+        let path = format!("/api/v1/tasks/{task_id}/artifacts");
+        let response = self
+            .authorize(self.http.get(self.endpoint(&path)?))
+            .send()
+            .await
+            .map_err(|error| transport_failure("artifacts", error))?;
+        let payload: Value = Self::decode("artifacts", response).await?;
+        Ok(Self::items(&payload))
+    }
+
+    /// Bytes de un artefacto (contrato 2.10, 8.3).
+    ///
+    /// Un `410` no es un `404`: la fila existe y el fichero ya no —lo podó la
+    /// retención del Broker—. Existió y se borró a propósito, que no es lo
+    /// mismo que no haber existido nunca, y el mensaje tiene que decirlo.
+    pub async fn download_artifact(
+        &self,
+        task_id: &str,
+        artifact_id: &str,
+    ) -> Result<Vec<u8>, AppError> {
+        let path = format!("/api/v1/tasks/{task_id}/artifacts/{artifact_id}");
+        let response = self
+            .authorize(self.http.get(self.endpoint(&path)?))
+            .send()
+            .await
+            .map_err(|error| transport_failure("download_artifact", error))?;
+        let status = response.status();
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|error| transport_failure("download_artifact", error))?;
+        if status == StatusCode::GONE {
+            return Err(AppError::BrokerContract(
+                "el artefacto existió y ya se ha borrado (retención del Broker)".to_owned(),
+            ));
+        }
+        if !status.is_success() {
+            return Err(AppError::BrokerResponse {
+                status: status.as_u16(),
+                message: rejection_message(status, &bytes),
+            });
+        }
+        Ok(bytes.to_vec())
+    }
+
+    /// `{task_id, items[]}`: lo que no encaja se descarta en vez de tumbar la
+    /// lectura entera. El contrato crece y una entrada nueva no es un error.
+    fn items<T: serde::de::DeserializeOwned>(payload: &Value) -> Vec<T> {
+        payload
+            .get("items")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| serde_json::from_value(item.clone()).ok())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     pub async fn upload_file(
@@ -503,6 +649,8 @@ impl BrokerClient {
                     ingestion_formats: HashMap::new(),
                     long_context_map_reduce: None,
                     max_active_workflows: None,
+                    content_exclusivity: None,
+                    demonstrable_execution: None,
                     latency_ms: started.elapsed().as_millis(),
                     message: error.to_string(),
                 };
@@ -512,27 +660,36 @@ impl BrokerClient {
         let latency_ms = started.elapsed().as_millis();
         match readiness {
             Ok(response) if response.status().is_success() => match self.capabilities().await {
-                Ok(capabilities) => BrokerDiagnostic {
-                    reachable: true,
-                    ready: true,
-                    capabilities_verified: true,
-                    base_url: self.base_url.to_string(),
-                    contract_version: Some(capabilities.contract_version),
-                    strategies: capabilities.strategies,
-                    presets: capabilities.presets,
-                    derived_data_boundary: Some(capabilities.derived_data_boundary),
-                    work_lanes: capabilities.work_lanes,
-                    agent_skills: capabilities.agent_skills,
-                    agent_skills_egress: capabilities.agent_skills_egress,
-                    task_dependencies: Some(capabilities.task_dependencies),
-                    sandbox_run_code: Some(capabilities.sandbox_run_code),
-                    file_ingestion: Some(capabilities.file_ingestion),
-                    ingestion_formats: capabilities.ingestion_formats,
-                    long_context_map_reduce: Some(capabilities.long_context_map_reduce),
-                    max_active_workflows: capabilities.max_active_workflows,
-                    latency_ms,
-                    message: "Broker AI está listo".to_owned(),
-                },
+                Ok(capabilities) => {
+                    // Se resuelven antes de mover los campos al diagnóstico:
+                    // ambas son preguntas sobre el conjunto, no sobre un campo.
+                    let content_exclusivity = capabilities.content_exclusivity_available();
+                    let demonstrable_execution =
+                        capabilities.invocation_contract && capabilities.prompt_compression_echo;
+                    BrokerDiagnostic {
+                        reachable: true,
+                        ready: true,
+                        capabilities_verified: true,
+                        base_url: self.base_url.to_string(),
+                        contract_version: Some(capabilities.contract_version),
+                        strategies: capabilities.strategies,
+                        presets: capabilities.presets,
+                        derived_data_boundary: Some(capabilities.derived_data_boundary),
+                        work_lanes: capabilities.work_lanes,
+                        agent_skills: capabilities.agent_skills,
+                        agent_skills_egress: capabilities.agent_skills_egress,
+                        task_dependencies: Some(capabilities.task_dependencies),
+                        sandbox_run_code: Some(capabilities.sandbox_run_code),
+                        file_ingestion: Some(capabilities.file_ingestion),
+                        ingestion_formats: capabilities.ingestion_formats,
+                        long_context_map_reduce: Some(capabilities.long_context_map_reduce),
+                        max_active_workflows: capabilities.max_active_workflows,
+                        content_exclusivity: Some(content_exclusivity),
+                        demonstrable_execution: Some(demonstrable_execution),
+                        latency_ms,
+                        message: "Broker AI está listo".to_owned(),
+                    }
+                }
                 Err(error) => BrokerDiagnostic {
                     reachable: true,
                     // La sonda de salud sí ha confirmado que el Broker puede
@@ -554,6 +711,8 @@ impl BrokerClient {
                     ingestion_formats: HashMap::new(),
                     long_context_map_reduce: None,
                     max_active_workflows: None,
+                    content_exclusivity: None,
+                    demonstrable_execution: None,
                     latency_ms,
                     message: format!(
                         "Broker AI está listo, pero tiene capacidades no verificadas: {error}"
@@ -578,6 +737,8 @@ impl BrokerClient {
                 ingestion_formats: HashMap::new(),
                 long_context_map_reduce: None,
                 max_active_workflows: None,
+                content_exclusivity: None,
+                demonstrable_execution: None,
                 latency_ms,
                 message: if response.status() == StatusCode::SERVICE_UNAVAILABLE {
                     "Broker AI responde, pero no está listo".to_owned()
@@ -603,6 +764,8 @@ impl BrokerClient {
                 ingestion_formats: HashMap::new(),
                 long_context_map_reduce: None,
                 max_active_workflows: None,
+                content_exclusivity: None,
+                demonstrable_execution: None,
                 latency_ms,
                 message: format!("Broker AI no está accesible: {error}"),
             },
@@ -641,10 +804,12 @@ impl PollPolicy {
 #[cfg(test)]
 mod tests {
     use super::simulated::{
-        accepted_file, file_state, task_state, ScriptedResponse, SimulatedBroker,
+        accepted_file, accepted_task, file_state, task_state, ScriptedResponse, SimulatedBroker,
     };
-    use super::{AppError, BrokerClient, PollPolicy};
-    use serde_json::json;
+    use super::{
+        final_artifact, AppError, BrokerCapabilities, BrokerClient, InvocationTelemetry, PollPolicy,
+    };
+    use serde_json::{json, Value};
 
     fn block_on<T>(future: impl std::future::Future<Output = T>) -> T {
         tauri::async_runtime::block_on(future)
@@ -1014,5 +1179,233 @@ mod tests {
         let client = BrokerClient::for_base_url("http://127.0.0.1:9/api")
             .expect("una base http debe aceptarse");
         assert_eq!(client.base_url(), "http://127.0.0.1:9/api");
+    }
+
+    // ----------------------------------------------------------------------
+    // Contrato 2.10: ejecución demostrable (Client_API.md, 8.1/8.3/8.4)
+    // ----------------------------------------------------------------------
+
+    fn capabilities_2_10() -> serde_json::Value {
+        serde_json::json!({
+            "contract_version": "2.10",
+            "strategies": ["single", "mixture_of_agents", "agent"],
+            "auxiliary_invocations": true,
+            "auxiliary_invocations_optout": true,
+            "invocation_contract": true,
+            "prompt_compression_echo": true,
+            "invocation_telemetry": true,
+            "task_artifacts": true,
+            "canonical_artifacts": true
+        })
+    }
+
+    #[test]
+    fn an_absent_auxiliary_invocations_flag_is_not_a_promise_that_there_are_none() {
+        // Un Broker anterior al 2.10 las hacía sin anunciarlas, así que su
+        // ausencia no puede leerse como `false` (Client_API.md, 8.4).
+        let capabilities: BrokerCapabilities =
+            serde_json::from_value(serde_json::json!({"contract_version": "2.9"}))
+                .expect("capacidades 2.9");
+
+        assert!(capabilities.auxiliary_invocations);
+        assert!(!capabilities.auxiliary_invocations_optout);
+        assert!(!capabilities.content_exclusivity_available());
+    }
+
+    #[test]
+    fn content_exclusivity_reaches_a_broker_that_offers_the_optout() {
+        let simulated = SimulatedBroker::start();
+        simulated.always("GET /api/v1/capabilities", ScriptedResponse::ok(capabilities_2_10()));
+        simulated.always("POST /api/v1/tasks", ScriptedResponse::accepted(accepted_task("task-210")));
+        let client = client_for(&simulated);
+
+        block_on(async {
+            client.capabilities().await.expect("capacidades");
+            client
+                .create_task(&serde_json::json!({
+                    "idempotency_key": "chatygpt:test:210",
+                    "content": {"prompt": "hola"},
+                    "auxiliary_invocations": false
+                }))
+                .await
+                .expect("tarea aceptada");
+        });
+
+        let sent = simulated.requests_to("POST", "/api/v1/tasks");
+        let body: &Value = &sent[0].body;
+        assert_eq!(body["auxiliary_invocations"], serde_json::json!(false));
+    }
+
+    #[test]
+    fn content_exclusivity_is_dropped_rather_than_losing_the_users_message() {
+        // La validación del Broker es estricta: un campo que no exista en su
+        // contrato hace fallar la petición entera con 422, no se ignora.
+        let simulated = SimulatedBroker::start();
+        simulated.always(
+            "GET /api/v1/capabilities",
+            ScriptedResponse::ok(serde_json::json!({"contract_version": "2.9"})),
+        );
+        simulated.always("POST /api/v1/tasks", ScriptedResponse::accepted(accepted_task("task-29")));
+        let client = client_for(&simulated);
+
+        block_on(async {
+            client.capabilities().await.expect("capacidades");
+            client
+                .create_task(&serde_json::json!({
+                    "idempotency_key": "chatygpt:test:29",
+                    "content": {"prompt": "hola"},
+                    "auxiliary_invocations": false
+                }))
+                .await
+                .expect("tarea aceptada");
+        });
+
+        let sent = simulated.requests_to("POST", "/api/v1/tasks");
+        let body: &Value = &sent[0].body;
+        assert!(body.get("auxiliary_invocations").is_none());
+    }
+
+    #[test]
+    fn nothing_from_210_travels_before_capabilities_are_negotiated() {
+        let simulated = SimulatedBroker::start();
+        simulated.always("POST /api/v1/tasks", ScriptedResponse::accepted(accepted_task("task-x")));
+        let client = client_for(&simulated);
+
+        block_on(async {
+            client
+                .create_task(&serde_json::json!({
+                    "idempotency_key": "chatygpt:test:sin-negociar",
+                    "content": {"prompt": "hola"},
+                    "auxiliary_invocations": false
+                }))
+                .await
+                .expect("tarea aceptada");
+        });
+
+        let sent = simulated.requests_to("POST", "/api/v1/tasks");
+        let body: &Value = &sent[0].body;
+        assert!(body.get("auxiliary_invocations").is_none());
+    }
+
+    #[test]
+    fn the_brokers_own_calls_are_separated_from_the_ones_that_were_asked_for() {
+        let simulated = SimulatedBroker::start();
+        simulated.always(
+            "GET /api/v1/tasks/task-210/invocations",
+            ScriptedResponse::ok(serde_json::json!({
+                "task_id": "task-210",
+                "items": [
+                    {"invocation_id": "inv-1", "role": "single", "status": "completed",
+                     "contractual": true,
+                     "prompt_compression": {"requested": "off", "effective": "off"}},
+                    {"invocation_id": "inv-2", "role": "shadow_probe", "status": "completed",
+                     "contractual": false,
+                     "prompt_compression": {"requested": "off", "effective": "off"}}
+                ]
+            })),
+        );
+        let client = client_for(&simulated);
+
+        let items = block_on(async { client.invocations("task-210").await.expect("telemetría") });
+
+        assert_eq!(items.len(), 2);
+        let contractual: Vec<&InvocationTelemetry> =
+            items.iter().filter(|item| item.is_contractual()).collect();
+        assert_eq!(contractual.len(), 1);
+        assert_eq!(contractual[0].invocation_id, "inv-1");
+    }
+
+    #[test]
+    fn without_the_boolean_only_the_role_name_is_left() {
+        // Contra un Broker 2.9 no hay alternativa, y por eso el 2.10 lo añadió.
+        let simulated = SimulatedBroker::start();
+        simulated.always(
+            "GET /api/v1/tasks/task-29/invocations",
+            ScriptedResponse::ok(serde_json::json!({
+                "task_id": "task-29",
+                "items": [
+                    {"invocation_id": "inv-1", "role": "single", "status": "completed"},
+                    {"invocation_id": "inv-2", "role": "shadow_probe", "status": "completed"}
+                ]
+            })),
+        );
+        let client = client_for(&simulated);
+
+        let items = block_on(async { client.invocations("task-29").await.expect("telemetría") });
+
+        assert_eq!(items.iter().filter(|item| item.is_contractual()).count(), 1);
+    }
+
+    #[test]
+    fn the_deliverable_is_the_final_artifact_and_not_the_first_one() {
+        let simulated = SimulatedBroker::start();
+        simulated.always(
+            "GET /api/v1/tasks/task-210/artifacts",
+            ScriptedResponse::ok(serde_json::json!({
+                "task_id": "task-210",
+                "items": [
+                    {"artifact_id": "art-img", "artifact_type": "image_output",
+                     "filename": "image_01.png", "sha256": "0", "available": true, "final": false},
+                    {"artifact_id": "art-out", "artifact_type": "single_output",
+                     "filename": "final.md", "sha256": "abc", "available": true, "final": true}
+                ]
+            })),
+        );
+        let client = client_for(&simulated);
+
+        let items = block_on(async { client.artifacts("task-210").await.expect("artefactos") });
+
+        let deliverable = final_artifact(&items).expect("entregable marcado");
+        assert_eq!(deliverable.artifact_id, "art-out");
+        assert_eq!(deliverable.sha256.as_deref(), Some("abc"));
+    }
+
+    #[test]
+    fn an_artifact_the_broker_already_pruned_says_so_instead_of_not_found() {
+        // Un 410 no es un 404: existió y se borró a propósito (8.3).
+        let simulated = SimulatedBroker::start();
+        simulated.always(
+            "GET /api/v1/tasks/task-210/artifacts/art-gone",
+            ScriptedResponse::status(410),
+        );
+        let client = client_for(&simulated);
+
+        let error = block_on(async {
+            client
+                .download_artifact("task-210", "art-gone")
+                .await
+                .expect_err("el artefacto ya no está")
+        });
+
+        assert!(error.to_string().contains("retención"), "mensaje: {error}");
+    }
+
+    #[test]
+    fn the_diagnosis_says_whether_privacy_can_be_demanded() {
+        let simulated = SimulatedBroker::start();
+        simulated.always("GET /health/ready", ScriptedResponse::ok(serde_json::json!({"ready": true})));
+        simulated.always("GET /api/v1/capabilities", ScriptedResponse::ok(capabilities_2_10()));
+        let client = client_for(&simulated);
+
+        let diagnostic = block_on(async { client.diagnose().await });
+
+        assert_eq!(diagnostic.content_exclusivity, Some(true));
+        assert_eq!(diagnostic.demonstrable_execution, Some(true));
+    }
+
+    #[test]
+    fn an_unreadable_capabilities_response_leaves_the_210_answers_unknown() {
+        // `None` es «no consta», que no es `false`: un fallo de lectura no
+        // demuestra que el Broker no sepa hacerlo (Client_API.md, 2).
+        let simulated = SimulatedBroker::start();
+        simulated.always("GET /health/ready", ScriptedResponse::ok(serde_json::json!({"ready": true})));
+        simulated.always("GET /api/v1/capabilities", ScriptedResponse::transient());
+        let client = client_for(&simulated);
+
+        let diagnostic = block_on(async { client.diagnose().await });
+
+        assert!(diagnostic.ready);
+        assert_eq!(diagnostic.content_exclusivity, None);
+        assert_eq!(diagnostic.demonstrable_execution, None);
     }
 }

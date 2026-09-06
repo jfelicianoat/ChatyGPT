@@ -5,6 +5,11 @@
 
 use super::*;
 
+// El entregable y su hash vienen del espejo del contrato del Broker, no de
+// una lectura suelta de `result` (Client_API.md, 8.3).
+use crate::broker::final_artifact;
+use serde_json::Value;
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolDecision {
@@ -990,6 +995,97 @@ pub(super) async fn submit_or_resume(
     }
 }
 
+/// Deja constancia de CÓMO se ejecutó una tarea completada (contrato 2.10).
+///
+/// Hasta el 2.10 no había forma de saber, desde el cliente, si el contenido de
+/// una conversación lo había visto algún modelo más: el Broker mide su catálogo
+/// invocando a un aspirante con el mismo prompt bajo el mismo `task_id`, y esas
+/// llamadas aparecían mezcladas con las de la tarea. Ahora cada invocación
+/// declara `contractual` y se pueden separar sin adivinar por el nombre del rol.
+///
+/// Es observación, no control de flujo: si el Broker no publica telemetría, o
+/// falla la lectura, la conversación no se ve afectada de ninguna manera. Por
+/// eso ningún error de aquí se propaga.
+async fn log_execution_evidence(broker: &BrokerClient, local_id: &str, remote_id: &str) {
+    let capabilities = broker.capabilities_snapshot();
+    let telemetry_available = capabilities
+        .as_ref()
+        .map(|value| value.invocation_telemetry)
+        .unwrap_or(false);
+    if telemetry_available {
+        if let Ok(items) = broker.invocations(remote_id).await {
+            let auxiliary: Vec<&str> = items
+                .iter()
+                .filter(|item| !item.is_contractual())
+                .map(|item| item.role.as_str())
+                .collect();
+            let contractual = items.len() - auxiliary.len();
+            // La poda que se aplicó DE VERDAD al prompt (8.5). Se mira sobre las
+            // invocaciones contractuales: el Broker fuerza `off` en las que
+            // procesan contenido generado, y mezclarlas confundiría una política
+            // con un automatismo.
+            let compression = items
+                .iter()
+                .filter(|item| item.is_contractual())
+                .filter_map(|item| {
+                    item.prompt_compression
+                        .as_ref()
+                        .and_then(|echo| echo.get("effective"))
+                        .and_then(Value::as_str)
+                })
+                .find(|value| *value != "off")
+                .unwrap_or("off");
+            logging::info(
+                "task.execution_evidence",
+                Some(local_id),
+                &[
+                    ("contractual", logging::count(contractual as i64)),
+                    ("auxiliary", logging::count(auxiliary.len() as i64)),
+                    ("auxiliary_roles", logging::code(&auxiliary.join(","))),
+                    ("prompt_compression", logging::code(compression)),
+                ],
+            );
+        }
+    }
+
+    // Las imágenes que devuelve un modelo NO viajan en `result`: quedan como
+    // artefactos de la tarea (8.3). ChatyGPT todavía no sabe pintarlas, así que
+    // lo mínimo honesto es dejar constancia de que llegaron, en vez de que
+    // desaparezcan sin que nadie se entere.
+    let artifacts_available = capabilities
+        .as_ref()
+        .map(|value| value.task_artifacts)
+        .unwrap_or(false);
+    if artifacts_available {
+        if let Ok(items) = broker.artifacts(remote_id).await {
+            let images = items
+                .iter()
+                .filter(|item| item.artifact_type == "image_output")
+                .count();
+            if images > 0 {
+                logging::info(
+                    "task.image_artifacts_pending",
+                    Some(local_id),
+                    &[("images", logging::count(images as i64))],
+                );
+            }
+            if let Some(deliverable) = final_artifact(&items) {
+                logging::info(
+                    "task.deliverable_sealed",
+                    Some(local_id),
+                    &[
+                        ("artifact_type", logging::code(&deliverable.artifact_type)),
+                        (
+                            "sha256",
+                            logging::code(deliverable.sha256.as_deref().unwrap_or("")),
+                        ),
+                    ],
+                );
+            }
+        }
+    }
+}
+
 pub(super) fn spawn_submission_and_poll(
     database: Database,
     broker: BrokerClient,
@@ -1060,6 +1156,9 @@ pub(super) fn spawn_polling(database: Database, broker: BrokerClient, local_id: 
                                 ("polls", logging::count(poll_no as i64)),
                             ],
                         );
+                        if status == "completed" {
+                            log_execution_evidence(&broker, &local_id, &remote_id).await;
+                        }
                         if state.status.is_terminal() {
                             advance_semantic_chat(database.clone(), broker.clone(), &local_id);
                         } else {

@@ -316,6 +316,138 @@ pub struct BrokerCapabilities {
     /// ausencia no equivale a `false`.
     #[serde(default)]
     pub client_tool_passthrough: Option<bool>,
+
+    // --- Contrato 2.10 ---------------------------------------------------
+    /// 8.3: se pueden listar y descargar los ficheros que produce una tarea.
+    #[serde(default)]
+    pub task_artifacts: bool,
+    /// 8.3: el entregable viene marcado con `final: true`.
+    #[serde(default)]
+    pub canonical_artifacts: bool,
+    /// 8.1: `role` y `status` enumerados, y cada invocación declara
+    /// `contractual`. Sin esto, separar el trabajo propio del Broker del que
+    /// pidió el usuario es una heurística sobre el nombre del rol.
+    #[serde(default)]
+    pub invocation_contract: bool,
+    /// 8.5: cada invocación declara la poda que se le aplicó de verdad.
+    #[serde(default)]
+    pub prompt_compression_echo: bool,
+    /// 8.4: si este Broker sondea otros modelos con el contenido de la tarea,
+    /// bajo el mismo `task_id`.
+    ///
+    /// Su **ausencia no significa `false`**: un Broker anterior al 2.10 las
+    /// hacía sin anunciarlas. Por eso el default es `true` y no el de `bool`.
+    #[serde(default = "default_true")]
+    pub auxiliary_invocations: bool,
+    /// 8.4: si acepta apagarlas con `auxiliary_invocations: false`.
+    #[serde(default)]
+    pub auxiliary_invocations_optout: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl BrokerCapabilities {
+    /// Si se puede exigir que solo el modelo que responde vea el contenido.
+    ///
+    /// Una conversación marcada `confidential` o `local_only` mantiene el
+    /// sondeo en sombra dentro de modelos locales, pero «local» no es «el
+    /// modelo que atiende esta conversación» (Client_API.md, 8.4). Cuando el
+    /// usuario ha pedido explícitamente privacidad, la diferencia importa.
+    pub fn content_exclusivity_available(&self) -> bool {
+        !self.auxiliary_invocations || self.auxiliary_invocations_optout
+    }
+}
+
+/// Una entrada de `GET /api/v1/tasks/{id}/invocations` (contrato 2.10, 8.1).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct InvocationTelemetry {
+    #[serde(default)]
+    pub invocation_id: String,
+    #[serde(default)]
+    pub role: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub model: Value,
+    #[serde(default)]
+    pub cost_usd: f64,
+    #[serde(default)]
+    pub tokens_input: u64,
+    #[serde(default)]
+    pub tokens_output: u64,
+    #[serde(default)]
+    pub latency_ms: Option<f64>,
+    /// `None` = este Broker no se pronuncia (2.9 o anterior). NO es lo mismo
+    /// que «no es contractual».
+    #[serde(default)]
+    pub contractual: Option<bool>,
+    /// `{requested, effective}` (8.5). `None` en filas anteriores al 2.10 y en
+    /// llamadas que no envían prompt de usuario.
+    #[serde(default)]
+    pub prompt_compression: Option<Value>,
+    /// De qué campo salió el texto (8.1). `reasoning_content` significa que el
+    /// modelo dejó `content` vacío y el Broker rescató su razonamiento.
+    #[serde(default)]
+    pub content_source: Option<String>,
+}
+
+/// Roles que el Broker ejecuta por su cuenta, para Brokers anteriores al 2.10
+/// que no marcan `contractual`. El vocabulario real tiene quince roles y crece,
+/// así que nombrarlos es frágil por definición: contra un 2.10 no se usa.
+const LEGACY_NON_CONTRACTUAL_ROLES: &[&str] = &["shadow_probe"];
+
+impl InvocationTelemetry {
+    /// Si esta llamada ejecuta el trabajo que se pidió (8.1).
+    ///
+    /// Bajo un mismo `task_id` conviven las invocaciones de la tarea y las que
+    /// el Broker lanza para medir su catálogo. `contractual: false` no cuenta
+    /// para la factura ni para validar la política de ejecución; `true` sí,
+    /// aunque el rol no sea el que entrega la respuesta —`arbiter` y
+    /// `confidence_judge` se pagan y respetan `model_requirements`.
+    pub fn is_contractual(&self) -> bool {
+        self.contractual
+            .unwrap_or_else(|| !LEGACY_NON_CONTRACTUAL_ROLES.contains(&self.role.as_str()))
+    }
+}
+
+/// Un fichero producido por la tarea (contrato 2.10, 8.3).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TaskArtifact {
+    #[serde(default)]
+    pub artifact_id: String,
+    #[serde(default)]
+    pub artifact_type: String,
+    #[serde(default)]
+    pub filename: String,
+    #[serde(default)]
+    pub media_type: Option<String>,
+    #[serde(default)]
+    pub size_bytes: Option<u64>,
+    #[serde(default)]
+    pub sha256: Option<String>,
+    #[serde(default)]
+    pub download_url: Option<String>,
+    /// `false` = la fila existe y el fichero ya no: lo podó la retención, o se
+    /// restauró una copia sin `state/tasks`. La descarga responde `410`, no
+    /// `404` — existió y se borró a propósito, que no es lo mismo.
+    #[serde(default = "default_true")]
+    pub available: bool,
+    /// `final: true` marca el entregable; una tarea completada tiene
+    /// exactamente uno, sea cual sea la estrategia. `None` en Brokers
+    /// anteriores al 2.10, donde no hay forma de distinguirlo.
+    #[serde(default, rename = "final")]
+    pub is_final: Option<bool>,
+}
+
+/// El entregable de la tarea (8.3).
+///
+/// Se filtra por `final` y no por `artifact_type`: la lista de tipos crece con
+/// cada estrategia nueva, y cerrar con «el primero de la lista» cerraría con la
+/// imagen que acompaña en vez de con la respuesta.
+pub fn final_artifact(items: &[TaskArtifact]) -> Option<&TaskArtifact> {
+    items.iter().find(|item| item.is_final == Some(true))
 }
 
 #[cfg(test)]
