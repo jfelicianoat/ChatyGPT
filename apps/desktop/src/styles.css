@@ -413,6 +413,10 @@ nav { margin-top: 14px; overflow-y: auto; min-height: 0; padding-right: 2px; }
 .secondary { border: 1px solid #d4ccc1; border-radius: 10px; padding: 9px 13px; background: transparent; color: #4c453e; cursor: pointer; }
 .secondary.danger { color: #8b3832; border-color: #d8b8b2; }
 .task-actions { display: flex; gap: 10px; align-items: center; }
+.message-artifacts { display: grid; gap: 8px; margin-top: 8px; justify-items: start; }
+.message-artifact-list { display: grid; gap: 7px; width: min(100%, 560px); }
+.message-artifact-list > span { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 10px; border: 1px solid #ded6cb; border-radius: 9px; background: #fffdf9; }
+.message-artifact-list .secondary { padding: 5px 9px; }
 .task-facts { display: grid; grid-template-columns: 1fr 1fr 1fr 2fr; gap: 12px; margin: 20px 0 0; }
 .task-facts div { min-width: 0; border-top: 1px solid #e4ddd2; padding-top: 10px; }
 .activity-card { margin-top: 18px; padding: 24px; border: 1px solid #ddd5ca; border-radius: 16px; background: #fffdf9; }

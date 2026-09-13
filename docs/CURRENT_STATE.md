@@ -1,6 +1,9 @@
 # Estado vigente de ChatyGPT
 
-Última revisión contra el código: **23 de agosto de 2026**.
+Última revisión contra el código: **13 de septiembre de 2026**.
+
+Versión de producto: **0.2.0**. Esquema SQLite: **24**. El cierre de la auditoría
+de esta fecha está registrado en [REMEDIATION_2026-09-13.md](REMEDIATION_2026-09-13.md).
 
 Este documento es la referencia breve de estado. `README.md` explica el producto,
 `ARCHITECTURE.md` conserva el diseño y las decisiones, y los documentos `PHASE_*` son
@@ -30,15 +33,18 @@ nativas.
 - La credencial de AI Broker y la del servicio Athena son distintas y se protegen con
   DPAPI para la cuenta de Windows.
 - Lectura, escritura, modificación de archivos, herramientas y tareas programadas son
-  concesiones separadas, denegadas por defecto y confirmadas de forma durable.
+  concesiones separadas, denegadas por defecto. La decisión se persiste antes del efecto
+  y cada resultado queda registrado, incluso cuando la operación falla.
+- Una clasificación `local_only` se hereda al reutilizar respuestas o resúmenes, y las
+  descargas autenticadas del Broker nunca siguen un origen distinto.
 - Las rutas se resuelven canónicamente y las escrituras sensibles usan comprobación de
   huella y reemplazo atómico.
 
 ## Compatibilidad externa
 
-- **AI Broker:** el cliente conserva el cuerpo de petición estable de 2.8, acepta
-  respuestas aditivas 2.9 y lee `served_by`, `models_used` y `fallback_used` cuando están
-  presentes. También mantiene compatibilidad de lectura con tareas anteriores. Véase
+- **AI Broker:** el cliente implementa el contrato aditivo 2.10, incluidos artefactos,
+  exclusividad y evidencia de ejecución, y mantiene compatibilidad de lectura con tareas
+  anteriores. Véase
   [BROKER_COMPATIBILITY.md](BROKER_COMPATIBILITY.md).
 - **Athena:** wire protocol 1. La aplicación comprueba `/v1/health`, consume runs y eventos,
   resuelve aprobaciones y puede consultar `/v1/profiles`, `/v1/models` y memoria cuando el
@@ -51,6 +57,9 @@ nativas.
 - GPTs personales versionados, permisos, conocimiento privado, importación y exportación;
 - investigación profunda, fuentes trazables y exportación Markdown/Obsidian;
 - automatizaciones locales durables, calendario proyectado e inicio con Windows;
+- recurrencias calculadas en la zona IANA guardada y resúmenes capaces de avanzar por
+  fragmentos trazables de mensajes que superan el lote;
+- ficheros generados accesibles desde cada respuesta, descargados con límite y SHA-256;
 - captura de pantalla y webcam iniciada por la persona;
 - sandbox de Broker por turno y herramientas locales siempre confirmadas;
 - área Athena con historial, estado, permisos, revisión, modelo por run y reconexión.
@@ -63,16 +72,18 @@ nativas.
   despliegue consultado.
 - La selección explícita de un modelo Athena solo aparece si el servicio publica más de
   una opción permitida; Athena rechaza nombres no ofrecidos.
-- El empaquetado, firma y pruebas con servicios reales deben registrarse como evidencias de
-  release, no inferirse del código.
+- CI construye MSI/NSIS y extrae el MSI como prueba estructural. La firma, la instalación
+  interactiva y las pruebas con servicios reales deben registrarse como evidencias de release.
 
 ## Comprobaciones
 
 ```powershell
 pnpm.cmd test
+pnpm.cmd test:coverage
 pnpm.cmd typecheck
 pnpm.cmd build
+cargo fmt --check --manifest-path apps/desktop/src-tauri/Cargo.toml
+cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- -D warnings
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
 python -m unittest discover -s tests -v
 ```
-

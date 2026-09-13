@@ -530,10 +530,35 @@ pub async fn resolve_tool_calls(
         }
     }
     let conversation_id = database.task_conversation_id(local_task_id)?;
-    let mut outcomes = Vec::with_capacity(pending.len());
+    // La decisión se guarda antes de ejecutar el primer efecto. Si el proceso
+    // se interrumpe después, la recuperación enviará un resultado explícitamente
+    // incierto y nunca repetirá la acción a ciegas.
+    let durable_decisions = pending
+        .iter()
+        .map(|call| {
+            let approved = decisions_by_id[call.tool_call_id.as_str()];
+            ToolOutcomeRecord {
+                tool_call_id: call.tool_call_id.clone(),
+                status: if approved { "approved" } else { "cancelled" }.to_owned(),
+                content: if approved {
+                    serde_json::json!({"ok": false, "execution_pending": true}).to_string()
+                } else {
+                    serde_json::json!({
+                        "ok": false,
+                        "rejected_by_user": true,
+                        "message": "El usuario rechazó esta acción"
+                    })
+                    .to_string()
+                },
+            }
+        })
+        .collect::<Vec<_>>();
+    database.prepare_tool_outcomes(local_task_id, &durable_decisions)?;
+
     for call in pending {
         let approved = decisions_by_id[call.tool_call_id.as_str()];
-        let (status, content) = if approved {
+        let execution = async {
+            let (status, content) = if approved {
             match call.name.as_str() {
                 "rename_conversation" => {
                     let title = call
@@ -728,13 +753,32 @@ pub async fn resolve_tool_calls(
                 .to_string(),
             )
         };
-        outcomes.push(ToolOutcomeRecord {
-            tool_call_id: call.tool_call_id,
-            status: status.to_owned(),
-            content,
-        });
+            Ok::<ToolOutcomeRecord, AppError>(ToolOutcomeRecord {
+                tool_call_id: call.tool_call_id.clone(),
+                status: status.to_owned(),
+                content,
+            })
+        }
+        .await;
+        match execution {
+            Ok(outcome) => database.update_prepared_tool_outcome(
+                local_task_id,
+                &outcome.tool_call_id,
+                &outcome.content,
+                outcome.status != "approved",
+            )?,
+            Err(error) => database.update_prepared_tool_outcome(
+                local_task_id,
+                &call.tool_call_id,
+                &serde_json::json!({
+                    "ok": false,
+                    "error": error.to_string()
+                })
+                .to_string(),
+                true,
+            )?,
+        }
     }
-    database.prepare_tool_outcomes(local_task_id, &outcomes)?;
     spawn_tool_resume(database.clone(), broker, local_task_id.to_owned());
     database.task_snapshot(local_task_id)
 }
@@ -1271,7 +1315,9 @@ pub(super) fn advance_semantic_chat(
                 )?;
                 let chat_task_id = format!("local_{}", Uuid::new_v4().simple());
                 let idempotency_key = format!("chatygpt:semantic-chat:{}", workflow.id);
-                let mut request = chat_request_with_project_instruction(
+                let inherited_data_classification =
+                    workflow.execution_preferences.data_classification.clone();
+                let mut request = chat_request_with_project_instruction_and_classification(
                     &workflow.conversation_id,
                     &idempotency_key,
                     &workflow.user_text,
@@ -1281,6 +1327,7 @@ pub(super) fn advance_semantic_chat(
                     &memories,
                     workflow.project_instruction.as_ref(),
                     workflow.custom_gpt_context.as_ref(),
+                    Some(&inherited_data_classification),
                     ChatExecutionOptions {
                         tools_enabled: workflow.tools_enabled,
                         sandbox_enabled: workflow.sandbox_enabled,

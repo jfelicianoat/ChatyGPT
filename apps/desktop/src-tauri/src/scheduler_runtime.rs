@@ -48,6 +48,13 @@ pub async fn dispatch_claim(
 
 pub fn start(database: Database, broker: BrokerClient) {
     tauri::async_runtime::spawn(async move {
+        if let Ok(claims) = database.recover_claimed_scheduled_runs() {
+            for claim in claims {
+                if let Err(error) = dispatch_claim(database.clone(), broker.clone(), &claim).await {
+                    let _ = database.fail_scheduled_run(&claim.run_id, &error.to_string());
+                }
+            }
+        }
         loop {
             let _ = database.reconcile_scheduled_runs();
             match database.claim_due_scheduled_task() {

@@ -9,19 +9,25 @@ pub fn start_conversation_summary(
 ) -> Result<ConversationSummaryOverview, AppError> {
     let input =
         database.conversation_summary_input(conversation_id, SUMMARY_INPUT_CHARACTER_BUDGET)?;
-    if input.included_message_count == 0 && input.remaining_message_count == 0 {
+    if !input.has_new_content && input.remaining_message_count == 0 {
         return Err(AppError::Conflict(
             "el resumen aprobado ya cubre todos los mensajes de la conversación".to_owned(),
         ));
     }
-    if input.included_message_count == 0 {
+    if !input.has_new_content {
         return Err(AppError::Conflict(
-            "el siguiente mensaje supera el límite seguro del lote de resumen".to_owned(),
+            "el resumen aprobado ocupa todo el límite seguro del siguiente lote".to_owned(),
         ));
     }
     let transcript_json = serde_json::to_string(&input.messages)
         .map_err(|error| AppError::BrokerContract(error.to_string()))?;
-    let execution_preferences = database.conversation_execution_preferences(conversation_id)?;
+    let mut execution_preferences = database.conversation_execution_preferences(conversation_id)?;
+    let inherited_data_classification =
+        database.context_data_classification(conversation_id, &input.messages)?;
+    preserve_stricter_data_classification(
+        &mut execution_preferences,
+        inherited_data_classification.as_deref(),
+    );
     let source_through_sequence = input.source_through_sequence;
     let summary_id = format!("summary_{}", Uuid::new_v4().simple());
     let local_task_id = format!("local_{}", Uuid::new_v4().simple());
@@ -53,7 +59,8 @@ pub fn start_conversation_summary(
                 "included_message_count": input.included_message_count,
                 "remaining_message_count": input.remaining_message_count,
                 "input_character_count": input.character_count,
-                "input_character_budget": SUMMARY_INPUT_CHARACTER_BUDGET
+                "input_character_budget": SUMMARY_INPUT_CHARACTER_BUDGET,
+                "source_fragments": input.fragments
             }
         },
         "output": {"format": "markdown", "language": "es"},
@@ -72,13 +79,15 @@ pub fn start_conversation_summary(
         },
         "prompt_compression": "off"
     });
-    let record = database.prepare_conversation_summary(
+    let record = database.prepare_conversation_summary_batch(
         conversation_id,
         &summary_id,
         &local_task_id,
         &idempotency_key,
         &request,
         source_through_sequence,
+        input.source_message_id.as_deref(),
+        input.source_character_offset,
     )?;
     spawn_submission_and_poll(database.clone(), broker, record);
     database.conversation_summary_overview(conversation_id)

@@ -35,6 +35,26 @@ struct ChatExecutionOptions {
     execution_preferences: ConversationExecutionPreferences,
 }
 
+fn preserve_stricter_data_classification(
+    preferences: &mut ConversationExecutionPreferences,
+    inherited: Option<&str>,
+) {
+    fn rank(value: &str) -> u8 {
+        match value {
+            "public" => 0,
+            "internal" => 1,
+            "confidential" => 2,
+            "local_only" => 3,
+            _ => 0,
+        }
+    }
+    if let Some(inherited) = inherited {
+        if rank(inherited) > rank(&preferences.data_classification) {
+            preferences.data_classification = inherited.to_owned();
+        }
+    }
+}
+
 const SUMMARY_INPUT_CHARACTER_BUDGET: usize = 48_000;
 const DOCUMENT_CONTEXT_CHUNK_LIMIT: usize = 8;
 const DOCUMENT_CONTEXT_CHARACTER_BUDGET: usize = 24_000;
@@ -307,7 +327,7 @@ pub async fn start_chat_turn(
         ));
     }
     let attachment_ids = effective_attachment_ids.as_slice();
-    let execution_preferences = database.conversation_execution_preferences(conversation_id)?;
+    let mut execution_preferences = database.conversation_execution_preferences(conversation_id)?;
     let custom_gpt_context = database.custom_gpt_for_conversation(conversation_id)?;
     let context_budget = custom_gpt_context_budget(custom_gpt_context.as_ref());
     let attachments = database.ready_attachments_for_turn(conversation_id, attachment_ids)?;
@@ -380,6 +400,12 @@ pub async fn start_chat_turn(
         role: "user".to_owned(),
         text: user_text.to_owned(),
     });
+    let inherited_data_classification =
+        database.context_data_classification(conversation_id, &context)?;
+    preserve_stricter_data_classification(
+        &mut execution_preferences,
+        inherited_data_classification.as_deref(),
+    );
     let project_instruction = database.project_instruction_for_conversation(conversation_id)?;
     let semantic_documents_available = database.attachments_have_semantic_index(attachment_ids)?;
     // El plan se decide antes de persistir nada: si el Broker no anuncia las
@@ -452,7 +478,7 @@ pub async fn start_chat_turn(
     )?;
     let local_task_id = format!("local_{}", Uuid::new_v4().simple());
     let idempotency_key = format!("chatygpt:turn:{}", Uuid::new_v4());
-    let mut request = chat_request_with_project_instruction(
+    let mut request = chat_request_with_project_instruction_and_classification(
         conversation_id,
         &idempotency_key,
         user_text,
@@ -462,6 +488,7 @@ pub async fn start_chat_turn(
         &memories,
         project_instruction.as_ref(),
         custom_gpt_context.as_ref(),
+        inherited_data_classification.as_deref(),
         ChatExecutionOptions {
             tools_enabled,
             sandbox_enabled,

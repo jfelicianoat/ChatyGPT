@@ -1,7 +1,177 @@
 //! Workflows: publicacion que congela la version del GPT y sus ejecuciones.
 
 use super::comunes::{cleanup, test_database};
-use crate::db::{WorkflowEdge, WorkflowNode};
+use crate::db::{CustomGptToolPermissions, WorkflowEdge, WorkflowNode};
+
+#[test]
+fn cancelled_workflow_runs_ignore_late_worker_updates() {
+    let database = test_database();
+    let workflow = database
+        .create_workflow("Flujo cancelable", None)
+        .expect("workflow should be created");
+    database
+        .publish_workflow(&workflow.summary.id)
+        .expect("workflow should publish");
+    let record = database
+        .create_workflow_run(&workflow.summary.id, "Entrada")
+        .expect("workflow run should be created");
+    let node_id = record.definition.nodes[0].id.clone();
+    database
+        .update_workflow_run_status(&record.run_id, "running", None, None)
+        .expect("run should start");
+    database
+        .update_workflow_node_run(
+            &record.run_id,
+            &node_id,
+            "running",
+            Some("Entrada"),
+            None,
+            Some("broker-late"),
+            None,
+        )
+        .expect("node should start");
+
+    database
+        .cancel_workflow_run_locally(&record.run_id)
+        .expect("run should be cancelled");
+    database
+        .update_workflow_node_run(
+            &record.run_id,
+            &node_id,
+            "completed",
+            None,
+            Some("Respuesta tardía"),
+            None,
+            None,
+        )
+        .expect("a stale update is harmless");
+    database
+        .update_workflow_run_status(
+            &record.run_id,
+            "completed",
+            Some(&serde_json::json!({"late": true})),
+            None,
+        )
+        .expect("a stale run update is harmless");
+
+    let view = database
+        .workflow_run(&record.run_id)
+        .expect("cancelled run should load");
+    assert_eq!(view.status, "cancelled");
+    assert!(view
+        .outputs
+        .as_object()
+        .is_some_and(|value| value.is_empty()));
+    assert_eq!(
+        view.node_runs
+            .iter()
+            .find(|node| node.node_id == node_id)
+            .expect("input node should exist")
+            .status,
+        "cancelled"
+    );
+    cleanup(&database);
+}
+
+#[test]
+fn broad_workflow_profile_resolves_all_thirty_published_memories() {
+    let database = test_database();
+    let gpt = database
+        .create_custom_gpt_with_icon(
+            "Contexto amplio",
+            None,
+            None,
+            "Usa todo el conocimiento autorizado.",
+            &[],
+            &CustomGptToolPermissions::default(),
+            None,
+            None,
+            None,
+            Some("broad"),
+        )
+        .expect("broad GPT should be created");
+    for index in 0..30 {
+        database
+            .create_custom_gpt_memory_item(
+                &gpt.id,
+                &format!("Dato autorizado número {index}"),
+                "fact",
+                "normal",
+            )
+            .expect("knowledge should be created");
+    }
+    let mut workflow = database
+        .create_workflow("Contexto amplio publicado", None)
+        .expect("workflow should be created");
+    let input_id = workflow.definition.nodes[0].id.clone();
+    let result_id = workflow.definition.nodes[1].id.clone();
+    workflow.definition.nodes.push(WorkflowNode {
+        id: "wide-gpt".to_owned(),
+        kind: "custom_gpt".to_owned(),
+        label: "Amplio".to_owned(),
+        x: 350.0,
+        y: 170.0,
+        custom_gpt_id: Some(gpt.id.clone()),
+        custom_gpt_version_id: None,
+        custom_gpt_name: None,
+        custom_gpt_icon_ref: None,
+        custom_gpt_instructions: None,
+        preferred_model: None,
+        execution_profile: None,
+        context_profile: "balanced".to_owned(),
+        custom_gpt_memory_ids: Vec::new(),
+        custom_gpt_attachment_ids: Vec::new(),
+        instruction: None,
+        attachment_ids: Vec::new(),
+    });
+    workflow.definition.edges = vec![
+        WorkflowEdge {
+            id: "wide-in".to_owned(),
+            source: input_id,
+            target: "wide-gpt".to_owned(),
+        },
+        WorkflowEdge {
+            id: "wide-out".to_owned(),
+            source: "wide-gpt".to_owned(),
+            target: result_id,
+        },
+    ];
+    database
+        .update_workflow(
+            &workflow.summary.id,
+            &workflow.summary.name,
+            None,
+            None,
+            &workflow.definition,
+        )
+        .expect("workflow should save");
+    database
+        .publish_workflow(&workflow.summary.id)
+        .expect("workflow should publish");
+    let record = database
+        .create_workflow_run(&workflow.summary.id, "Comprueba el contexto")
+        .expect("published version should be executable");
+    let frozen = record
+        .definition
+        .nodes
+        .iter()
+        .find(|node| node.id == "wide-gpt")
+        .expect("GPT node should exist");
+    assert_eq!(frozen.context_profile, "broad");
+    assert_eq!(frozen.custom_gpt_memory_ids.len(), 30);
+    assert_eq!(
+        database
+            .custom_gpt_memories_for_workflow(
+                &gpt.id,
+                &frozen.custom_gpt_memory_ids,
+                &frozen.context_profile,
+            )
+            .expect("all published broad knowledge should resolve")
+            .len(),
+        30
+    );
+    cleanup(&database);
+}
 
 #[test]
 fn workflow_publication_freezes_gpt_version_and_creates_durable_node_runs() {
@@ -140,6 +310,19 @@ fn workflow_publication_freezes_gpt_version_and_creates_durable_node_runs() {
             .len(),
         1
     );
+    database
+        .update_memory_item(
+            &project_memory_id,
+            "La revisión ahora se entrega en otro idioma.",
+            "instruction",
+            "normal",
+            Some(&project.id),
+        )
+        .expect("project memory should be editable");
+    assert!(database
+        .project_memories_for_workflow(frozen_project)
+        .expect("changed project memories should be revoked")
+        .is_empty());
     assert!(frozen_gpt.custom_gpt_version_id.is_some());
     assert_eq!(frozen_gpt.custom_gpt_icon_ref.as_deref(), Some("spark"));
     assert_eq!(
@@ -153,7 +336,11 @@ fn workflow_publication_freezes_gpt_version_and_creates_durable_node_runs() {
     );
     assert_eq!(
         database
-            .custom_gpt_memories_for_workflow(&gpt.id, &frozen_gpt.custom_gpt_memory_ids)
+            .custom_gpt_memories_for_workflow(
+                &gpt.id,
+                &frozen_gpt.custom_gpt_memory_ids,
+                &frozen_gpt.context_profile,
+            )
             .expect("published knowledge should resolve")
             .len(),
         1
@@ -237,7 +424,11 @@ fn workflow_publication_freezes_gpt_version_and_creates_durable_node_runs() {
         .remove_custom_gpt_file(&gpt.id, &gpt_file.id)
         .expect("file should be removed from the GPT");
     assert!(database
-        .custom_gpt_memories_for_workflow(&gpt.id, &frozen_gpt.custom_gpt_memory_ids)
+        .custom_gpt_memories_for_workflow(
+            &gpt.id,
+            &frozen_gpt.custom_gpt_memory_ids,
+            &frozen_gpt.context_profile,
+        )
         .expect("revoked knowledge should be ignored")
         .is_empty());
     assert!(database

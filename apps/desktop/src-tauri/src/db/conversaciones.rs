@@ -345,23 +345,32 @@ impl Database {
         character_limit: usize,
     ) -> Result<Vec<ContextMessage>, AppError> {
         let connection = self.connect()?;
-        let approved_summary: Option<(String, String, i64)> = connection
+        let approved_summary: Option<(String, String, i64, Option<String>, usize)> = connection
             .query_row(
-                "SELECT id, approved_text, source_through_sequence
+                "SELECT id, approved_text, source_through_sequence,
+                        source_message_id, source_character_offset
                  FROM conversation_summaries
                  WHERE conversation_id = ?1 AND status = 'approved'
                  LIMIT 1",
                 params![conversation_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get::<_, i64>(4)? as usize,
+                    ))
+                },
             )
             .optional()?;
         let source_through_sequence = approved_summary
             .as_ref()
-            .map(|(_, _, sequence)| *sequence)
+            .map(|(_, _, sequence, _, _)| *sequence)
             .unwrap_or(0);
         let summary_characters = approved_summary
             .as_ref()
-            .map(|(_, text, _)| text.chars().count())
+            .map(|(_, text, _, _, _)| text.chars().count())
             .unwrap_or(0);
         let message_character_limit = character_limit.saturating_sub(summary_characters);
         let mut statement = connection.prepare(
@@ -393,6 +402,14 @@ impl Database {
             )?
             .collect::<Result<Vec<_>, _>>()?;
         newest_first.reverse();
+        if let Some((_, _, _, Some(partial_message_id), partial_offset)) = &approved_summary {
+            if let Some(message) = newest_first
+                .iter_mut()
+                .find(|message| message.message_id == *partial_message_id)
+            {
+                message.text = message.text.chars().skip(*partial_offset).collect();
+            }
+        }
 
         let mut selected = Vec::new();
         let mut used = 0_usize;
@@ -417,7 +434,7 @@ impl Database {
             selected.push(message);
         }
         selected.reverse();
-        if let Some((summary_id, summary_text, _)) = approved_summary {
+        if let Some((summary_id, summary_text, _, _, _)) = approved_summary {
             selected.insert(
                 0,
                 ContextMessage {
@@ -430,25 +447,90 @@ impl Database {
         Ok(selected)
     }
 
+    /// Conserva la clasificación más restrictiva de los turnos de los que
+    /// procede una ventana de contexto. También reconoce un resumen aprobado
+    /// mediante la tarea que lo generó.
+    pub fn context_data_classification(
+        &self,
+        conversation_id: &str,
+        context: &[ContextMessage],
+    ) -> Result<Option<String>, AppError> {
+        fn rank(value: &str) -> u8 {
+            match value {
+                "public" => 0,
+                "internal" => 1,
+                "confidential" => 2,
+                "local_only" => 3,
+                _ => 0,
+            }
+        }
+
+        let connection = self.connect()?;
+        let mut statement = connection.prepare(
+            "SELECT json_extract(bt.request_json, '$.risk.data_classification')
+             FROM broker_tasks bt
+             LEFT JOIN conversation_summaries cs ON cs.broker_task_id = bt.id
+             WHERE bt.conversation_id = ?1
+               AND (
+                 bt.request_message_id = ?2
+                 OR bt.response_message_id = ?2
+                 OR cs.id = ?2
+               )",
+        )?;
+        let mut strongest: Option<String> = None;
+        for source in context {
+            let classifications = statement
+                .query_map(params![conversation_id, source.message_id], |row| {
+                    row.get::<_, Option<String>>(0)
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            for classification in classifications.into_iter().flatten() {
+                if strongest
+                    .as_deref()
+                    .is_none_or(|current| rank(&classification) > rank(current))
+                {
+                    strongest = Some(classification);
+                }
+            }
+        }
+        Ok(strongest)
+    }
+
     pub fn conversation_summary_input(
         &self,
         conversation_id: &str,
         character_budget: usize,
     ) -> Result<ConversationSummaryInput, AppError> {
         let connection = self.connect()?;
-        let approved_summary: Option<(String, String, i64)> = connection
+        let approved_summary: Option<(String, String, i64, Option<String>, usize)> = connection
             .query_row(
-                "SELECT id, approved_text, source_through_sequence
+                "SELECT id, approved_text, source_through_sequence,
+                        source_message_id, source_character_offset
                  FROM conversation_summaries
                  WHERE conversation_id = ?1 AND status = 'approved'
                  LIMIT 1",
                 params![conversation_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get::<_, i64>(4)? as usize,
+                    ))
+                },
             )
             .optional()?;
         let previous_source_through_sequence = approved_summary
             .as_ref()
-            .map(|(_, _, sequence)| *sequence)
+            .map(|(_, _, sequence, _, _)| *sequence)
+            .unwrap_or(0);
+        let previous_source_message_id = approved_summary
+            .as_ref()
+            .and_then(|(_, _, _, message_id, _)| message_id.clone());
+        let previous_source_character_offset = approved_summary
+            .as_ref()
+            .map(|(_, _, _, _, offset)| *offset)
             .unwrap_or(0);
         let mut statement = connection.prepare(
             "SELECT m.id, m.role, mp.content_text, m.sequence_no
@@ -481,7 +563,11 @@ impl Database {
         let mut messages = Vec::new();
         let mut character_count = 0_usize;
         let mut source_through_sequence = previous_source_through_sequence;
-        if let Some((summary_id, summary_text, _)) = approved_summary {
+        let mut source_message_id = previous_source_message_id.clone();
+        let mut source_character_offset = previous_source_character_offset;
+        let mut fragments = Vec::new();
+        let mut has_new_content = false;
+        if let Some((summary_id, summary_text, _, _, _)) = approved_summary {
             character_count = summary_text.chars().count();
             messages.push(ContextMessage {
                 message_id: summary_id,
@@ -489,23 +575,64 @@ impl Database {
                 text: summary_text,
             });
         }
-        let base_context_count = messages.len();
-        for (message, sequence) in rows {
+        let mut included_message_count = 0_i64;
+        for (mut message, sequence) in rows {
             let message_characters = message.text.chars().count();
-            if character_count.saturating_add(message_characters) > character_budget {
+            let start_character =
+                if previous_source_message_id.as_deref() == Some(message.message_id.as_str()) {
+                    previous_source_character_offset
+                } else {
+                    0
+                };
+            if start_character > message_characters {
+                return Err(AppError::Conflict(format!(
+                    "el cursor del resumen supera la longitud del mensaje {}",
+                    message.message_id
+                )));
+            }
+            let available = character_budget.saturating_sub(character_count);
+            if available == 0 {
                 break;
             }
-            character_count += message_characters;
-            source_through_sequence = sequence;
+            let remaining_characters = message_characters - start_character;
+            let included_characters = remaining_characters.min(available);
+            let end_character = start_character + included_characters;
+            message.text = message
+                .text
+                .chars()
+                .skip(start_character)
+                .take(included_characters)
+                .collect();
+            character_count += included_characters;
+            has_new_content |= included_characters > 0;
+            fragments.push(ConversationSummaryFragment {
+                message_id: message.message_id.clone(),
+                start_character,
+                end_character,
+                total_characters: message_characters,
+            });
             messages.push(message);
+            if end_character == message_characters {
+                source_through_sequence = sequence;
+                source_message_id = None;
+                source_character_offset = 0;
+                included_message_count += 1;
+            } else {
+                source_message_id = fragments.last().map(|fragment| fragment.message_id.clone());
+                source_character_offset = end_character;
+                break;
+            }
         }
-        let included_message_count = (messages.len() - base_context_count) as i64;
         Ok(ConversationSummaryInput {
             messages,
             source_through_sequence,
+            source_message_id,
+            source_character_offset,
             included_message_count,
             remaining_message_count: total_message_count - included_message_count,
             character_count,
+            has_new_content,
+            fragments,
         })
     }
 }

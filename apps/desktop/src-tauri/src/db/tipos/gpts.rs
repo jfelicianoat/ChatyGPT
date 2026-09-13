@@ -29,6 +29,8 @@ pub struct ConversationSummaryRevision {
     pub draft_text: Option<String>,
     pub approved_text: Option<String>,
     pub source_through_sequence: i64,
+    pub source_message_id: Option<String>,
+    pub source_character_offset: usize,
     pub broker_task_id: Option<String>,
     pub updated_at: String,
 }
@@ -48,9 +50,22 @@ pub struct ConversationSummaryOverview {
 pub struct ConversationSummaryInput {
     pub messages: Vec<ContextMessage>,
     pub source_through_sequence: i64,
+    pub source_message_id: Option<String>,
+    pub source_character_offset: usize,
     pub included_message_count: i64,
     pub remaining_message_count: i64,
     pub character_count: usize,
+    pub has_new_content: bool,
+    pub fragments: Vec<ConversationSummaryFragment>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationSummaryFragment {
+    pub message_id: String,
+    pub start_character: usize,
+    pub end_character: usize,
+    pub total_characters: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

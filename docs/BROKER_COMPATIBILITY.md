@@ -1,6 +1,6 @@
 # Compatibilidad de ChatyGPT con AI Broker
 
-Revisión: **6 de septiembre de 2026** (contrato 2.10).
+Revisión: **13 de septiembre de 2026** (contrato 2.10).
 
 Este documento describe al cliente ChatyGPT. No es la especificación de AI Broker ni
 autoriza cambios en ese proyecto.
@@ -56,12 +56,12 @@ crece y se rompe en silencio.
 **Artefactos (§8.3).** `list_task_artifacts` y `save_task_artifact` recogen los
 ficheros que produce una tarea. El entregable se identifica por `final: true`, no
 por `artifact_type`, y un `410` al descargar se distingue de un `404`: el fichero
-existió y se borró a propósito.
+existió y se borró a propósito. La respuesta IPC se convierte explícitamente a
+`camelCase`, la descarga tiene límite y su SHA-256 se valida antes de conservarla.
 
-**Limitación conocida.** Las imágenes que devuelve un modelo llegan como
-artefactos `image_output` y la interfaz todavía no las pinta. Se registran en el
-log al completarse la tarea (`task.image_artifacts_pending`) y se pueden recoger
-con `save_task_artifact`, pero no aparecen solas en la conversación.
+**Presentación.** Las imágenes que devuelve un modelo llegan como artefactos
+`image_output`; cada respuesta completada ofrece **Ver ficheros generados** para
+consultarlas y guardarlas. No se incrustan automáticamente dentro del Markdown.
 
 **El diagnóstico lo dice.** `content_exclusivity` y `demonstrable_execution` en
 `BrokerDiagnostic` responden si este Broker puede prometer esas dos cosas.

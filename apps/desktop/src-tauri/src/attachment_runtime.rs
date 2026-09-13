@@ -430,9 +430,15 @@ pub async fn store_broker_artifact(
     attachments_dir: PathBuf,
     display_name: String,
     bytes: Vec<u8>,
+    expected_sha256: Option<String>,
 ) -> Result<String, AppError> {
     let stored = tauri::async_runtime::spawn_blocking(move || {
-        write_managed_bytes(&attachments_dir, &display_name, &bytes)
+        write_managed_bytes(
+            &attachments_dir,
+            &display_name,
+            &bytes,
+            expected_sha256.as_deref(),
+        )
     })
     .await
     .map_err(|error| AppError::DataDirectory(error.to_string()))??;
@@ -443,6 +449,7 @@ fn write_managed_bytes(
     root: &Path,
     display_name: &str,
     bytes: &[u8],
+    expected_sha256: Option<&str>,
 ) -> Result<ImportedFile, AppError> {
     if bytes.is_empty() {
         return Err(AppError::Validation("el artefacto está vacío".to_owned()));
@@ -469,10 +476,27 @@ fn write_managed_bytes(
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     let sha256 = format!("{:x}", hasher.finalize());
+    if let Some(expected) = expected_sha256.filter(|value| !value.trim().is_empty()) {
+        if expected.len() != 64 || !expected.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(AppError::BrokerContract(
+                "el Broker anunció una huella SHA-256 no válida".to_owned(),
+            ));
+        }
+        if !sha256.eq_ignore_ascii_case(expected) {
+            return Err(AppError::BrokerContract(
+                "la descarga no coincide con la huella SHA-256 anunciada por el Broker".to_owned(),
+            ));
+        }
+    }
     let target_dir = root.join(&sha256);
     let target = target_dir.join(&safe_name);
     fs::create_dir_all(&target_dir).map_err(|error| AppError::DataDirectory(error.to_string()))?;
-    if !target.exists() {
+    let existing_is_valid = target
+        .exists()
+        .then(|| file_sha256(&target))
+        .transpose()?
+        .is_some_and(|existing| existing == sha256);
+    if !existing_is_valid {
         let temporary = root.join(format!(".artifact-{}.tmp", Uuid::new_v4().simple()));
         let mut output =
             File::create(&temporary).map_err(|error| AppError::DataDirectory(error.to_string()))?;
@@ -482,6 +506,9 @@ fn write_managed_bytes(
         output
             .sync_all()
             .map_err(|error| AppError::DataDirectory(error.to_string()))?;
+        if target.exists() {
+            fs::remove_file(&target).map_err(|error| AppError::DataDirectory(error.to_string()))?;
+        }
         fs::rename(&temporary, &target)
             .map_err(|error| AppError::DataDirectory(error.to_string()))?;
     }
@@ -493,6 +520,22 @@ fn write_managed_bytes(
         size_bytes: bytes.len() as u64,
         sha256,
     })
+}
+
+fn file_sha256(path: &Path) -> Result<String, AppError> {
+    let mut file = File::open(path).map_err(|error| AppError::DataDirectory(error.to_string()))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|error| AppError::DataDirectory(error.to_string()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 fn copy_into_managed_storage(root: &Path, source: &Path) -> Result<ImportedFile, AppError> {

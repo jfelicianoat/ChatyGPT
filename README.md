@@ -5,14 +5,15 @@ sin acoplar la interfaz a su API HTTP.
 
 ## Estado
 
-Producto local en evolución, revisado contra el código el **23 de agosto de 2026**.
+Producto local en evolución, revisado contra el código el **13 de septiembre de 2026**
+(versión 0.2.0, esquema SQLite 24).
 Las fases 0 a 4 son cortes históricos de entrega, no una versión del producto. El estado
 normativo y los límites actuales están en [`docs/CURRENT_STATE.md`](docs/CURRENT_STATE.md).
 La base durable, los GPTs personales, la investigación y el cliente Athena incluyen:
 
 - shell Tauri 2 + React + TypeScript;
 - SQLite local con migración inicial y recuperación de tareas activas;
-- adaptador tipado con petición baseline AI Broker 2.8 y lectura aditiva 2.9;
+- adaptador tipado compatible con AI Broker 2.10 y lectura de contratos anteriores;
 - descubrimiento automático al arrancar de salud, carriles, frontera de datos,
   sandbox, ingesta y soporte de documentos largos;
 - recorrido durable opcional: persistir, enviar, sondear, cancelar y recuperar;
@@ -120,7 +121,7 @@ La base durable, los GPTs personales, la investigación y el cliente Athena incl
 - comprobación redundante de la capacidad `sandbox_run_code` antes de persistir y enviar la tarea;
 - aviso explícito cuando el mensaje pide ejecutar o probar código sin haber concedido todavía el permiso;
 - privacidad, estrategia, profundidad, coste máximo y tratamiento de documentos largos configurables por conversación;
-- selección entre modelos locales y proveedores cloud habilitados, gobernada únicamente por la clasificación de datos del contrato 2.8;
+- selección entre modelos locales y proveedores cloud habilitados, gobernada por la clasificación de datos del contrato Broker;
 - presupuesto duro por petición (0, 0,10, 0,50 o 1 USD) y protección automática que conserva en local los recuerdos sensibles;
 - respuesta directa, decisión automática del Broker o análisis en equipo, limitados a las capacidades y presets que anuncia el Broker;
 - map-reduce explícito para adjuntos que no caben, sin truncado silencioso;
@@ -151,7 +152,7 @@ La base durable, los GPTs personales, la investigación y el cliente Athena incl
 - resúmenes de conversación generados como borradores durables, editables y nunca activados automáticamente;
 - aprobación explícita del resumen antes de compactar el contexto, sin borrar ni modificar el historial original;
 - resumen aprobado visible y explicado en el inspector exacto de contexto de cada respuesta;
-- actualización incremental del resumen en lotes seguros de hasta 48.000 caracteres, reutilizando el resumen aprobado y sin reenviar todo el historial;
+- actualización incremental del resumen en lotes seguros de hasta 48.000 caracteres, con cursor durable dentro de mensajes mayores, reutilizando el resumen aprobado y sin reenviar todo el historial;
 - cobertura visible de mensajes resumidos y pendientes, con los mensajes recientes fuera del lote conservados en la ventana normal;
 - registro estructurado local con correlación por tarea, incapaz por construcción
   de contener prompts, rutas ni secretos, con rotación acotada;
@@ -300,6 +301,9 @@ Configuración no secreta:
 
 - `CHATYGPT_BROKER_BASE_URL`, por defecto `http://192.168.1.52:8765` para evitar
   que el ejecutable publicado intente usar por error el loopback de este equipo.
+- `CHATYGPT_ATHENA_PREFERRED_MODEL` y `CHATYGPT_ATHENA_ALLOWED_MODELS` permiten
+  sustituir el perfil de modelos probado sin editar los scripts. El lanzador
+  respeta las tres variables cuando están definidas.
 
 Para la instancia personal verificada en `A9_Mega`, antes de iniciar Tauri:
 
@@ -366,7 +370,7 @@ Servicio Athena:
   servicio conectado, basta con escribir el objetivo, elegir la carpeta
   autorizada y pulsar **Lanzar**.
 
-Compatibilidad con AI Broker 2.8/2.9:
+Compatibilidad con AI Broker 2.10:
 
 - La especificación de cliente vigente es [Client_API.md](../docs/Client_API.md).
 - Las capacidades nuevas son aditivas. Si no pueden verificarse, ChatyGPT avisa

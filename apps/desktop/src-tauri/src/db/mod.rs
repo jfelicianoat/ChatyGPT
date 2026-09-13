@@ -55,9 +55,11 @@ const SCHEDULED_WORKFLOWS_MIGRATION: &str =
 const REMOTE_OPERATION_START_METRIC_MIGRATION: &str =
     include_str!("../../migrations/0022_remote_operation_start_metric.sql");
 const ATHENA_RUNS_MIGRATION: &str = include_str!("../../migrations/0023_athena_runs.sql");
+const SUMMARY_FRAGMENTS_MIGRATION: &str =
+    include_str!("../../migrations/0024_summary_fragments.sql");
 const RECOVER_NON_TERMINAL_TASKS: &str =
     include_str!("../../queries/recover_non_terminal_tasks.sql");
-pub const SCHEMA_VERSION: i64 = 23;
+pub const SCHEMA_VERSION: i64 = 24;
 
 #[derive(Clone)]
 pub struct Database {

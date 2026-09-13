@@ -84,6 +84,7 @@ import {
   type ScheduledRunPageView,
   type ScheduledTaskTemplateView,
   type ScheduledTaskView,
+  type TaskArtifact,
   type PerformanceReportView,
   type WindowsStartupStatus
 } from "./domain";
@@ -121,6 +122,7 @@ import { VistaPreviaGpt } from "./paneles/VistaPreviaGpt";
 import { ResumenConversacion } from "./paneles/ResumenConversacion";
 import { ConocimientoProyecto } from "./paneles/ConocimientoProyecto";
 import { WorkflowStudio } from "./WorkflowStudio";
+import { MessageArtifacts } from "./MessageArtifacts";
 import { dialogCopy, type DialogState } from "./dialogs";
 import { describeError } from "./errors";
 import { useMemoria } from "./memoria/useMemoria";
@@ -275,9 +277,9 @@ export function App() {
   const [smokeTask, setSmokeTask] = useState<Loadable<LocalTaskSnapshot> | null>(null);
   /** Ficheros que produjo la tarea (contrato 2.10, 8.3). Empieza como "idle"
    *  porque no se piden solos: son otra petición al Broker. */
-  const [taskArtifacts, setTaskArtifacts] = useState<Loadable<TaskArtifact[]>>({
-    state: "idle"
-  });
+  const [taskArtifacts, setTaskArtifacts] = useState<
+    Loadable<TaskArtifact[]> | { state: "idle" }
+  >({ state: "idle" });
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [projectKnowledge, setProjectKnowledge] =
     useState<Loadable<ProjectKnowledgeOverview> | null>(null);
@@ -2924,6 +2926,9 @@ export function App() {
                       message.brokerTaskId &&
                       message.status !== "pending" && (
                         <>
+                          {message.status === "complete" && (
+                            <MessageArtifacts localTaskId={message.brokerTaskId} />
+                          )}
                           <button
                             className="context-toggle"
                             onClick={() => void toggleTaskContext(message.brokerTaskId!)}

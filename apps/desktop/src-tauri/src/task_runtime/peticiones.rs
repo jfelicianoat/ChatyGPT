@@ -287,6 +287,7 @@ pub(super) fn chat_request(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(super) fn chat_request_with_project_instruction(
     conversation_id: &str,
     idempotency_key: &str,
@@ -297,6 +298,35 @@ pub(super) fn chat_request_with_project_instruction(
     memories: &[MemoryItemView],
     project_instruction: Option<&ProjectInstructionContext>,
     custom_gpt_context: Option<&CustomGptContext>,
+    options: ChatExecutionOptions,
+) -> Result<serde_json::Value, AppError> {
+    chat_request_with_project_instruction_and_classification(
+        conversation_id,
+        idempotency_key,
+        user_text,
+        context,
+        attachments,
+        document_chunks,
+        memories,
+        project_instruction,
+        custom_gpt_context,
+        None,
+        options,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn chat_request_with_project_instruction_and_classification(
+    conversation_id: &str,
+    idempotency_key: &str,
+    user_text: &str,
+    context: &[crate::db::ContextMessage],
+    attachments: &[AttachmentRecord],
+    document_chunks: &[SelectedAttachmentChunk],
+    memories: &[MemoryItemView],
+    project_instruction: Option<&ProjectInstructionContext>,
+    custom_gpt_context: Option<&CustomGptContext>,
+    inherited_data_classification: Option<&str>,
     options: ChatExecutionOptions,
 ) -> Result<serde_json::Value, AppError> {
     let ChatExecutionOptions {
@@ -749,6 +779,12 @@ pub(super) fn chat_request_with_project_instruction(
         } else {
             execution_preferences.data_classification.as_str()
         };
+    let data_classification = match inherited_data_classification {
+        Some("local_only") => "local_only",
+        Some("confidential") if !matches!(data_classification, "local_only") => "confidential",
+        Some("internal") if data_classification == "public" => "internal",
+        _ => data_classification,
+    };
     Ok(json!({
         "idempotency_key": idempotency_key,
         "request_id": format!("chatygpt_turn_{}", Uuid::new_v4().simple()),

@@ -9,6 +9,7 @@
  */
 
 import type { ScheduledCalendarOccurrence, ScheduledTaskView } from "./domain";
+import { scheduledDateInZone, scheduledDayKey } from "./scheduledTime";
 
 /** Clave versionada de la marca local de avisos leídos. */
 export const SCHEDULER_READ_NOTIFICATIONS_KEY = "chatygpt.scheduler.readNotifications.v1";
@@ -151,7 +152,8 @@ export function validateScheduleDraft(
     at: string;
     confirmed: boolean;
   },
-  now: Date = new Date()
+  now: Date = new Date(),
+  timezone = resolvedSchedulerTimezone()
 ): ScheduleDraftValidation {
   if (
     !draft.name.trim() ||
@@ -162,8 +164,8 @@ export function validateScheduleDraft(
   ) {
     return { status: "incomplete" };
   }
-  const dueAt = new Date(draft.at);
-  if (Number.isNaN(dueAt.getTime()) || dueAt.getTime() <= now.getTime()) {
+  const dueAt = scheduledDateInZone(draft.at, timezone);
+  if (!dueAt || dueAt.getTime() <= now.getTime()) {
     return { status: "invalid-date", message: "Elige una fecha y hora futuras." };
   }
   return { status: "valid", dueAtIso: dueAt.toISOString() };
@@ -211,18 +213,18 @@ export function schedulerCalendarDays(
   const days = new Map<string, SchedulerCalendarDay>();
   for (const item of occurrences) {
     const date = new Date(item.startsAt);
+    const zonedKey = scheduledDayKey(date, item.timezone);
     const key = item.overdue
       ? "overdue"
-      : `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(
-          date.getDate()
-        ).padStart(2, "0")}`;
+      : zonedKey ?? item.startsAt;
     const label = item.overdue
       ? "Pendientes atrasadas"
       : date.toLocaleDateString("es-ES", {
-          weekday: "long",
-          day: "numeric",
-          month: "long"
-        });
+        weekday: "long",
+        day: "numeric",
+        month: "long",
+        timeZone: item.timezone
+      });
     const day = days.get(key) ?? { key, label, items: [] };
     day.items.push(item);
     days.set(key, day);

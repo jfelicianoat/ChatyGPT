@@ -9,7 +9,7 @@
 //! es admisible es una función pura que puede probarse exhaustivamente sin
 //! red, y es donde vive la seguridad.
 
-use std::net::{IpAddr, ToSocketAddrs};
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 
 use reqwest::{blocking::Client as BlockingClient, Client};
 use serde::Serialize;
@@ -125,6 +125,9 @@ fn reject_private_address(address: IpAddr) -> Result<(), AppError> {
             v4.is_loopback() || v4.is_private() || v4.is_link_local() || v4.is_unspecified()
         }
         IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return reject_private_address(IpAddr::V4(v4));
+            }
             v6.is_loopback()
                 || v6.is_unspecified()
                 // Direcciones únicas locales (fc00::/7), el equivalente a las privadas de IPv4.
@@ -139,6 +142,44 @@ fn reject_private_address(address: IpAddr) -> Result<(), AppError> {
         ));
     }
     Ok(())
+}
+
+fn reject_private_destinations(addresses: &[SocketAddr]) -> Result<(), AppError> {
+    if addresses.is_empty() {
+        return Err(AppError::BrokerTransport(
+            "el destino no resolvió ninguna dirección".to_owned(),
+        ));
+    }
+    for address in addresses {
+        reject_private_address(address.ip())?;
+    }
+    Ok(())
+}
+
+async fn validate_resolved_destination(url: &Url) -> Result<(), AppError> {
+    let host = url
+        .host_str()
+        .ok_or_else(|| AppError::Validation("la URL indicada no tiene servidor".to_owned()))?
+        .to_owned();
+    let port = url.port_or_known_default().unwrap_or(80);
+    let addresses = tauri::async_runtime::spawn_blocking(move || {
+        (host.as_str(), port)
+            .to_socket_addrs()
+            .map(|items| items.collect::<Vec<_>>())
+    })
+    .await
+    .map_err(|error| AppError::BrokerTransport(error.to_string()))?
+    .map_err(|error| {
+        AppError::BrokerTransport(format!("no se pudo resolver el destino: {error}"))
+    })?;
+    reject_private_destinations(&addresses)
+}
+
+fn redirect_target(current: &Url, location: &str) -> Result<Url, AppError> {
+    let target = current.join(location).map_err(|_| {
+        AppError::Validation("la redirección contiene una URL no válida".to_owned())
+    })?;
+    validate_fetch_url(target.as_str())
 }
 
 /// Reduce un HTML a texto legible.
@@ -176,10 +217,9 @@ pub fn extract_readable_text(html: &str, limit: usize) -> (String, bool) {
 
 /// Título del documento, si lo declara.
 pub fn extract_title(html: &str) -> Option<String> {
-    let lower = html.to_lowercase();
-    let start = lower.find("<title")?;
-    let open_end = lower[start..].find('>')? + start + 1;
-    let end = lower[open_end..].find("</title>")? + open_end;
+    let start = find_ascii_case_insensitive(html, 0, "<title")?;
+    let open_end = html[start..].find('>')? + start + 1;
+    let end = find_ascii_case_insensitive(html, open_end, "</title>")?;
     let title = collapse_whitespace(&decode_basic_entities(&html[open_end..end]));
     if title.is_empty() {
         None
@@ -197,21 +237,31 @@ fn strip_blocks(html: &str) -> String {
 }
 
 fn strip_tag_blocks(html: &str, tag: &str) -> String {
-    let lower = html.to_lowercase();
     let open = format!("<{tag}");
     let close = format!("</{tag}>");
     let mut result = String::with_capacity(html.len());
     let mut cursor = 0;
-    while let Some(start) = lower[cursor..].find(&open) {
-        let start = cursor + start;
+    while let Some(start) = find_ascii_case_insensitive(html, cursor, &open) {
         result.push_str(&html[cursor..start]);
-        match lower[start..].find(&close) {
-            Some(end) => cursor = start + end + close.len(),
+        match find_ascii_case_insensitive(html, start, &close) {
+            Some(end) => cursor = end + close.len(),
             None => return result,
         }
     }
     result.push_str(&html[cursor..]);
     result
+}
+
+/// Busca sintaxis HTML ASCII sin transformar el texto. Convertir todo el HTML
+/// a minúsculas puede cambiar su longitud en bytes (por ejemplo, `İ`) y vuelve
+/// inválidos los índices al aplicarlos después sobre la cadena original.
+fn find_ascii_case_insensitive(haystack: &str, from: usize, needle: &str) -> Option<usize> {
+    haystack
+        .as_bytes()
+        .get(from..)?
+        .windows(needle.len())
+        .position(|window| window.eq_ignore_ascii_case(needle.as_bytes()))
+        .map(|offset| from + offset)
 }
 
 fn decode_basic_entities(text: &str) -> String {
@@ -235,7 +285,9 @@ pub fn web_client() -> Result<Client, AppError> {
     Client::builder()
         .connect_timeout(std::time::Duration::from_secs(5))
         .timeout(std::time::Duration::from_secs(FETCH_TIMEOUT_SECONDS))
-        .redirect(reqwest::redirect::Policy::limited(MAX_REDIRECTS))
+        // Cada salto se sigue manualmente en `fetch_url`: así se valida su
+        // destino literal y su resolución DNS antes de abrir la conexión.
+        .redirect(reqwest::redirect::Policy::none())
         .user_agent(concat!("ChatyGPT/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|error| AppError::BrokerTransport(error.to_string()))
@@ -357,29 +409,54 @@ pub fn external_api_get_with_auth(
 
 /// Abre una página y devuelve su texto.
 pub async fn fetch_url(client: &Client, raw_url: &str) -> Result<FetchedPage, AppError> {
-    let url = validate_fetch_url(raw_url)?;
-    let response = client
-        .get(url.clone())
-        .send()
-        .await
-        .map_err(|error| AppError::BrokerTransport(error.to_string()))?;
-    let final_url = response.url().to_string();
+    let mut url = validate_fetch_url(raw_url)?;
+    let mut followed_redirects = 0;
+    let mut response = loop {
+        validate_resolved_destination(&url).await?;
+        let response = client
+            .get(url.clone())
+            .send()
+            .await
+            .map_err(|error| AppError::BrokerTransport(error.to_string()))?;
+        if !response.status().is_redirection() {
+            break response;
+        }
+        if followed_redirects >= MAX_REDIRECTS {
+            return Err(AppError::Validation(format!(
+                "la página supera el máximo de {MAX_REDIRECTS} redirecciones"
+            )));
+        }
+        let location = response
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .ok_or_else(|| {
+                AppError::Validation("la redirección no indica un destino válido".to_owned())
+            })?;
+        url = redirect_target(&url, location)?;
+        followed_redirects += 1;
+    };
+    let final_url = url.to_string();
     let status = response.status();
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|error| AppError::BrokerTransport(error.to_string()))?;
     if !status.is_success() {
         return Err(AppError::BrokerResponse {
             status: status.as_u16(),
             message: format!("la página respondió HTTP {}", status.as_u16()),
         });
     }
-    if bytes.len() > MAX_FETCH_BYTES {
-        return Err(AppError::Validation(format!(
-            "la página supera el límite local de {} MB",
-            MAX_FETCH_BYTES / (1024 * 1024)
-        )));
+    let mut bytes = Vec::with_capacity(MAX_FETCH_BYTES.min(64 * 1024));
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| AppError::BrokerTransport(error.to_string()))?
+    {
+        if bytes.len().saturating_add(chunk.len()) > MAX_FETCH_BYTES {
+            return Err(AppError::Validation(format!(
+                "la página supera el límite local de {} MB",
+                MAX_FETCH_BYTES / (1024 * 1024)
+            )));
+        }
+        bytes.extend_from_slice(&chunk);
     }
     let body = String::from_utf8_lossy(&bytes);
     let (text, truncated) = extract_readable_text(&body, MAX_FETCH_CHARACTERS);
@@ -394,10 +471,12 @@ pub async fn fetch_url(client: &Client, raw_url: &str) -> Result<FetchedPage, Ap
 #[cfg(test)]
 mod tests {
     use super::{
-        extract_readable_text, extract_title, validate_external_api_url, validate_fetch_url,
-        MAX_FETCH_CHARACTERS,
+        extract_readable_text, extract_title, redirect_target, reject_private_destinations,
+        validate_external_api_url, validate_fetch_url, MAX_FETCH_CHARACTERS,
     };
     use crate::error::AppError;
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use url::Url;
 
     #[test]
     fn only_web_addresses_are_opened() {
@@ -449,6 +528,8 @@ mod tests {
             "http://[::1]/",
             "http://[fe80::1]/",
             "http://[fc00::1]/",
+            "http://[::ffff:127.0.0.1]/",
+            "http://[::ffff:192.168.1.52]/",
         ] {
             assert!(
                 validate_fetch_url(address).is_err(),
@@ -457,6 +538,17 @@ mod tests {
         }
         // Una dirección pública sí se abre.
         assert!(validate_fetch_url("http://93.184.216.34/").is_ok());
+    }
+
+    #[test]
+    fn dns_results_and_redirect_targets_cannot_reach_private_networks() {
+        let loopback = [SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 80)];
+        assert!(reject_private_destinations(&loopback).is_err());
+
+        let public = Url::parse("https://example.org/article").unwrap();
+        assert!(redirect_target(&public, "/next").is_ok());
+        assert!(redirect_target(&public, "http://127.0.0.1/private").is_err());
+        assert!(redirect_target(&public, "http://[::ffff:127.0.0.1]/private").is_err());
     }
 
     #[test]
@@ -511,5 +603,16 @@ mod tests {
         );
         assert!(extract_title("<html><body>sin título</body></html>").is_none());
         assert!(extract_title("<title></title>").is_none());
+    }
+
+    #[test]
+    fn unicode_before_html_tags_never_invalidates_byte_boundaries() {
+        assert_eq!(
+            extract_title("İ<TITLE>éxito</TITLE>").as_deref(),
+            Some("éxito")
+        );
+        let (text, _) = extract_readable_text("İ<script>oculto</script>é", 100);
+        assert_eq!(text, "İé");
+        assert!(!text.contains("oculto"));
     }
 }

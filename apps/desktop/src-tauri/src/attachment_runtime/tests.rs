@@ -5,7 +5,7 @@
 
 use super::{
     chunk_markdown, copy_into_managed_storage, import_attachment, recover_at_start,
-    retry_attachment, store_captured_image, ATTACHMENT_CHUNK_CHARACTERS,
+    retry_attachment, store_captured_image, write_managed_bytes, ATTACHMENT_CHUNK_CHARACTERS,
 };
 use crate::broker::simulated::{
     accepted_file, accepted_task, file_state, task_state, ScriptedResponse, SimulatedBroker,
@@ -21,6 +21,30 @@ use uuid::Uuid;
 
 /// Margen para que la ingesta asíncrona se asiente sin colgar la suite.
 const SETTLE_TIMEOUT: Duration = Duration::from_secs(20);
+
+#[test]
+fn broker_artifact_hash_is_checked_and_a_tampered_cached_copy_is_repaired() {
+    let root = std::env::temp_dir().join(format!(
+        "chatygpt-artifact-integrity-{}",
+        Uuid::new_v4().simple()
+    ));
+    let bytes = "contenido íntegro".as_bytes();
+    let expected = format!("{:x}", Sha256::digest(bytes));
+    let stored = write_managed_bytes(&root, "informe.txt", bytes, Some(&expected))
+        .expect("matching artifact should be stored");
+    std::fs::write(&stored.path, b"contenido alterado").expect("cache should be tampered");
+    let repaired = write_managed_bytes(&root, "informe.txt", bytes, Some(&expected))
+        .expect("a valid fresh download should repair the cached copy");
+    assert_eq!(std::fs::read(&repaired.path).unwrap(), bytes);
+
+    let wrong = "0".repeat(64);
+    let error = match write_managed_bytes(&root, "otro.txt", bytes, Some(&wrong)) {
+        Ok(_) => panic!("a mismatching Broker hash must be rejected"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("no coincide"));
+    let _ = std::fs::remove_dir_all(root);
+}
 
 struct IngestionFixture {
     database: Database,

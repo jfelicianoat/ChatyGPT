@@ -275,7 +275,8 @@ impl Database {
                  started_at = COALESCE(started_at, datetime('now')),
                  completed_at = CASE WHEN ?5 THEN datetime('now') ELSE completed_at END,
                  updated_at = datetime('now')
-             WHERE id = ?1",
+             WHERE id = ?1
+               AND status NOT IN ('completed', 'partial_failed', 'failed', 'cancelled')",
             params![
                 run_id,
                 status,
@@ -308,7 +309,8 @@ impl Database {
                  started_at = CASE WHEN ?3 = 'running' THEN COALESCE(started_at, datetime('now')) ELSE started_at END,
                  completed_at = CASE WHEN ?8 THEN datetime('now') ELSE completed_at END,
                  updated_at = datetime('now')
-             WHERE run_id = ?1 AND node_id = ?2",
+             WHERE run_id = ?1 AND node_id = ?2
+               AND status NOT IN ('completed', 'failed', 'skipped', 'cancelled')",
             params![
                 run_id,
                 node_id,

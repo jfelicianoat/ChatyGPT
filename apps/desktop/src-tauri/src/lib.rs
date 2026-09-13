@@ -11,6 +11,7 @@ mod scheduler_runtime;
 mod secrets;
 mod startup;
 mod task_runtime;
+mod timezone;
 mod workflow_runtime;
 
 use broker::{BrokerClient, BrokerDiagnostic};

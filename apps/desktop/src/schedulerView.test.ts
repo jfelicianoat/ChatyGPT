@@ -12,6 +12,7 @@ import {
   SCHEDULER_READ_NOTIFICATIONS_KEY,
   schedulerReadNotificationsExist
 } from "./schedulerView";
+import { scheduledTimeValueInZone } from "./scheduledTime";
 
 describe("hora local de una automatización", () => {
   it("usa la hora de pared del equipo, no UTC", () => {
@@ -29,6 +30,30 @@ describe("hora local de una automatización", () => {
     const now = new Date(2026, 7, 5, 23, 30);
     // Cruza la medianoche correctamente en vez de quedarse en el mismo día.
     expect(defaultScheduledLocalTime(now)).toBe("2026-08-06T00:30");
+  });
+
+  it("convierte y presenta la hora usando la zona guardada", () => {
+    const validation = validateScheduleDraft(
+      {
+        name: "Resumen",
+        conversationId: "conversation-1",
+        prompt: "Resume",
+        at: "2026-07-01T10:00",
+        confirmed: true
+      },
+      new Date("2026-06-01T00:00:00.000Z"),
+      "Atlantic/Canary"
+    );
+    expect(validation).toEqual({
+      status: "valid",
+      dueAtIso: "2026-07-01T09:00:00.000Z"
+    });
+    expect(
+      scheduledTimeValueInZone(
+        new Date("2026-07-01T09:00:00.000Z"),
+        "Atlantic/Canary"
+      )
+    ).toBe("2026-07-01T10:00");
   });
 });
 

@@ -11,7 +11,10 @@ use super::{
     replace_bounded_authorized_text, validate_sandbox_capability, ChatExecutionOptions,
     ResearchPlan,
 };
-use super::{cancel_task, recover_at_start, resolve_tool_calls, start_chat_turn, ToolDecision};
+use super::{
+    cancel_task, recover_at_start, resolve_tool_calls, start_chat_turn, start_conversation_summary,
+    ToolDecision,
+};
 use crate::broker::simulated::{
     accepted_task, completed_chat_result, failed_task_state, task_state, waiting_for_tools_state,
     ScriptedResponse, SimulatedBroker,
@@ -23,6 +26,7 @@ use crate::db::{
     SelectedAttachmentChunk,
 };
 use crate::error::AppError;
+use rusqlite::Connection;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -69,6 +73,209 @@ fn send_turn(database: &Database, broker: &BrokerClient, conversation_id: &str) 
     ))
     .expect("el turno debe persistirse y lanzarse")
     .id
+}
+
+fn persist_local_only_answer(database: &Database, conversation_id: &str) {
+    database
+        .prepare_chat_turn(
+            conversation_id,
+            "private-user",
+            "private-assistant",
+            "private-task",
+            "private-key",
+            "Lee mi documento local",
+            &json!({"risk": {"data_classification": "local_only"}}),
+            &[],
+            &[],
+            &[],
+            &[],
+        )
+        .expect("el turno privado debe persistirse");
+    let completed = task_state(
+        "private-remote",
+        "completed",
+        Some(json!({"result_markdown": "DATO_PRIVADO_DE_ARCHIVO_LOCAL"})),
+    );
+    database
+        .record_remote_state(
+            "private-task",
+            &serde_json::from_value(completed).expect("estado remoto válido"),
+        )
+        .expect("la respuesta privada debe materializarse");
+}
+
+#[test]
+fn local_only_history_keeps_the_next_turn_local_only() {
+    let database = integration_database();
+    let conversation = database
+        .create_conversation("Privacidad", None)
+        .expect("conversación");
+    persist_local_only_answer(&database, &conversation.id);
+    let simulated = SimulatedBroker::start();
+    simulated.always(
+        "POST /api/v1/tasks",
+        ScriptedResponse::accepted(accepted_task("next-private")),
+    );
+    simulated.always(
+        "GET /api/v1/tasks/{id}",
+        ScriptedResponse::ok(task_state("next-private", "running", None)),
+    );
+    let broker = BrokerClient::for_base_url(simulated.base_url()).expect("cliente");
+
+    let snapshot = tauri::async_runtime::block_on(start_chat_turn(
+        database.clone(),
+        broker,
+        &conversation.id,
+        "Resúmelo",
+        &[],
+        false,
+        false,
+        false,
+        false,
+    ))
+    .expect("el turno debe prepararse");
+    let request = database
+        .task_record(&snapshot.id)
+        .expect("tarea persistida")
+        .request;
+
+    assert!(request["content"]["prompt"]
+        .as_str()
+        .is_some_and(|prompt| prompt.contains("DATO_PRIVADO_DE_ARCHIVO_LOCAL")));
+    assert_eq!(request["risk"]["data_classification"], "local_only");
+    cleanup(&database);
+}
+
+#[test]
+fn local_only_history_keeps_a_generated_summary_local_only() {
+    let database = integration_database();
+    let conversation = database
+        .create_conversation("Resumen privado", None)
+        .expect("conversación");
+    persist_local_only_answer(&database, &conversation.id);
+    let simulated = SimulatedBroker::start();
+    let broker = BrokerClient::for_base_url(simulated.base_url()).expect("cliente");
+
+    let overview = start_conversation_summary(database.clone(), broker, &conversation.id)
+        .expect("el resumen debe prepararse");
+    let task_id = overview
+        .candidate
+        .and_then(|candidate| candidate.broker_task_id)
+        .expect("tarea de resumen");
+    let request = database
+        .task_record(&task_id)
+        .expect("tarea persistida")
+        .request;
+
+    assert!(request["content"]["prompt"]
+        .as_str()
+        .is_some_and(|prompt| prompt.contains("DATO_PRIVADO_DE_ARCHIVO_LOCAL")));
+    assert_eq!(request["risk"]["data_classification"], "local_only");
+    cleanup(&database);
+}
+
+#[test]
+fn tool_decisions_are_durable_before_any_approved_effect_runs() {
+    let database = integration_database();
+    let conversation = database
+        .create_conversation("Antes", None)
+        .expect("conversación");
+    database
+        .prepare_chat_turn(
+            &conversation.id,
+            "durable-user",
+            "durable-assistant",
+            "durable-tools-task",
+            "durable-tools-key",
+            "Renombra y lee",
+            &json!({}),
+            &[],
+            &[],
+            &[],
+            &[],
+        )
+        .expect("turno");
+    let mut waiting = task_state("durable-remote", "waiting_for_tools", None);
+    waiting["result"] = json!({
+        "status": "waiting_for_tools",
+        "pending_tool_calls": [
+            {"id": "a-rename", "name": "rename_conversation", "arguments": {"title": "YA CAMBIÓ"}},
+            {"id": "z-read", "name": "read_authorized_file", "arguments": {"folder_id": "inexistente", "relative_path": "nota.txt"}}
+        ]
+    });
+    database
+        .record_remote_state(
+            "durable-tools-task",
+            &serde_json::from_value(waiting).expect("estado válido"),
+        )
+        .expect("herramientas pendientes");
+    Connection::open(database.path())
+        .expect("conexión")
+        .execute(
+            "UPDATE tool_calls SET requested_at = CASE remote_tool_call_id
+             WHEN 'a-rename' THEN '2020-01-01' ELSE '2020-01-02' END
+             WHERE broker_task_id = 'durable-tools-task'",
+            [],
+        )
+        .expect("orden reproducible");
+    let broker = BrokerClient::for_base_url("http://127.0.0.1:9").expect("cliente");
+
+    tauri::async_runtime::block_on(resolve_tool_calls(
+        database.clone(),
+        broker,
+        &std::env::temp_dir(),
+        "durable-tools-task",
+        &[
+            ToolDecision {
+                tool_call_id: "a-rename".to_owned(),
+                approved: true,
+            },
+            ToolDecision {
+                tool_call_id: "z-read".to_owned(),
+                approved: true,
+            },
+        ],
+    ))
+    .expect("un fallo local se devuelve al modelo como resultado de herramienta");
+
+    assert_eq!(
+        database
+            .conversation_view(&conversation.id)
+            .expect("conversación")
+            .title,
+        "YA CAMBIÓ"
+    );
+    assert!(database
+        .pending_tool_calls("durable-tools-task")
+        .expect("pendientes")
+        .is_empty());
+    let prepared = database
+        .prepared_tool_results("durable-tools-task")
+        .expect("resultados durables");
+    let results = prepared["tool_results"].as_array().expect("resultados");
+    assert_eq!(results.len(), 2);
+    assert!(results.iter().any(|result| {
+        result["tool_call_id"] == "a-rename"
+            && result["content"]
+                .as_str()
+                .is_some_and(|content| content.contains("YA CAMBIÓ"))
+    }));
+    assert!(results.iter().any(|result| {
+        result["tool_call_id"] == "z-read"
+            && result["content"]
+                .as_str()
+                .is_some_and(|content| content.contains("error"))
+    }));
+    let resolved: i64 = Connection::open(database.path())
+        .expect("conexión")
+        .query_row(
+            "SELECT COUNT(*) FROM confirmation_requests WHERE status = 'allowed_once'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("confirmaciones");
+    assert_eq!(resolved, 2);
+    cleanup(&database);
 }
 
 /// Al arrancar se cierra lo que quedó pausado y aquí ya se dio por perdido.

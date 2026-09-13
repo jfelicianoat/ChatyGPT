@@ -87,6 +87,32 @@ jobs:
       - name: Construcción de producción del frontend
         run: pnpm build
 
+      - name: Construir instaladores de escritorio
+        run: pnpm tauri build
+
+      - name: Extraer el MSI como prueba de instalación
+        shell: pwsh
+        run: |
+          $msi = Get-ChildItem "apps/desktop/src-tauri/target/release/bundle/msi/*.msi" | Select-Object -First 1
+          if (-not $msi) { throw "Tauri no produjo el MSI" }
+          $target = Join-Path $env:RUNNER_TEMP "chatygpt-msi-smoke"
+          $process = Start-Process msiexec.exe -Wait -PassThru -ArgumentList @(
+            "/a", $msi.FullName, "/qn", "TARGETDIR=$target"
+          )
+          if ($process.ExitCode -ne 0) { throw "El MSI no se pudo extraer: $($process.ExitCode)" }
+          if (-not (Get-ChildItem $target -Recurse -Filter "chatygpt.exe")) {
+            throw "El MSI no contiene chatygpt.exe"
+          }
+
+      - name: Conservar instaladores verificables
+        uses: actions/upload-artifact@v4
+        with:
+          name: chatygpt-windows-installers
+          path: |
+            apps/desktop/src-tauri/target/release/bundle/msi/*.msi
+            apps/desktop/src-tauri/target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error
+
       - name: Instalar dependencias de las pruebas de Python
         run: python -m pip install -r tests/requirements.txt
 

@@ -23,6 +23,8 @@ use tokio::time::sleep;
 use super::contracts::{EventoRuntime, MarcoEstado, MensajeFlujo};
 use super::AthenaClient;
 use crate::error::AppError;
+
+const MAX_SSE_BUFFER_BYTES: usize = 1_048_576;
 use crate::logging;
 
 /// Cuánto esperar entre intentos de reconexión.
@@ -201,16 +203,32 @@ impl FlujoEventos {
         }
 
         let mut respuesta = respuesta;
-        let mut pendiente = String::new();
+        let mut pendiente = Vec::new();
         while let Some(trozo) = respuesta
             .chunk()
             .await
             .map_err(|error| AppError::AthenaTransport(error.to_string()))?
         {
-            pendiente.push_str(&String::from_utf8_lossy(&trozo));
-            while let Some(corte) = pendiente.find("\n\n") {
-                let marco = pendiente[..corte].to_owned();
-                pendiente.drain(..corte + 2);
+            pendiente.extend_from_slice(&trozo);
+            if pendiente.len() > MAX_SSE_BUFFER_BYTES {
+                return Err(AppError::AthenaContract(
+                    "el flujo SSE superó el límite local sin cerrar un evento".to_owned(),
+                ));
+            }
+            while let Some((fin_marco, fin_separador)) = siguiente_marco_sse(&pendiente) {
+                let bytes = pendiente[..fin_marco].to_vec();
+                pendiente.drain(..fin_separador);
+                let marco = match String::from_utf8(bytes) {
+                    Ok(marco) => marco,
+                    Err(_) => {
+                        logging::warn(
+                            "athena.sse_frame_invalid_utf8",
+                            None,
+                            &[("run", logging::id(&self.run_id))],
+                        );
+                        continue;
+                    }
+                };
                 let Some(mensaje) = self.interpretar_marco(&marco) else {
                     continue;
                 };
@@ -228,11 +246,7 @@ impl FlujoEventos {
     /// el flujo: que Athena publique un evento nuevo no debe dejar la interfaz
     /// a oscuras.
     fn interpretar_marco(&mut self, marco: &str) -> Option<MensajeFlujo> {
-        let datos: String = marco
-            .lines()
-            .filter_map(|linea| linea.strip_prefix("data: "))
-            .collect::<Vec<_>>()
-            .join("\n");
+        let datos = datos_sse(marco);
         if datos.is_empty() {
             return None;
         }
@@ -274,9 +288,70 @@ impl FlujoEventos {
     }
 }
 
+fn datos_sse(marco: &str) -> String {
+    marco
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .lines()
+        .filter_map(|linea| {
+            linea
+                .strip_prefix("data:")
+                .map(|valor| valor.strip_prefix(' ').unwrap_or(valor))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn siguiente_marco_sse(buffer: &[u8]) -> Option<(usize, usize)> {
+    let mut inicio_linea = 0_usize;
+    let mut indice = 0_usize;
+    while indice < buffer.len() {
+        let largo_salto = match buffer[indice] {
+            b'\n' => 1,
+            b'\r' if buffer.get(indice + 1) == Some(&b'\n') => 2,
+            b'\r' => 1,
+            _ => {
+                indice += 1;
+                continue;
+            }
+        };
+        let siguiente = indice + largo_salto;
+        if indice == inicio_linea {
+            return Some((inicio_linea, siguiente));
+        }
+        inicio_linea = siguiente;
+        indice = siguiente;
+    }
+    None
+}
+
 enum Continuacion {
     /// El manejador dijo que ya no quiere más.
     Terminado,
     /// El servidor cerró la conexión; procede reconectar.
     Cortado,
+}
+
+#[cfg(test)]
+mod parser_tests {
+    use super::{datos_sse, siguiente_marco_sse};
+
+    #[test]
+    fn sse_frames_accept_crlf_no_space_and_split_utf8() {
+        let completo = "event: event\r\ndata:{\"text\":\"café\"}\r\n\r\n".as_bytes();
+        let corte_utf8 = completo
+            .windows(2)
+            .position(|bytes| bytes == [0xc3, 0xa9])
+            .expect("the frame should contain a multibyte character")
+            + 1;
+        let mut pendiente = Vec::new();
+        pendiente.extend_from_slice(&completo[..corte_utf8]);
+        assert!(siguiente_marco_sse(&pendiente).is_none());
+        pendiente.extend_from_slice(&completo[corte_utf8..]);
+        let (fin, separador) = siguiente_marco_sse(&pendiente).expect("frame should complete");
+        let marco = String::from_utf8(pendiente[..fin].to_vec()).expect("UTF-8 should survive");
+        assert!(marco.contains("data:{\"text\":\"café\"}"));
+        assert_eq!(datos_sse(&marco), "{\"text\":\"café\"}");
+        assert_eq!(separador, completo.len());
+    }
 }

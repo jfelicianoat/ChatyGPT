@@ -1,3 +1,9 @@
+# Auditoría histórica del 1 de septiembre de 2026
+
+> Este informe describe el repositorio de aquella fecha. No es un diagnóstico vigente.
+> Consulte [CURRENT_STATE.md](../CURRENT_STATE.md) y el
+> [cierre del 13 de septiembre](../REMEDIATION_2026-09-13.md) antes de reutilizar un hallazgo.
+
 # Resumen ejecutivo
 - Proyecto de escritorio Windows local-first con Tauri 2, Rust, React 19, TypeScript y SQLite.
 - La frontera de confianza está bien planteada: React no posee secretos ni acceso directo a SQLite/Broker; Rust concentra persistencia, red, filesystem y secretos.

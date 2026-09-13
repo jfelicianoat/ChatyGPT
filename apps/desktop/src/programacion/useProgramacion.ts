@@ -38,6 +38,7 @@ import {
   schedulerReadNotificationsExist,
   validateScheduleDraft
 } from "../schedulerView";
+import { scheduledTimeValueInZone } from "../scheduledTime";
 
 /**
  * @param bootstrapListo si el arranque de la aplicacion ya termino; hasta
@@ -53,6 +54,7 @@ export function useProgramacion(bootstrapListo: boolean) {
   const [scheduleConversationId, setScheduleConversationId] = useState("");
   const [schedulePrompt, setSchedulePrompt] = useState("");
   const [scheduleAt, setScheduleAt] = useState(defaultScheduledLocalTime);
+  const [scheduleTimezone, setScheduleTimezone] = useState(resolvedSchedulerTimezone);
   const [scheduleExpression, setScheduleExpression] =
     useState<ScheduledTaskView["scheduleExpression"]>("once");
   const [scheduleConfirmed, setScheduleConfirmed] = useState(false);
@@ -218,7 +220,7 @@ export function useProgramacion(bootstrapListo: boolean) {
       prompt: schedulePrompt,
       at: scheduleAt,
       confirmed: scheduleConfirmed
-    });
+    }, new Date(), scheduleTimezone);
     if (validation.status === "incomplete") return;
     setScheduleBusyId("create");
     setScheduleError(null);
@@ -227,16 +229,14 @@ export function useProgramacion(bootstrapListo: boolean) {
       if (validation.status === "invalid-date") {
         throw new Error(validation.message);
       }
-      const dueAt = new Date(validation.dueAtIso);
-      const timezone = resolvedSchedulerTimezone();
       if (scheduleEditingId) {
         await platform.updateScheduledTask(
           scheduleEditingId,
           scheduleName.trim(),
           scheduleConversationId,
           schedulePrompt.trim(),
-          dueAt.toISOString(),
-          timezone,
+          validation.dueAtIso,
+          scheduleTimezone,
           scheduleExpression
         );
       } else {
@@ -244,8 +244,8 @@ export function useProgramacion(bootstrapListo: boolean) {
           scheduleName.trim(),
           scheduleConversationId,
           schedulePrompt.trim(),
-          dueAt.toISOString(),
-          timezone,
+          validation.dueAtIso,
+          scheduleTimezone,
           scheduleExpression
         );
       }
@@ -256,6 +256,7 @@ export function useProgramacion(bootstrapListo: boolean) {
       setScheduleName("");
       setSchedulePrompt("");
       setScheduleAt(defaultScheduledLocalTime());
+      setScheduleTimezone(resolvedSchedulerTimezone());
       setScheduleExpression("once");
       setScheduleConfirmed(false);
       setScheduleEditingId(null);
@@ -283,9 +284,11 @@ export function useProgramacion(bootstrapListo: boolean) {
     setScheduleExpression(task.scheduleExpression);
     setScheduleAt(
       task.nextRunAt
-        ? scheduledLocalTimeValue(new Date(task.nextRunAt))
+        ? scheduledTimeValueInZone(new Date(task.nextRunAt), task.timezone) ??
+          scheduledLocalTimeValue(new Date(task.nextRunAt))
         : defaultScheduledLocalTime()
     );
+    setScheduleTimezone(task.timezone);
     setScheduleConfirmed(false);
     setScheduleError(null);
     setScheduleNotice(
@@ -305,6 +308,7 @@ export function useProgramacion(bootstrapListo: boolean) {
     setSchedulePrompt(duplicate.prompt);
     setScheduleExpression(duplicate.scheduleExpression);
     setScheduleAt(defaultScheduledLocalTime());
+    setScheduleTimezone(task.timezone);
     setScheduleConfirmed(duplicate.confirmed);
     setScheduleError(null);
     setScheduleNotice(
@@ -321,6 +325,7 @@ export function useProgramacion(bootstrapListo: boolean) {
     setScheduleName("");
     setSchedulePrompt("");
     setScheduleAt(defaultScheduledLocalTime());
+    setScheduleTimezone(resolvedSchedulerTimezone());
     setScheduleExpression("once");
     setScheduleConfirmed(false);
     setScheduleNotice(null);
@@ -720,6 +725,7 @@ export function useProgramacion(bootstrapListo: boolean) {
     scheduleNotice,
     schedulePrompt,
     scheduleSearchQuery,
+    scheduleTimezone,
     scheduledHistoryPage,
     scheduledHistoryPageNumber,
     scheduledHistoryPageSize,

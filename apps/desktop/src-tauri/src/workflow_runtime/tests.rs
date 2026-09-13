@@ -3,7 +3,7 @@
 //! Viven aparte desde que el fichero paso de mil lineas: separarlas deja
 //! la logica a la vista sin cambiar una sola linea de codigo.
 
-use super::{decide_approval, start, validate_definition};
+use super::{cancel, decide_approval, start, validate_definition};
 use crate::broker::simulated::{accepted_task, task_state, ScriptedResponse, SimulatedBroker};
 use crate::broker::BrokerClient;
 use crate::db::{
@@ -12,6 +12,64 @@ use crate::db::{
 };
 use std::time::{Duration, Instant};
 use uuid::Uuid;
+
+#[test]
+fn remote_cancellation_failures_are_reported_without_reopening_the_run() {
+    let simulated = SimulatedBroker::start();
+    simulated.always("DELETE /api/v1/tasks/{id}", ScriptedResponse::transient());
+    let path = std::env::temp_dir().join(format!(
+        "chatygpt-workflow-cancel-{}.sqlite",
+        Uuid::new_v4().simple()
+    ));
+    let database = Database::open(&path).expect("database should open");
+    let client = BrokerClient::for_base_url(simulated.base_url()).expect("client should open");
+    let workflow = database
+        .create_workflow("Flujo cancelable", None)
+        .expect("workflow should be created");
+    database
+        .publish_workflow(&workflow.summary.id)
+        .expect("workflow should publish");
+    let record = database
+        .create_workflow_run(&workflow.summary.id, "Entrada")
+        .expect("workflow run should be created");
+    let node_id = record.definition.nodes[0].id.clone();
+    database
+        .update_workflow_run_status(&record.run_id, "running", None, None)
+        .expect("run should start");
+    database
+        .update_workflow_node_run(
+            &record.run_id,
+            &node_id,
+            "running",
+            Some("Entrada"),
+            None,
+            Some("broker-cancel"),
+            None,
+        )
+        .expect("node should start");
+
+    let error = tauri::async_runtime::block_on(cancel(database.clone(), client, &record.run_id))
+        .expect_err("the remote failure must be visible to the caller");
+    assert!(
+        error.to_string().contains("cancelación remota"),
+        "message: {error}"
+    );
+    assert_eq!(
+        database
+            .workflow_run(&record.run_id)
+            .expect("run should load")
+            .status,
+        "cancelled"
+    );
+    assert_eq!(
+        simulated
+            .requests_to("DELETE", "/api/v1/tasks/broker-cancel")
+            .len(),
+        1
+    );
+    drop(database);
+    let _ = std::fs::remove_file(path);
+}
 
 fn node(id: &str, kind: &str) -> WorkflowNode {
     WorkflowNode {
@@ -102,12 +160,41 @@ fn cycles_are_rejected_before_any_broker_task_exists() {
 }
 
 #[test]
-fn a_published_flow_executes_and_materializes_its_result() {
+fn duplicate_result_labels_are_rejected_before_publication() {
+    let mut first = node("out-a", "result");
+    first.label = "Resultado".to_owned();
+    let mut second = node("out-b", "result");
+    second.label = " resultado ".to_owned();
+    let definition = WorkflowDefinition {
+        nodes: vec![node("input", "input"), first, second],
+        edges: vec![
+            WorkflowEdge {
+                id: "e1".to_owned(),
+                source: "input".to_owned(),
+                target: "out-a".to_owned(),
+            },
+            WorkflowEdge {
+                id: "e2".to_owned(),
+                source: "input".to_owned(),
+                target: "out-b".to_owned(),
+            },
+        ],
+        project_context: None,
+    };
+
+    let error = validate_definition(&definition)
+        .expect_err("two visible result labels must not collapse into one output key");
+    assert!(error.to_string().contains("nombre distinto"));
+}
+
+#[test]
+fn a_transient_poll_failure_is_retried_before_materializing_the_result() {
     let simulated = SimulatedBroker::start();
     simulated.always(
         "POST /api/v1/tasks",
         ScriptedResponse::accepted(accepted_task("workflow-task")),
     );
+    simulated.script("GET /api/v1/tasks/{id}", ScriptedResponse::transient());
     simulated.always(
         "GET /api/v1/tasks/{id}",
         ScriptedResponse::ok(task_state(
@@ -175,6 +262,91 @@ fn a_published_flow_executes_and_materializes_its_result() {
         );
         std::thread::sleep(Duration::from_millis(50));
     }
+    assert_eq!(
+        simulated
+            .requests_to("GET", "/api/v1/tasks/workflow-task")
+            .len(),
+        2
+    );
+    assert!(simulated
+        .requests_to("DELETE", "/api/v1/tasks/workflow-task")
+        .is_empty());
+    drop(database);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn exhausted_poll_retries_cancel_the_remote_work_before_failing() {
+    let simulated = SimulatedBroker::start();
+    simulated.always(
+        "POST /api/v1/tasks",
+        ScriptedResponse::accepted(accepted_task("unreachable-task")),
+    );
+    simulated.always("GET /api/v1/tasks/{id}", ScriptedResponse::transient());
+    simulated.always(
+        "DELETE /api/v1/tasks/{id}",
+        ScriptedResponse::ok(task_state("unreachable-task", "cancelled", None)),
+    );
+    let path = std::env::temp_dir().join(format!(
+        "chatygpt-workflow-poll-exhausted-{}.sqlite",
+        Uuid::new_v4().simple()
+    ));
+    let database = Database::open(&path).expect("database should open");
+    let client = BrokerClient::for_base_url(simulated.base_url()).expect("client should open");
+    let mut workflow = database
+        .create_workflow("Flujo sin sondeo", None)
+        .expect("workflow should be created");
+    let input_id = workflow.definition.nodes[0].id.clone();
+    let result_id = workflow.definition.nodes[1].id.clone();
+    workflow.definition.nodes.push(node("prompt", "prompt"));
+    workflow.definition.edges = vec![
+        WorkflowEdge {
+            id: "e1".to_owned(),
+            source: input_id,
+            target: "prompt".to_owned(),
+        },
+        WorkflowEdge {
+            id: "e2".to_owned(),
+            source: "prompt".to_owned(),
+            target: result_id,
+        },
+    ];
+    database
+        .update_workflow(
+            &workflow.summary.id,
+            &workflow.summary.name,
+            None,
+            None,
+            &workflow.definition,
+        )
+        .expect("workflow should save");
+    database
+        .publish_workflow(&workflow.summary.id)
+        .expect("workflow should publish");
+
+    let run = start(database.clone(), client, &workflow.summary.id, "Entrada")
+        .expect("workflow should start");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let current = database.workflow_run(&run.id).expect("run should load");
+        if current.status == "failed" {
+            break;
+        }
+        assert!(Instant::now() < deadline, "workflow should settle");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(
+        simulated
+            .requests_to("GET", "/api/v1/tasks/unreachable-task")
+            .len(),
+        6
+    );
+    assert_eq!(
+        simulated
+            .requests_to("DELETE", "/api/v1/tasks/unreachable-task")
+            .len(),
+        1
+    );
     drop(database);
     let _ = std::fs::remove_file(path);
 }

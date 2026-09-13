@@ -14,6 +14,7 @@ impl Database {
                 | OpenFlags::SQLITE_OPEN_CREATE
                 | OpenFlags::SQLITE_OPEN_FULL_MUTEX,
         )?;
+        Self::reject_future_schema(&connection)?;
         connection.busy_timeout(std::time::Duration::from_secs(5))?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
         connection.pragma_update(None, "journal_mode", "WAL")?;
@@ -23,6 +24,7 @@ impl Database {
     }
 
     pub(super) fn migrate(connection: &mut Connection) -> Result<(), AppError> {
+        Self::reject_future_schema(connection)?;
         let current: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
         if current < 1 {
             let transaction = connection.transaction()?;
@@ -174,11 +176,28 @@ impl Database {
             transaction.commit()?;
         }
         let current: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if current < SCHEMA_VERSION {
+        if current < 23 {
             let transaction = connection.transaction()?;
             transaction.execute_batch(ATHENA_RUNS_MIGRATION)?;
+            transaction.pragma_update(None, "user_version", 23)?;
+            transaction.commit()?;
+        }
+        let current: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        if current < SCHEMA_VERSION {
+            let transaction = connection.transaction()?;
+            transaction.execute_batch(SUMMARY_FRAGMENTS_MIGRATION)?;
             transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             transaction.commit()?;
+        }
+        Ok(())
+    }
+
+    fn reject_future_schema(connection: &Connection) -> Result<(), AppError> {
+        let current: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        if current > SCHEMA_VERSION {
+            return Err(AppError::Conflict(format!(
+                "la base de datos usa el esquema {current}, pero esta versión de ChatyGPT solo entiende hasta el {SCHEMA_VERSION}; actualiza la aplicación o restaura una copia compatible"
+            )));
         }
         Ok(())
     }

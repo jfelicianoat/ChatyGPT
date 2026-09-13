@@ -174,6 +174,15 @@ pub struct WorkflowProjectContext {
     pub instructions: Option<String>,
     #[serde(default)]
     pub memory_ids: Vec<String>,
+    #[serde(default)]
+    pub memory_fingerprints: Vec<WorkflowMemoryFingerprint>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowMemoryFingerprint {
+    pub id: String,
+    pub sha256: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

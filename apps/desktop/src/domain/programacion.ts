@@ -142,12 +142,15 @@ export type ScheduledCalendarOccurrence = {
 
 const nextScheduledOccurrence = (
   current: Date,
-  scheduleExpression: ScheduledTaskView["scheduleExpression"]
+  scheduleExpression: ScheduledTaskView["scheduleExpression"],
+  timezone: string
 ): Date | null => {
   if (scheduleExpression === "once") return null;
-  const next = new Date(current);
-  next.setDate(next.getDate() + (scheduleExpression === "daily" ? 1 : 7));
-  return next;
+  return nextScheduledDateInZone(
+    current,
+    timezone,
+    scheduleExpression === "daily" ? 1 : 7
+  );
 };
 
 export const scheduledCalendarOccurrences = (
@@ -189,7 +192,7 @@ export const scheduledCalendarOccurrences = (
         });
         if (overdue) includedOverdue = true;
       }
-      const next = nextScheduledOccurrence(startsAt, task.scheduleExpression);
+      const next = nextScheduledOccurrence(startsAt, task.scheduleExpression, task.timezone);
       if (!next) break;
       startsAt = next;
       projected = true;
@@ -468,3 +471,4 @@ export type ScheduledCalendarExportReport = {
   overwritten: boolean;
   eventCount: number;
 };
+import { nextScheduledDateInZone } from "../scheduledTime";

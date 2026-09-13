@@ -2,6 +2,14 @@
 
 use super::*;
 
+pub(crate) fn workflow_memory_budget(context_profile: &str) -> (usize, usize) {
+    match context_profile {
+        "focused" => (5, 2_000),
+        "broad" => (30, 16_000),
+        _ => (20, 8_000),
+    }
+}
+
 impl Database {
     pub fn ready_workflow_attachments(
         &self,
@@ -102,10 +110,12 @@ impl Database {
         &self,
         custom_gpt_id: &str,
         memory_ids: &[String],
+        context_profile: &str,
     ) -> Result<Vec<MemoryItemView>, AppError> {
-        if memory_ids.len() > 20 {
+        let (memory_limit, memory_characters) = workflow_memory_budget(context_profile);
+        if memory_ids.len() > memory_limit {
             return Err(AppError::Validation(
-                "cada GPT de un flujo admite como máximo 20 elementos de conocimiento".to_owned(),
+                "el conocimiento publicado supera el presupuesto del perfil del GPT".to_owned(),
             ));
         }
         let available = self
@@ -120,7 +130,7 @@ impl Database {
             .filter_map(|id| available.get(id))
             .filter(|item| {
                 used_characters += item.content.chars().count();
-                used_characters <= 8_000
+                used_characters <= memory_characters
             })
             .cloned()
             .collect())
@@ -184,11 +194,21 @@ impl Database {
             })
             .map(|item| (item.id.clone(), item))
             .collect::<HashMap<_, _>>();
+        let fingerprints = context
+            .memory_fingerprints
+            .iter()
+            .map(|item| (item.id.as_str(), item.sha256.as_str()))
+            .collect::<HashMap<_, _>>();
         let mut used_characters = 0_usize;
         Ok(context
             .memory_ids
             .iter()
-            .filter_map(|id| available.get(id))
+            .filter_map(|id| {
+                let item = available.get(id)?;
+                let expected = fingerprints.get(id.as_str())?;
+                let current = format!("{:x}", Sha256::digest(item.content.as_bytes()));
+                (current == *expected).then_some(item)
+            })
             .filter(|item| {
                 used_characters += item.content.chars().count();
                 used_characters <= 8_000

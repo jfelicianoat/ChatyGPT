@@ -6,12 +6,47 @@
 use super::*;
 
 impl Database {
+    /// Recupera claims que se confirmaron de forma durable pero cuyo despacho
+    /// no llegó a enlazarse antes de cerrar la aplicación.
+    pub fn recover_claimed_scheduled_runs(&self) -> Result<Vec<ScheduledClaim>, AppError> {
+        let connection = self.connect()?;
+        let mut statement = connection.prepare(
+            "SELECT run.id, run.scheduled_task_id,
+                    COALESCE(json_extract(task.payload_json, '$.target_kind'), 'conversation'),
+                    json_extract(task.payload_json, '$.conversation_id'),
+                    json_extract(task.payload_json, '$.workflow_id'),
+                    json_extract(task.payload_json, '$.workflow_version_id'),
+                    json_extract(task.payload_json, '$.prompt')
+             FROM scheduled_runs run
+             JOIN scheduled_tasks task ON task.id = run.scheduled_task_id
+             WHERE run.status = 'claimed'
+               AND run.broker_task_id IS NULL
+               AND run.workflow_run_id IS NULL
+             ORDER BY run.created_at, run.id",
+        )?;
+        let claims = statement
+            .query_map([], |row| {
+                Ok(ScheduledClaim {
+                    run_id: row.get(0)?,
+                    scheduled_task_id: row.get(1)?,
+                    target_kind: row.get(2)?,
+                    conversation_id: row.get(3)?,
+                    workflow_id: row.get(4)?,
+                    workflow_version_id: row.get(5)?,
+                    prompt: row.get(6)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(AppError::from)?;
+        Ok(claims)
+    }
+
     pub fn claim_due_scheduled_task(&self) -> Result<Option<ScheduledClaim>, AppError> {
         let mut connection = self.connect()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let candidate = transaction
             .query_row(
-                "SELECT id, next_run_at, schedule_expression,
+                "SELECT id, next_run_at, schedule_expression, timezone,
                         COALESCE(json_extract(payload_json, '$.target_kind'), 'conversation'),
                         json_extract(payload_json, '$.conversation_id'),
                         json_extract(payload_json, '$.workflow_id'),
@@ -31,10 +66,11 @@ impl Database {
                         row.get::<_, String>(1)?,
                         row.get::<_, String>(2)?,
                         row.get::<_, String>(3)?,
-                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, String>(4)?,
                         row.get::<_, Option<String>>(5)?,
                         row.get::<_, Option<String>>(6)?,
-                        row.get::<_, String>(7)?,
+                        row.get::<_, Option<String>>(7)?,
+                        row.get::<_, String>(8)?,
                     ))
                 },
             )
@@ -43,6 +79,7 @@ impl Database {
             scheduled_task_id,
             due_at,
             schedule_expression,
+            timezone,
             target_kind,
             conversation_id,
             workflow_id,
@@ -66,31 +103,8 @@ impl Database {
         }
         let next_run_at = match schedule_expression.as_str() {
             "daily" | "weekly" => {
-                let modifier = if schedule_expression == "daily" {
-                    "+1 day"
-                } else {
-                    "+7 days"
-                };
-                transaction.query_row(
-                    "WITH RECURSIVE occurrences(value, step) AS (
-                        SELECT ?1, 0
-                        UNION ALL
-                        SELECT strftime(
-                                   '%Y-%m-%dT%H:%M:%fZ',
-                                   datetime(value, 'localtime', ?2, 'utc')
-                               ),
-                               step + 1
-                        FROM occurrences
-                        WHERE datetime(value) <= datetime('now') AND step < 5000
-                     )
-                     SELECT value
-                     FROM occurrences
-                     WHERE datetime(value) > datetime('now')
-                     ORDER BY step
-                     LIMIT 1",
-                    params![due_at, modifier],
-                    |row| row.get::<_, String>(0),
-                )?
+                let days = if schedule_expression == "daily" { 1 } else { 7 };
+                crate::timezone::next_recurring_at(&due_at, &timezone, days, chrono::Utc::now())?
             }
             _ => due_at.clone(),
         };
@@ -470,7 +484,10 @@ impl Database {
                AND EXISTS(
                     SELECT 1 FROM broker_tasks bt
                     WHERE bt.id = scheduled_runs.broker_task_id
-                      AND bt.remote_status IN ('completed', 'failed', 'cancelled')
+                      AND (
+                          bt.remote_status IN ('completed', 'failed', 'cancelled')
+                          OR bt.local_state = 'orphaned'
+                      )
                )",
             [],
         )?;

@@ -70,12 +70,16 @@ if "%NEED_BUILD%"=="1" (
 
     call node_modules\.bin\tauri.cmd build --no-bundle
     if errorlevel 1 goto :failed
+
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "scripts\Needs-ChatyGPTBuild.ps1" -Executable "%RELEASE_EXE%" -Record >nul
+    if errorlevel 1 goto :failed
 )
 
-echo Broker AI: http://192.168.1.52:8765
+if not defined CHATYGPT_BROKER_BASE_URL set "CHATYGPT_BROKER_BASE_URL=http://192.168.1.52:8765"
+echo Broker AI: %CHATYGPT_BROKER_BASE_URL%
 echo.
 
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "scripts\Start-ChatyGPT.ps1" -BrokerBaseUrl "http://192.168.1.52:8765"
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "scripts\Start-ChatyGPT.ps1" -BrokerBaseUrl "%CHATYGPT_BROKER_BASE_URL%"
 
 if errorlevel 1 goto :failed
 exit /b 0

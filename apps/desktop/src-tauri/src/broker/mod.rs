@@ -22,6 +22,8 @@ use crate::logging;
 use crate::secrets;
 
 const DEFAULT_BROKER_BASE_URL: &str = "http://192.168.1.52:8765";
+const MAX_ARTIFACT_BYTES: usize = 20 * 1024 * 1024;
+const MAX_CONVERTED_TEXT_BYTES: usize = 64 * 1024 * 1024;
 
 /// Convierte el token en cabecera HTTP sin filtrar su contenido al error.
 fn header_token(value: &str) -> Result<HeaderValue, AppError> {
@@ -40,6 +42,39 @@ fn transport_failure(operation: &str, error: impl std::fmt::Display) -> AppError
         &[("operation", logging::code(operation))],
     );
     AppError::BrokerTransport(error.to_string())
+}
+
+async fn read_body_limited(
+    operation: &str,
+    mut response: reqwest::Response,
+    limit: usize,
+    description: &str,
+) -> Result<(StatusCode, Vec<u8>), AppError> {
+    let status = response.status();
+    if response
+        .content_length()
+        .is_some_and(|length| length > limit as u64)
+    {
+        return Err(AppError::BrokerContract(format!(
+            "{description} supera el límite local de {} MB",
+            limit / (1024 * 1024)
+        )));
+    }
+    let mut bytes = Vec::with_capacity(limit.min(64 * 1024));
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| transport_failure(operation, error))?
+    {
+        if bytes.len().saturating_add(chunk.len()) > limit {
+            return Err(AppError::BrokerContract(format!(
+                "{description} supera el límite local de {} MB",
+                limit / (1024 * 1024)
+            )));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok((status, bytes))
 }
 
 #[derive(Clone)]
@@ -185,6 +220,7 @@ impl BrokerClient {
         let http = Client::builder()
             .connect_timeout(std::time::Duration::from_secs(3))
             .timeout(std::time::Duration::from_secs(10))
+            .redirect(reqwest::redirect::Policy::none())
             .user_agent(concat!("ChatyGPT/", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|error| AppError::BrokerTransport(error.to_string()))?;
@@ -212,6 +248,7 @@ impl BrokerClient {
         let http = Client::builder()
             .connect_timeout(std::time::Duration::from_secs(2))
             .timeout(std::time::Duration::from_secs(5))
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|error| AppError::BrokerTransport(error.to_string()))?;
         Ok(Self {
@@ -245,6 +282,31 @@ impl BrokerClient {
         self.base_url
             .join(path.trim_start_matches('/'))
             .map_err(|error| AppError::InvalidBrokerUrl(error.to_string()))
+    }
+
+    fn resource_url(&self, location: &str) -> Result<Url, AppError> {
+        let url = match Url::parse(location) {
+            Ok(url) if matches!(url.scheme(), "http" | "https") => url,
+            Ok(_) => {
+                return Err(AppError::InvalidBrokerUrl(
+                    "la URL del recurso no usa HTTP o HTTPS".to_owned(),
+                ))
+            }
+            Err(url::ParseError::RelativeUrlWithoutBase) => self.endpoint(location)?,
+            Err(error) => return Err(AppError::InvalidBrokerUrl(error.to_string())),
+        };
+        let same_origin = url.scheme() == self.base_url.scheme()
+            && url
+                .host_str()
+                .zip(self.base_url.host_str())
+                .is_some_and(|(left, right)| left.eq_ignore_ascii_case(right))
+            && url.port_or_known_default() == self.base_url.port_or_known_default();
+        if !same_origin || !url.username().is_empty() || url.password().is_some() {
+            return Err(AppError::InvalidBrokerUrl(
+                "el recurso del Broker apunta a un origen distinto".to_owned(),
+            ));
+        }
+        Ok(url)
     }
 
     fn authorize(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
@@ -419,11 +481,13 @@ impl BrokerClient {
             .send()
             .await
             .map_err(|error| transport_failure("download_artifact", error))?;
-        let status = response.status();
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|error| transport_failure("download_artifact", error))?;
+        let (status, bytes) = read_body_limited(
+            "download_artifact",
+            response,
+            MAX_ARTIFACT_BYTES,
+            "el artefacto",
+        )
+        .await?;
         if status == StatusCode::GONE {
             return Err(AppError::BrokerContract(
                 "el artefacto existió y ya se ha borrado (retención del Broker)".to_owned(),
@@ -435,7 +499,7 @@ impl BrokerClient {
                 message: rejection_message(status, &bytes),
             });
         }
-        Ok(bytes.to_vec())
+        Ok(bytes)
     }
 
     /// `{task_id, items[]}`: lo que no encaja se descarta en vez de tumbar la
@@ -530,26 +594,19 @@ impl BrokerClient {
     }
 
     pub async fn download_text(&self, location: &str) -> Result<String, AppError> {
-        let url = match Url::parse(location) {
-            Ok(url) if matches!(url.scheme(), "http" | "https") => url,
-            Ok(_) => {
-                return Err(AppError::InvalidBrokerUrl(
-                    "la URL del texto convertido no usa HTTP o HTTPS".to_owned(),
-                ))
-            }
-            Err(url::ParseError::RelativeUrlWithoutBase) => self.endpoint(location)?,
-            Err(error) => return Err(AppError::InvalidBrokerUrl(error.to_string())),
-        };
+        let url = self.resource_url(location)?;
         let response = self
             .authorize(self.http.get(url))
             .send()
             .await
             .map_err(|error| transport_failure("download_text", error))?;
-        let status = response.status();
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|error| transport_failure("download_text", error))?;
+        let (status, bytes) = read_body_limited(
+            "download_text",
+            response,
+            MAX_CONVERTED_TEXT_BYTES,
+            "el texto convertido",
+        )
+        .await?;
         if !status.is_success() {
             logging::warn(
                 "broker.response_rejected",
@@ -564,12 +621,7 @@ impl BrokerClient {
                 message: String::from_utf8_lossy(&bytes).into_owned(),
             });
         }
-        if bytes.len() > 64 * 1024 * 1024 {
-            return Err(AppError::BrokerContract(
-                "el texto convertido supera el límite local de 64 MB".to_owned(),
-            ));
-        }
-        String::from_utf8(bytes.to_vec())
+        String::from_utf8(bytes)
             .map_err(|_| AppError::BrokerContract("el texto convertido no es UTF-8".to_owned()))
     }
 
@@ -807,7 +859,8 @@ mod tests {
         accepted_file, accepted_task, file_state, task_state, ScriptedResponse, SimulatedBroker,
     };
     use super::{
-        final_artifact, AppError, BrokerCapabilities, BrokerClient, InvocationTelemetry, PollPolicy,
+        final_artifact, AppError, BrokerCapabilities, BrokerClient, InvocationTelemetry,
+        PollPolicy, MAX_ARTIFACT_BYTES,
     };
     use serde_json::{json, Value};
 
@@ -1120,8 +1173,8 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// La descarga del Markdown convertido acepta rutas relativas y absolutas,
-    /// y rechaza lo que no es texto ni HTTP.
+    /// La descarga del Markdown convertido acepta rutas relativas y absolutas
+    /// del Broker, y rechaza otros orígenes y lo que no sea texto HTTP.
     #[test]
     fn converted_markdown_download_is_bounded_to_http_and_utf8() {
         let simulated = SimulatedBroker::start();
@@ -1152,6 +1205,16 @@ mod tests {
             markdown
         );
 
+        let foreign = SimulatedBroker::start();
+        client
+            .replace_admin_token(Some("token-sintetico"))
+            .expect("token de prueba válido");
+        let foreign_url = format!("{}/foreign", foreign.base_url());
+        let error = block_on(client.download_text(&foreign_url))
+            .expect_err("un origen ajeno al Broker debe rechazarse");
+        assert!(matches!(error, AppError::InvalidBrokerUrl(_)));
+        assert!(foreign.requests().is_empty(), "no debe abrirse la conexión");
+
         // Un esquema que no es web se rechaza antes de tocar la red.
         let error = block_on(client.download_text("file:///C:/Windows/System32/config/SAM"))
             .expect_err("un esquema no web debe rechazarse");
@@ -1169,6 +1232,20 @@ mod tests {
         let error = block_on(client.download_text("/api/v1/files/binario/markdown"))
             .expect_err("un cuerpo no UTF-8 debe rechazarse");
         assert!(matches!(error, AppError::BrokerContract(_)));
+    }
+
+    #[test]
+    fn artifact_download_stops_at_the_local_size_limit() {
+        let simulated = SimulatedBroker::start();
+        simulated.always(
+            "GET /api/v1/tasks/task-210/artifacts/art-big",
+            ScriptedResponse::bytes(vec![0_u8; MAX_ARTIFACT_BYTES + 1]),
+        );
+        let client = client_for(&simulated);
+
+        let error = block_on(client.download_artifact("task-210", "art-big"))
+            .expect_err("un artefacto excesivo debe rechazarse antes de almacenarlo");
+        assert!(error.to_string().contains("20 MB"), "mensaje: {error}");
     }
 
     /// Solo se admiten esquemas web al construir el cliente.
@@ -1215,8 +1292,14 @@ mod tests {
     #[test]
     fn content_exclusivity_reaches_a_broker_that_offers_the_optout() {
         let simulated = SimulatedBroker::start();
-        simulated.always("GET /api/v1/capabilities", ScriptedResponse::ok(capabilities_2_10()));
-        simulated.always("POST /api/v1/tasks", ScriptedResponse::accepted(accepted_task("task-210")));
+        simulated.always(
+            "GET /api/v1/capabilities",
+            ScriptedResponse::ok(capabilities_2_10()),
+        );
+        simulated.always(
+            "POST /api/v1/tasks",
+            ScriptedResponse::accepted(accepted_task("task-210")),
+        );
         let client = client_for(&simulated);
 
         block_on(async {
@@ -1245,7 +1328,10 @@ mod tests {
             "GET /api/v1/capabilities",
             ScriptedResponse::ok(serde_json::json!({"contract_version": "2.9"})),
         );
-        simulated.always("POST /api/v1/tasks", ScriptedResponse::accepted(accepted_task("task-29")));
+        simulated.always(
+            "POST /api/v1/tasks",
+            ScriptedResponse::accepted(accepted_task("task-29")),
+        );
         let client = client_for(&simulated);
 
         block_on(async {
@@ -1268,7 +1354,10 @@ mod tests {
     #[test]
     fn nothing_from_210_travels_before_capabilities_are_negotiated() {
         let simulated = SimulatedBroker::start();
-        simulated.always("POST /api/v1/tasks", ScriptedResponse::accepted(accepted_task("task-x")));
+        simulated.always(
+            "POST /api/v1/tasks",
+            ScriptedResponse::accepted(accepted_task("task-x")),
+        );
         let client = client_for(&simulated);
 
         block_on(async {
@@ -1383,8 +1472,14 @@ mod tests {
     #[test]
     fn the_diagnosis_says_whether_privacy_can_be_demanded() {
         let simulated = SimulatedBroker::start();
-        simulated.always("GET /health/ready", ScriptedResponse::ok(serde_json::json!({"ready": true})));
-        simulated.always("GET /api/v1/capabilities", ScriptedResponse::ok(capabilities_2_10()));
+        simulated.always(
+            "GET /health/ready",
+            ScriptedResponse::ok(serde_json::json!({"ready": true})),
+        );
+        simulated.always(
+            "GET /api/v1/capabilities",
+            ScriptedResponse::ok(capabilities_2_10()),
+        );
         let client = client_for(&simulated);
 
         let diagnostic = block_on(async { client.diagnose().await });
@@ -1398,7 +1493,10 @@ mod tests {
         // `None` es «no consta», que no es `false`: un fallo de lectura no
         // demuestra que el Broker no sepa hacerlo (Client_API.md, 2).
         let simulated = SimulatedBroker::start();
-        simulated.always("GET /health/ready", ScriptedResponse::ok(serde_json::json!({"ready": true})));
+        simulated.always(
+            "GET /health/ready",
+            ScriptedResponse::ok(serde_json::json!({"ready": true})),
+        );
         simulated.always("GET /api/v1/capabilities", ScriptedResponse::transient());
         let client = client_for(&simulated);
 

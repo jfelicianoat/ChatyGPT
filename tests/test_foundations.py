@@ -507,7 +507,10 @@ class BuildConfigurationTests(unittest.TestCase):
         # PowerShell escapado con acentos circunflejos: ni se leia ni se podia probar, y
         # ahi es donde la comprobacion de la credencial no comprobaba nada.
         self.assertIn('-File "scripts\\Start-ChatyGPT.ps1"', launcher)
-        self.assertIn('-BrokerBaseUrl "http://192.168.1.52:8765"', launcher)
+        self.assertIn(
+            'set "CHATYGPT_BROKER_BASE_URL=http://192.168.1.52:8765"', launcher
+        )
+        self.assertIn('-BrokerBaseUrl "%CHATYGPT_BROKER_BASE_URL%"', launcher)
         self.assertIn(
             'set "STAGED_EXE=apps\\desktop\\src-tauri\\target-next\\release\\chatygpt.exe"',
             launcher,
@@ -517,6 +520,28 @@ class BuildConfigurationTests(unittest.TestCase):
         arranque = (ROOT / "scripts" / "Start-ChatyGPT.ps1").read_text(encoding="utf-8")
         self.assertIn("target\\release\\chatygpt.exe", arranque)
         self.assertIn("& $releaseExe", arranque)
+
+    def test_launcher_build_fingerprint_covers_every_compiled_input(self) -> None:
+        build_check = (ROOT / "scripts" / "Needs-ChatyGPTBuild.ps1").read_text(
+            encoding="utf-8"
+        )
+        for required in (
+            "apps\\desktop\\index.html",
+            "apps\\desktop\\src-tauri\\migrations",
+            "apps\\desktop\\src-tauri\\queries",
+            "apps\\desktop\\src-tauri\\resources",
+            "apps\\desktop\\src-tauri\\Cargo.lock",
+            "tsconfig.app.json",
+            "tsconfig.node.json",
+        ):
+            self.assertIn(f'"{required}"', build_check)
+        self.assertIn("Get-FileHash", build_check)
+        self.assertIn("Substring($projectRoot.Length)", build_check)
+        self.assertIn("$file.Length", build_check)
+        self.assertIn(
+            '-Record >nul',
+            (ROOT / "Arrancar ChatyGPT.bat").read_text(encoding="utf-8"),
+        )
 
     def test_the_broker_credential_is_checked_against_an_endpoint_that_demands_it(self) -> None:
         """La comprobacion tiene que pedirle la credencial al broker, no saludarle.

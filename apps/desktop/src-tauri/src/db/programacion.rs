@@ -81,6 +81,7 @@ impl Database {
                 "activar una tarea programada requiere confirmación explícita".to_owned(),
             ));
         }
+        crate::timezone::validate(timezone)?;
         let mut connection = self.connect()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let conversation_exists: bool = transaction.query_row(
@@ -177,6 +178,7 @@ impl Database {
                 "la recurrencia programada no es válida".to_owned(),
             ));
         }
+        crate::timezone::validate(timezone)?;
         let mut connection = self.connect()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let workflow_version_id = transaction
@@ -303,6 +305,7 @@ impl Database {
                 "la recurrencia programada no es válida".to_owned(),
             ));
         }
+        crate::timezone::validate(timezone)?;
         let mut connection = self.connect()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let valid_due_at: bool = transaction.query_row(

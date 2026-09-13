@@ -1,6 +1,7 @@
 //! Workflows: definicion, publicacion y versiones congeladas.
 
 use super::*;
+use crate::db::workflows_contexto::workflow_memory_budget;
 
 impl Database {
     pub fn create_workflow(
@@ -200,7 +201,7 @@ impl Database {
             let project = self.project_summary(&project_id)?;
             let memory = self.memory_overview()?;
             let mut used_characters = 0_usize;
-            let memory_ids = if memory.enabled {
+            let selected_memories = if memory.enabled {
                 memory
                     .items
                     .into_iter()
@@ -210,16 +211,27 @@ impl Database {
                         used_characters <= 8_000
                     })
                     .take(20)
-                    .map(|item| item.id)
                     .collect()
             } else {
                 Vec::new()
             };
+            let memory_ids = selected_memories
+                .iter()
+                .map(|item: &MemoryItemView| item.id.clone())
+                .collect();
+            let memory_fingerprints = selected_memories
+                .iter()
+                .map(|item: &MemoryItemView| WorkflowMemoryFingerprint {
+                    id: item.id.clone(),
+                    sha256: format!("{:x}", Sha256::digest(item.content.as_bytes())),
+                })
+                .collect();
             Some(WorkflowProjectContext {
                 project_id,
                 project_name: project.name,
                 instructions: project.instructions,
                 memory_ids,
+                memory_fingerprints,
             })
         } else {
             None
@@ -240,11 +252,8 @@ impl Database {
                 node.preferred_model = context.preferred_model;
                 node.execution_profile = context.execution_profile;
                 node.context_profile = context.context_profile.clone();
-                let (memory_limit, memory_characters) = match context.context_profile.as_str() {
-                    "focused" => (5, 2_000),
-                    "broad" => (30, 16_000),
-                    _ => (20, 8_000),
-                };
+                let (memory_limit, memory_characters) =
+                    workflow_memory_budget(&context.context_profile);
                 let mut used_characters = 0_usize;
                 node.custom_gpt_memory_ids = self
                     .custom_gpt_knowledge(custom_gpt_id)?

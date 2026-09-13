@@ -1,5 +1,7 @@
 # Design QA — rediseño de usabilidad, dirección 2
 
+> Registro histórico del rediseño. Revalidado técnicamente el 13 de septiembre de 2026 tras la remediación integral; la aprobación visual manual continúa pendiente.
+
 ## Referencia
 
 - Imagen seleccionada: `C:\Users\jfeli\.codex\generated_images\019f7b9c-c5f7-7673-a71f-346b6aa7cc6d\exec-69907341-dc78-4d1e-882e-5352ccf05dc2.png`
@@ -21,7 +23,11 @@
 
 - TypeScript: aprobado.
 - Compilación de producción de Vite: aprobada.
-- Suite completa: 156 pruebas aprobadas.
+- Suite web completa: 319 pruebas aprobadas.
+- Suite Rust: 338 pruebas aprobadas.
+- Controles de fundamentos y documentación: 43 pruebas aprobadas.
+- Cobertura global del frontend: 56,20 % de líneas, 72,61 % de ramas y 41,53 % de funciones.
+- Formato y análisis estricto de Rust: aprobados.
 - Prueba específica de la navegación nueva: aprobada.
 - Comprobación de espacios y errores de parche: aprobada.
 

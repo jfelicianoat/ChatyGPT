@@ -4,9 +4,9 @@
 > La síntesis normativa actual está en [CURRENT_STATE.md](CURRENT_STATE.md) y la
 > compatibilidad del cliente Broker en [BROKER_COMPATIBILITY.md](BROKER_COMPATIBILITY.md).
 > Las observaciones fechadas del 26 de julio se mantienen como evidencia del entorno de
-> aquel corte y no prevalecen sobre el código o los documentos anteriores.
+> aquel corte y no prevalecen sobre el código ni sobre `CURRENT_STATE.md`.
 
-Última reconciliación con el código: **2026-08-23**. Auditoría original: 2026-07-26.
+Última reconciliación con el código: **2026-09-13**. Auditoría original: 2026-07-26.
 
 ## 0. Arquitectura vigente
 
@@ -27,11 +27,14 @@ de confianza. AI Broker ejecuta inferencias del chat normal; Athena es un runtim
 independiente al que ChatyGPT encarga runs sobre una carpeta autorizada. La elección de
 modelo de Athena es por run y solo se ofrece con el catálogo publicado por el despliegue.
 
-La petición estable a AI Broker conserva el baseline 2.8 y el lector acepta extensiones
-2.9. El wire protocol del servicio Athena es 1. Los contratos se validan en la frontera y
+El cliente implementa el contrato aditivo 2.10 de AI Broker y conserva lectura compatible
+con tareas anteriores. El wire protocol del servicio Athena es 1. Los contratos se validan en la frontera y
 los campos desconocidos aditivos no convierten una respuesta válida en fallo.
 
-## 1. Estado real del repositorio y el entorno
+## 1. Evidencia histórica del entorno (26 de julio de 2026)
+
+Esta sección conserva lo observado durante el arranque del proyecto. No describe la
+disponibilidad actual de servicios ni sustituye las verificaciones fechadas posteriores.
 
 ### Comprobado
 
@@ -65,7 +68,7 @@ La evidencia procede del código local (`app/main.py`, `app/schemas.py`,
 
 | Capacidad | Estado | Evidencia local |
 |---|---|---|
-| Contrato | Revisado estáticamente | contrato cliente 2.8 y comprobación reproducible de OpenAPI |
+| Contrato | Revisado estáticamente | contrato cliente 2.10 y compatibilidad anterior comprobada |
 | Crear tarea | Revisado estáticamente | `POST /api/v1/tasks`, 202 o 200 por idempotencia |
 | Consultar tarea | Revisado estáticamente | `GET /api/v1/tasks/{task_id}` |
 | Cancelar | Revisado estáticamente | `DELETE /api/v1/tasks/{task_id}` |
@@ -78,12 +81,16 @@ La evidencia procede del código local (`app/main.py`, `app/schemas.py`,
 | Idempotencia | Revisado estáticamente | `idempotency_key` + hash; conflicto HTTP 409 |
 | Sandbox | Revisado estáticamente | `run_code` opt-in y `SANDBOX_DISABLED` si no está habilitado |
 | OpenAPI real | Verificado manualmente (alcance) | endpoint consultado por el probe en A9 |
-| Integración real | Pendiente de repetir con 2.8 | ejecutar el diagnóstico con el Broker actualizado y su token en memoria |
+| Integración real | Evidencia fechada por release | ejecutar el diagnóstico con el Broker desplegado y guardar el resultado de esa versión |
 
 La semántica de cancelación observada es una solicitud de cancelación. No se
 presupone que una operación remota en curso termine de forma instantánea.
 
-## 3. Arquitectura propuesta
+## 3. Diseño histórico y evolución posible
+
+El diagrama siguiente es la propuesta original. El sidecar Python era una opción futura;
+el producto vigente usa el scheduler Rust y Athena como servicio autónomo. No forma parte
+de la arquitectura requerida para el chat.
 
 ```text
 React (vista y estado efímero)
@@ -92,7 +99,7 @@ React (vista y estado efímero)
 Rust application core
   ├─ casos de uso y permisos
   ├─ scheduler de polling / leases
-  ├─ adaptador AI Broker 2.8
+  ├─ adaptador AI Broker 2.10
   ├─ repositorios SQLite
   ├─ exportador atómico al vault
   └─ gestor del sidecar Python
@@ -117,12 +124,11 @@ Decisiones:
 3. **El vault es una proyección.** Un único exportador usa identificadores
    estables, hashes, temporales y reemplazo atómico; un conflicto nunca modifica
    SQLite.
-4. **Python es un sidecar estrecho.** Se añadirá para automatizaciones y trabajo
-   documental que lo justifique, con protocolo versionado. No forma parte del
-   camino crítico del chat básico.
-5. **Los secretos no cruzan React.** En el slice actual solo se admite lectura
-   desde entorno. El backend seguro definitivo será Credential Manager o
-   Stronghold; SQLite restringe `app_settings` a valores públicos.
+4. **Python sidecar era una opción.** El scheduler se implementó en Rust y Athena
+   cubre los encargos autónomos mediante HTTP/SSE autenticado.
+5. **Los secretos no cruzan React.** Rust los custodia con DPAPI para la cuenta
+   de Windows; las variables de entorno son solo una vía de transición. SQLite
+   restringe `app_settings` a valores públicos.
 6. **Polling por lease.** Una única operación local puede poseer cada tarea. Los
    intervalos crecen con backoff y jitter, se reducen tras un cambio real y se
    detienen en estados terminales.
@@ -267,10 +273,15 @@ Decisiones de ciclo de vida:
   `attachment_runtime.rs` en ~82,6 %) y CI en `windows-latest` con umbral 77 que
   falla si baja. Desglose en
   [Endurecimiento de Fase 0](PHASE_0_HARDENING.md).
+- **Implementado:** Vitest informa sobre todo el frontend, incluidos `App.tsx`,
+  hooks, paneles y `platform.ts`; la línea base del 13 de septiembre es 56,20 %
+  de líneas/sentencias, 72,61 % de ramas y 41,53 % de funciones.
 - **Implementado:** presupuestos de rendimiento instrumentados y visibles en
   **Inicio → Rendimiento** (migración `0017`, módulo `metrics.rs`). Miden
   arranque, apertura de conversación, búsqueda y respuesta de la interfaz.
-- MSI/NSIS, firma, actualización y rollback.
+- **Implementado en CI:** construcción MSI/NSIS, extracción administrativa del
+  MSI y comprobación del ejecutable. Pendientes: firma, actualización, rollback
+  y prueba interactiva de instalación.
 - Matriz de Windows soportada.
 
 ## 7. Plan resumido de Fases 1–4
@@ -568,9 +579,10 @@ la programación vencida se reclama al siguiente arranque. Este corte no instala
 un servicio de Windows ni concede herramientas a la ejecución automática.
 
 Las recurrencias `daily` y `weekly` avanzan `next_run_at` dentro de la misma
-transacción que inserta la claim. El cálculo pasa por la zona local del sistema
-antes de añadir el día o la semana y vuelve a UTC, de modo que conserva la hora
-de pared cuando Windows cambia entre horario estándar y horario de verano. Si
+transacción que inserta la claim. El cálculo usa la zona IANA persistida y una
+tabla de transiciones embebida, no la zona actual de Windows. Las horas repetidas
+eligen la primera ocurrencia posterior y las inexistentes avanzan por el salto de
+horario, conservando los minutos. Si
 se omitieron varias fechas mientras la app estaba cerrada, se crea una sola
 ejecución atrasada y la siguiente fecha salta directamente al futuro.
 

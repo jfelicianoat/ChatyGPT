@@ -13,6 +13,11 @@ use crate::error::AppError;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(900);
 const MAX_NODE_POLLS: usize = 1_200;
+const MAX_CONSECUTIVE_POLL_ERRORS: usize = 5;
+#[cfg(not(test))]
+const POLL_ERROR_RETRY_INTERVAL: Duration = Duration::from_millis(900);
+#[cfg(test)]
+const POLL_ERROR_RETRY_INTERVAL: Duration = Duration::from_millis(20);
 
 pub fn validate_definition(definition: &WorkflowDefinition) -> Result<(), AppError> {
     if definition.nodes.len() < 2 || definition.nodes.len() > 50 {
@@ -26,6 +31,7 @@ pub fn validate_definition(definition: &WorkflowDefinition) -> Result<(), AppErr
         ));
     }
     let mut ids = HashSet::new();
+    let mut result_labels = HashSet::new();
     for node in &definition.nodes {
         if !ids.insert(node.id.as_str()) {
             return Err(AppError::Validation("hay nodos duplicados".to_owned()));
@@ -43,6 +49,12 @@ pub fn validate_definition(definition: &WorkflowDefinition) -> Result<(), AppErr
             return Err(AppError::Validation(
                 "todos los nodos necesitan un nombre breve".to_owned(),
             ));
+        }
+        if node.kind == "result" && !result_labels.insert(node.label.trim().to_lowercase()) {
+            return Err(AppError::Validation(format!(
+                "cada resultado necesita un nombre distinto; «{}» está repetido",
+                node.label
+            )));
         }
         if node.kind == "custom_gpt" && node.custom_gpt_id.is_none() {
             return Err(AppError::Validation(format!(
@@ -219,8 +231,22 @@ pub async fn cancel(
     run_id: &str,
 ) -> Result<WorkflowRunView, AppError> {
     let task_ids = database.cancel_workflow_run_locally(run_id)?;
+    let mut remote_errors = Vec::new();
     for task_id in task_ids {
-        let _ = broker.cancel_task(&task_id).await;
+        match broker.cancel_task(&task_id).await {
+            Ok(state) if state.status.is_terminal() => {}
+            Ok(state) => remote_errors.push(format!(
+                "el Broker mantuvo la tarea {task_id} en estado {}",
+                state.status.as_str()
+            )),
+            Err(error) => remote_errors.push(format!("tarea {task_id}: {error}")),
+        }
+    }
+    if !remote_errors.is_empty() {
+        return Err(AppError::Conflict(format!(
+            "el flujo quedó cancelado localmente, pero no se pudo confirmar la cancelación remota: {}",
+            remote_errors.join("; ")
+        )));
     }
     database.workflow_run(run_id)
 }
@@ -522,7 +548,11 @@ async fn execute_model_node(
         database.ready_workflow_attachments(&record.workflow_id, &node.attachment_ids)?;
     let custom_gpt_id = node.custom_gpt_id.as_deref();
     let gpt_memories = if let Some(custom_gpt_id) = custom_gpt_id {
-        database.custom_gpt_memories_for_workflow(custom_gpt_id, &node.custom_gpt_memory_ids)?
+        database.custom_gpt_memories_for_workflow(
+            custom_gpt_id,
+            &node.custom_gpt_memory_ids,
+            &node.context_profile,
+        )?
     } else {
         Vec::new()
     };
@@ -750,12 +780,29 @@ async fn execute_model_node(
         accepted.task_id
     };
 
+    let mut consecutive_poll_errors = 0_usize;
     for _ in 0..MAX_NODE_POLLS {
         if database.workflow_run_cancelled(&record.run_id)? {
             let _ = broker.cancel_task(&task_id).await;
             return Err(AppError::Conflict("ejecución cancelada".to_owned()));
         }
-        let state = broker.get_task(&task_id).await?;
+        let state = match broker.get_task(&task_id).await {
+            Ok(state) => {
+                consecutive_poll_errors = 0;
+                state
+            }
+            Err(error)
+                if poll_error_is_retryable(&error)
+                    && consecutive_poll_errors < MAX_CONSECUTIVE_POLL_ERRORS =>
+            {
+                consecutive_poll_errors += 1;
+                tokio::time::sleep(POLL_ERROR_RETRY_INTERVAL).await;
+                continue;
+            }
+            Err(error) => {
+                return Err(abandon_remote_node(broker, &task_id, error).await);
+            }
+        };
         match state.status {
             TaskStatus::Completed => {
                 return state
@@ -782,9 +829,32 @@ async fn execute_model_node(
             _ => tokio::time::sleep(POLL_INTERVAL).await,
         }
     }
-    Err(AppError::BrokerTransport(
-        "el nodo superó el tiempo máximo de espera".to_owned(),
-    ))
+    Err(abandon_remote_node(
+        broker,
+        &task_id,
+        AppError::BrokerTransport("el nodo superó el tiempo máximo de espera".to_owned()),
+    )
+    .await)
+}
+
+fn poll_error_is_retryable(error: &AppError) -> bool {
+    matches!(
+        error,
+        AppError::BrokerTransport(_)
+            | AppError::BrokerResponse {
+                status: 408 | 429 | 500..=599,
+                ..
+            }
+    )
+}
+
+async fn abandon_remote_node(broker: &BrokerClient, task_id: &str, cause: AppError) -> AppError {
+    match broker.cancel_task(task_id).await {
+        Ok(_) => cause,
+        Err(cancel_error) => AppError::BrokerTransport(format!(
+            "{cause}; tampoco se pudo cancelar la tarea remota {task_id}: {cancel_error}"
+        )),
+    }
 }
 
 fn parent_ids<'a>(definition: &'a WorkflowDefinition, node_id: &str) -> Vec<&'a str> {

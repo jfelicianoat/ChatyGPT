@@ -232,6 +232,37 @@ impl Database {
         Ok(())
     }
 
+    /// Sustituye el marcador durable escrito antes de ejecutar una herramienta
+    /// por su resultado real. La confirmación ya está resuelta en este punto.
+    pub fn update_prepared_tool_outcome(
+        &self,
+        local_task_id: &str,
+        remote_tool_call_id: &str,
+        content: &str,
+        is_error: bool,
+    ) -> Result<(), AppError> {
+        let changed = self.connect()?.execute(
+            "UPDATE tool_results
+             SET content_text = ?3, is_error = ?4
+             WHERE tool_call_id = (
+               SELECT id FROM tool_calls
+               WHERE broker_task_id = ?1 AND remote_tool_call_id = ?2
+             )",
+            params![
+                local_task_id,
+                remote_tool_call_id,
+                content,
+                i64::from(is_error)
+            ],
+        )?;
+        if changed == 0 {
+            return Err(AppError::Conflict(format!(
+                "no existe un resultado preparado para la herramienta {remote_tool_call_id}"
+            )));
+        }
+        Ok(())
+    }
+
     pub fn prepared_tool_results(&self, local_task_id: &str) -> Result<Value, AppError> {
         let connection = self.connect()?;
         let mut statement = connection.prepare(
@@ -244,9 +275,22 @@ impl Database {
         )?;
         let results = statement
             .query_map(params![local_task_id], |row| {
+                let mut content = row.get::<_, Option<String>>(1)?.unwrap_or_default();
+                if serde_json::from_str::<Value>(&content)
+                    .ok()
+                    .and_then(|value| value.get("execution_pending").and_then(Value::as_bool))
+                    == Some(true)
+                {
+                    content = serde_json::json!({
+                        "ok": false,
+                        "execution_uncertain": true,
+                        "message": "ChatyGPT se interrumpió después de guardar la autorización; la herramienta no se repite automáticamente"
+                    })
+                    .to_string();
+                }
                 Ok(serde_json::json!({
                     "tool_call_id": row.get::<_, String>(0)?,
-                    "content": row.get::<_, Option<String>>(1)?.unwrap_or_default()
+                    "content": content
                 }))
             })?
             .collect::<Result<Vec<_>, _>>()?;

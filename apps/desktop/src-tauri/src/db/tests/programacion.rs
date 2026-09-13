@@ -1,6 +1,7 @@
 //! Tareas y workflows programados: reclamo, reintento y cancelacion.
 
 use super::comunes::{cleanup, test_database};
+use crate::db::Database;
 use crate::error::AppError;
 use rusqlite::params;
 
@@ -106,6 +107,63 @@ fn manual_scheduled_run_preserves_the_future_schedule_and_blocks_overlap() {
         )
         .expect("audit event should be queryable");
     assert!(audited);
+    cleanup(&database);
+}
+
+#[test]
+fn orphaned_local_tasks_close_their_scheduled_run_as_failed() {
+    let database = test_database();
+    let conversation = database
+        .create_conversation("Despacho fallido", None)
+        .expect("conversation should be created");
+    let scheduled = database
+        .create_scheduled_task(
+            "Intento local",
+            &conversation.id,
+            "Ejecuta la tarea.",
+            "2099-01-01T10:00:00.000Z",
+            "Atlantic/Canary",
+            "daily",
+            true,
+        )
+        .expect("schedule should be created");
+    let claim = database
+        .claim_scheduled_task_now(&scheduled.id, true)
+        .expect("manual run should be claimed");
+    database
+        .connect()
+        .expect("database should connect")
+        .execute(
+            "INSERT INTO broker_tasks(
+                id, idempotency_key, request_json, remote_status, local_state, error_json
+             ) VALUES (
+                'orphaned-local-task', 'orphaned-key', '{}', 'not_submitted', 'orphaned', ?1
+             )",
+            params![serde_json::json!({"message": "rechazo contractual"}).to_string()],
+        )
+        .expect("orphaned task should be stored");
+    database
+        .start_scheduled_run(&claim.run_id, "orphaned-local-task")
+        .expect("scheduled run should link to the local task");
+
+    assert_eq!(
+        database
+            .reconcile_scheduled_runs()
+            .expect("scheduler should reconcile the local failure"),
+        1
+    );
+    let listed = database
+        .list_scheduled_tasks()
+        .expect("schedule should reload");
+    assert_eq!(listed[0].runs[0].status, "failed");
+    assert_eq!(
+        listed[0].runs[0]
+            .result
+            .as_ref()
+            .and_then(|value| value.get("message"))
+            .and_then(serde_json::Value::as_str),
+        Some("rechazo contractual")
+    );
     cleanup(&database);
 }
 
@@ -410,6 +468,52 @@ fn scheduled_task_is_confirmed_pauseable_and_claimed_exactly_once() {
     assert_eq!(listed[0].runs.len(), 1);
     assert_eq!(listed[0].runs[0].status, "claimed");
     assert!(!listed[0].enabled);
+    cleanup(&database);
+}
+
+#[test]
+fn an_unlinked_claim_is_recovered_after_reopening_the_database() {
+    let database = test_database();
+    let conversation = database
+        .create_conversation("Recuperación", None)
+        .expect("conversation should be created");
+    let scheduled = database
+        .create_scheduled_task(
+            "Pendiente de despacho",
+            &conversation.id,
+            "Continúa el trabajo",
+            "2099-01-01T10:00:00.000Z",
+            "Atlantic/Canary",
+            "once",
+            true,
+        )
+        .expect("schedule should be created");
+    database
+        .connect()
+        .expect("database should connect")
+        .execute(
+            "UPDATE scheduled_tasks SET next_run_at = '2000-01-01T00:00:00.000Z'
+             WHERE id = ?1",
+            params![scheduled.id],
+        )
+        .expect("schedule should become due");
+    let claimed = database
+        .claim_due_scheduled_task()
+        .expect("claim should succeed")
+        .expect("run should be claimed");
+
+    let reopened = Database::open(database.path()).expect("database should reopen");
+    let recovered = reopened
+        .recover_claimed_scheduled_runs()
+        .expect("claims should be recoverable");
+
+    assert_eq!(recovered.len(), 1);
+    assert_eq!(recovered[0].run_id, claimed.run_id);
+    assert_eq!(recovered[0].scheduled_task_id, scheduled.id);
+    assert_eq!(
+        recovered[0].conversation_id.as_deref(),
+        Some(conversation.id.as_str())
+    );
     cleanup(&database);
 }
 

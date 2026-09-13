@@ -67,6 +67,7 @@ export function TarjetaProgramacion({
     scheduleNotice,
     schedulePrompt,
     scheduleSearchQuery,
+    scheduleTimezone,
     scheduledHistoryPage,
     scheduledTaskTemplates,
     scheduledTasks,
@@ -338,7 +339,8 @@ export function TarjetaProgramacion({
                       <time>
                         {new Date(item.startsAt).toLocaleTimeString("es-ES", {
                           hour: "2-digit",
-                          minute: "2-digit"
+                          minute: "2-digit",
+                          timeZone: item.timezone
                         })}
                       </time>
                       <div>
@@ -483,7 +485,7 @@ export function TarjetaProgramacion({
           disabled={scheduleBusyId !== null}
         />
         <small>
-          Zona horaria: {Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"}
+          Zona horaria: {scheduleTimezone}
         </small>
       </label>
       <label>
@@ -674,7 +676,8 @@ export function TarjetaProgramacion({
                 {task.nextRunAt
                   ? new Date(task.nextRunAt).toLocaleString("es-ES", {
                       dateStyle: "medium",
-                      timeStyle: "short"
+                      timeStyle: "short",
+                      timeZone: task.timezone
                     })
                   : "Sin próxima ejecución"}{" "}
                 · {task.timezone} ·{" "}

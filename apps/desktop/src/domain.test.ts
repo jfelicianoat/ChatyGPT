@@ -148,6 +148,34 @@ describe("scheduled notifications", () => {
     expect(agenda.every((item) => !item.overdue)).toBe(true);
   });
 
+  it("projects recurring dates in their saved timezone across daylight saving", () => {
+    const task: ScheduledTaskView = {
+      id: "dst-daily",
+      name: "Hora estable",
+      conversationId: "conversation-1",
+      conversationTitle: "Seguimiento",
+      prompt: "Resume.",
+      scheduleExpression: "daily",
+      timezone: "Atlantic/Canary",
+      enabled: true,
+      nextRunAt: "2026-03-28T10:00:00.000Z",
+      createdAt: "2026-03-01T00:00:00.000Z",
+      updatedAt: "2026-03-01T00:00:00.000Z",
+      runs: []
+    };
+
+    const agenda = scheduledCalendarOccurrences(
+      [task],
+      new Date("2026-03-28T00:00:00.000Z"),
+      3
+    );
+    expect(agenda.map((item) => item.startsAt)).toEqual([
+      "2026-03-28T10:00:00.000Z",
+      "2026-03-29T09:00:00.000Z",
+      "2026-03-30T09:00:00.000Z"
+    ]);
+  });
+
   it("keeps one overdue occurrence and flags different tasks within fifteen minutes", () => {
     const base: ScheduledTaskView = {
       id: "overdue",

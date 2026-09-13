@@ -44,7 +44,7 @@ param(
     #
     # Es preferencia, no imposicion: el broker sigue siendo quien enruta. Cuando alguien
     # elige modelo desde la aplicacion, esa eleccion si se impone (ADR-034).
-    [string]$PreferredModel = "qwen3.8:27b",
+    [string]$PreferredModel = $(if ($env:CHATYGPT_ATHENA_PREFERRED_MODEL) { $env:CHATYGPT_ATHENA_PREFERRED_MODEL } else { "qwen3.8:27b" }),
 
     # Entre que modelos puede elegir un run desde la pantalla de Athena. El primero es el
     # de por defecto. Se escribe aqui y no se saca del catalogo del broker: ese anuncia
@@ -52,7 +52,7 @@ param(
     # `DeepSeek-V4-Pro` es el unico de nube que contesto bien en las pruebas y **cuesta
     # dinero** (0,10 $ por una sola llamada de 1.400 tokens), asi que se ofrece pero no es
     # el de partida.
-    [string]$AllowedModels = "qwen3.8:27b,nemotron-3.5-lightning:30b,DeepSeek-V4-Pro",
+    [string]$AllowedModels = $(if ($env:CHATYGPT_ATHENA_ALLOWED_MODELS) { $env:CHATYGPT_ATHENA_ALLOWED_MODELS } else { "qwen3.8:27b,nemotron-3.5-lightning:30b,DeepSeek-V4-Pro" }),
 
     # Comprueba la credencial y sale. No levanta Athena ni abre la aplicacion.
     [switch]$ValidateOnly

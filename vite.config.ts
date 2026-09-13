@@ -30,49 +30,27 @@ export default defineConfig({
       // archivo y la cobertura se calculara sobre 0 de 0, con lo que el umbral
       // se cumplía sin medir nada.
       //
-      // `App.tsx` queda fuera del umbral —no de las pruebas— porque son 7.000
-      // líneas de presentación con solo un puñado de pruebas de componente:
-      // incluirlo hundiría la cifra de la lógica que sí está cubierta y
-      // ocultaría una regresión real en ella.
-      // `platform.ts` queda fuera porque no contiene decisiones: son envoltorios
-      // mecánicos de `invoke`. Su corrección real —que cada nombre de orden y
-      // cada argumento existan en Rust— la comprueba
-      // `tests/test_frontend_contract.py` contra el código del backend, que es
-      // una garantía más fuerte que una prueba afirmando el literal que acabo
-      // de escribir.
+      // El porcentaje se calcula sobre todo el frontend entregado, incluidos
+      // App, los hooks de orquestación, los paneles y el puente IPC. Así el
+      // informe no puede presentarse como cobertura del producto mientras
+      // omite precisamente los recorridos que coordinan sus efectos.
       include: ["src/**/*.{ts,tsx}"],
       exclude: [
-        "src/App.tsx",
-        // Los paneles salieron de `App.tsx` al partirlo: son el mismo JSX de
-        // presentacion, movido de sitio. Incluirlos aqui bajaria el umbral de
-        // la logica que si esta cubierta solo por haber cambiado de fichero,
-        // que es exactamente lo contrario de lo que mide esta puerta.
-        "src/paneles/**",
-        // Mismo caso que los paneles: `useProgramacion`/`useGpts` y sus dos
-        // tarjetas son el estado y el JSX que vivian dentro de `App.tsx`,
-        // sacados de sitio para que el fichero dejara de ser inmanejable. Si
-        // entraran ahora en la puerta, esta bajaria veinte puntos sin que se
-        // haya dejado de probar nada de lo que ya se probaba.
-        "src/programacion/**",
-        "src/gpts/**",
-        "src/memoria/**",
         // Solo declara un tipo: no genera codigo que ejecutar.
         "src/navegacion.ts",
-        "src/platform.ts",
         "src/main.tsx",
         "src/env.d.ts",
         "src/**/*.test.{ts,tsx}"
       ],
       thresholds: {
-        // El encargo pide 70 % para lógica no visual. Se sube a 82 porque lo
-        // medido ronda el 85 % tras extraer la lógica de `App.tsx`: un umbral
-        // muy por debajo de lo alcanzado deja de detectar regresiones, que es
-        // justo lo que pasaba mientras el patrón `include` no coincidía con
-        // ningún archivo.
-        lines: 82,
-        functions: 82,
-        statements: 82,
-        branches: 82
+        // Baseline del frontend completo (13/09/2026): 56,20 % de líneas y
+        // sentencias, 72,61 % de ramas y 41,53 % de funciones. El margen solo
+        // absorbe pequeñas variaciones de instrumentación; una caída material
+        // hace fallar la puerta.
+        lines: 55,
+        functions: 40,
+        statements: 55,
+        branches: 70
       }
     }
   }

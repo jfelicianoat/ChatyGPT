@@ -5,6 +5,40 @@ use crate::*;
 // Los artefactos vienen del espejo del contrato del Broker (8.3).
 use crate::broker::TaskArtifact;
 
+/// Vista estable del contrato IPC. El Broker habla `snake_case`; React recibe
+/// `camelCase`. Mantener ambos límites separados evita que un cambio de
+/// serialización para Tauri rompa la deserialización de la API remota.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TaskArtifactView {
+    artifact_id: String,
+    artifact_type: String,
+    filename: String,
+    media_type: Option<String>,
+    size_bytes: Option<u64>,
+    sha256: Option<String>,
+    download_url: Option<String>,
+    available: bool,
+    #[serde(rename = "final")]
+    is_final: Option<bool>,
+}
+
+impl From<TaskArtifact> for TaskArtifactView {
+    fn from(artifact: TaskArtifact) -> Self {
+        Self {
+            artifact_id: artifact.artifact_id,
+            artifact_type: artifact.artifact_type,
+            filename: artifact.filename,
+            media_type: artifact.media_type,
+            size_bytes: artifact.size_bytes,
+            sha256: artifact.sha256,
+            download_url: artifact.download_url,
+            available: artifact.available,
+            is_final: artifact.is_final,
+        }
+    }
+}
+
 #[tauri::command]
 pub(crate) async fn start_smoke_task(
     state: State<'_, AppState>,
@@ -37,8 +71,12 @@ pub(crate) async fn cancel_local_task(
 pub(crate) async fn list_task_artifacts(
     remote_task_id: String,
     state: State<'_, AppState>,
-) -> Result<Vec<TaskArtifact>, AppError> {
-    state.broker.artifacts(&remote_task_id).await
+) -> Result<Vec<TaskArtifactView>, AppError> {
+    state
+        .broker
+        .artifacts(&remote_task_id)
+        .await
+        .map(|items| items.into_iter().map(TaskArtifactView::from).collect())
 }
 
 /// Recoge un artefacto y lo guarda en el almacén gestionado de adjuntos.
@@ -76,6 +114,7 @@ pub(crate) async fn save_task_artifact(
         state.attachments_dir.clone(),
         name.to_owned(),
         bytes,
+        artifact.sha256.clone(),
     )
     .await?;
     Ok(stored)
@@ -132,6 +171,36 @@ pub(crate) fn record_performance_samples(
         ],
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn task_artifact_ipc_view_uses_the_names_consumed_by_react() {
+        let value = serde_json::to_value(TaskArtifactView::from(TaskArtifact {
+            artifact_id: "artifact-1".to_owned(),
+            artifact_type: "image_output".to_owned(),
+            filename: "image.png".to_owned(),
+            media_type: Some("image/png".to_owned()),
+            size_bytes: Some(42),
+            sha256: Some("abc123".to_owned()),
+            download_url: Some("/artifact-1".to_owned()),
+            available: true,
+            is_final: Some(true),
+        }))
+        .expect("IPC artifact should serialize");
+
+        assert_eq!(value["artifactId"], "artifact-1");
+        assert_eq!(value["artifactType"], "image_output");
+        assert_eq!(value["mediaType"], "image/png");
+        assert_eq!(value["sizeBytes"], 42);
+        assert_eq!(value["downloadUrl"], "/artifact-1");
+        assert_eq!(value["final"], true);
+        assert!(value.get("artifact_id").is_none());
+        assert!(value.get("artifact_type").is_none());
+    }
 }
 
 #[tauri::command]

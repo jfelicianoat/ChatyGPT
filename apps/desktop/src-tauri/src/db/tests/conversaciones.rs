@@ -294,6 +294,43 @@ fn existing_schema_one_database_upgrades_without_losing_conversations() {
 }
 
 #[test]
+fn future_schema_is_rejected_without_changing_its_data() {
+    let path = std::env::temp_dir().join(format!(
+        "chatygpt-db-future-schema-test-{}.sqlite",
+        Uuid::new_v4().simple()
+    ));
+    let connection = rusqlite::Connection::open(&path).expect("future database should open");
+    connection
+        .execute_batch(
+            "CREATE TABLE future_marker(value TEXT NOT NULL);
+             INSERT INTO future_marker(value) VALUES ('keep-me');
+             PRAGMA user_version = 999;",
+        )
+        .expect("future schema fixture should be created");
+    drop(connection);
+
+    let error = match Database::open(&path) {
+        Ok(_) => panic!("a future schema must not be opened"),
+        Err(error) => error,
+    };
+    assert!(matches!(error, AppError::Conflict(_)));
+
+    let connection =
+        rusqlite::Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .expect("future database should remain readable");
+    let version: i64 = connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .expect("future version should remain unchanged");
+    let marker: String = connection
+        .query_row("SELECT value FROM future_marker", [], |row| row.get(0))
+        .expect("future data should remain unchanged");
+    assert_eq!(version, 999);
+    assert_eq!(marker, "keep-me");
+    drop(connection);
+    std::fs::remove_file(&path).expect("future database fixture should be removed");
+}
+
+#[test]
 fn pending_conversation_is_identified_for_visible_startup_recovery() {
     let database = test_database();
     let conversation = database

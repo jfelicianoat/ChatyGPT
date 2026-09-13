@@ -281,12 +281,110 @@ fn conversation_summary_input_is_bounded_and_leaves_newer_messages_uncovered() {
         .conversation_summary_input(&conversation.id, 60)
         .expect("bounded summary input should load");
 
-    assert_eq!(input.messages.len(), 2);
+    assert_eq!(input.messages.len(), 3);
     assert_eq!(input.source_through_sequence, 2);
+    assert_eq!(input.source_message_id.as_deref(), Some("bounded-user-two"));
+    assert_eq!(input.source_character_offset, 12);
     assert_eq!(input.included_message_count, 2);
     assert_eq!(input.remaining_message_count, 2);
-    assert_eq!(input.character_count, 48);
+    assert_eq!(input.character_count, 60);
     assert!(input.character_count <= 60);
+    cleanup(&database);
+}
+
+#[test]
+fn oversized_messages_are_summarized_in_traceable_unicode_safe_fragments() {
+    let database = test_database();
+    let conversation = database
+        .create_conversation("Mensaje demasiado largo", None)
+        .expect("conversation should be created");
+    let connection = database.connect().expect("connection should open");
+    connection
+        .execute_batch(&format!(
+            "INSERT INTO messages(id, conversation_id, role, status, sequence_no)
+             VALUES ('long-message', '{}', 'user', 'complete', 1),
+                    ('short-message', '{}', 'assistant', 'complete', 2);
+             INSERT INTO message_parts(id, message_id, ordinal, kind, content_text)
+             VALUES ('long-part', 'long-message', 0, 'text', 'áβ🙂cdef'),
+                    ('short-part', 'short-message', 0, 'text', 'fin');",
+            conversation.id, conversation.id
+        ))
+        .expect("messages should be inserted");
+    drop(connection);
+
+    let first = database
+        .conversation_summary_input(&conversation.id, 5)
+        .expect("first fragment should load");
+    assert!(first.has_new_content);
+    assert_eq!(first.character_count, 5);
+    assert_eq!(first.messages[0].text, "áβ🙂cd");
+    assert_eq!(first.source_through_sequence, 0);
+    assert_eq!(first.source_message_id.as_deref(), Some("long-message"));
+    assert_eq!(first.source_character_offset, 5);
+    assert_eq!(first.included_message_count, 0);
+    assert_eq!(first.remaining_message_count, 2);
+    assert_eq!(first.fragments[0].start_character, 0);
+    assert_eq!(first.fragments[0].end_character, 5);
+    assert_eq!(first.fragments[0].total_characters, 7);
+
+    database
+        .prepare_conversation_summary_batch(
+            &conversation.id,
+            "fragment-summary",
+            "fragment-summary-task",
+            "fragment-summary-key",
+            &serde_json::json!({
+                "inference_kind": "chat",
+                "content": {"metadata": {
+                    "source_type": "conversation_summary",
+                    "source_id": "fragment-summary"
+                }}
+            }),
+            first.source_through_sequence,
+            first.source_message_id.as_deref(),
+            first.source_character_offset,
+        )
+        .expect("partial summary should be prepared");
+    database
+        .record_remote_state(
+            "fragment-summary-task",
+            &serde_json::from_value::<TaskState>(serde_json::json!({
+                "task_id": "remote-fragment-summary",
+                "status": "completed",
+                "request_id": null,
+                "created_at": "2026-09-13T12:00:00Z",
+                "updated_at": "2026-09-13T12:00:01Z",
+                "execution_strategy": "single",
+                "execution_preset": "fast",
+                "selection_mode": "adaptive",
+                "progress": {},
+                "result": {"result_markdown": "Resumen parcial."},
+                "error": null
+            }))
+            .expect("completed summary state should be valid"),
+        )
+        .expect("partial summary should materialize");
+    database
+        .approve_conversation_summary("fragment-summary")
+        .expect("partial summary should be approved");
+
+    let context = database
+        .recent_context(&conversation.id, 10, 100)
+        .expect("context after a partial summary should load");
+    assert_eq!(context[1].message_id, "long-message");
+    assert_eq!(context[1].text, "ef");
+
+    let next = database
+        .conversation_summary_input(&conversation.id, 50)
+        .expect("the next batch should continue after the exact cursor");
+    assert_eq!(next.messages[1].message_id, "long-message");
+    assert_eq!(next.messages[1].text, "ef");
+    assert_eq!(next.messages[2].message_id, "short-message");
+    assert_eq!(next.source_through_sequence, 2);
+    assert_eq!(next.source_message_id, None);
+    assert_eq!(next.source_character_offset, 0);
+    assert_eq!(next.included_message_count, 2);
+    assert_eq!(next.remaining_message_count, 0);
     cleanup(&database);
 }
 
@@ -412,13 +510,20 @@ fn next_summary_input_merges_the_approved_summary_with_only_new_messages() {
         .conversation_summary_input(&conversation.id, 50)
         .expect("incremental input should load");
 
-    assert_eq!(input.messages.len(), 2);
+    assert_eq!(input.messages.len(), 3);
     assert_eq!(input.messages[0].role, "summary");
     assert_eq!(input.messages[0].text, "Resumen previo base.");
     assert_eq!(input.messages[1].message_id, "incremental-user-new");
+    assert_eq!(input.messages[2].message_id, "incremental-assistant-new");
+    assert_eq!(input.messages[2].text, "DDDDDD");
     assert_eq!(input.source_through_sequence, 3);
+    assert_eq!(
+        input.source_message_id.as_deref(),
+        Some("incremental-assistant-new")
+    );
+    assert_eq!(input.source_character_offset, 6);
     assert_eq!(input.included_message_count, 1);
     assert_eq!(input.remaining_message_count, 1);
-    assert_eq!(input.character_count, 44);
+    assert_eq!(input.character_count, 50);
     cleanup(&database);
 }

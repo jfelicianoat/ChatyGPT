@@ -6,6 +6,7 @@
 use super::*;
 
 impl Database {
+    #[cfg(test)]
     pub fn prepare_conversation_summary(
         &self,
         conversation_id: &str,
@@ -14,6 +15,30 @@ impl Database {
         idempotency_key: &str,
         request: &Value,
         source_through_sequence: i64,
+    ) -> Result<BrokerTaskRecord, AppError> {
+        self.prepare_conversation_summary_batch(
+            conversation_id,
+            summary_id,
+            local_task_id,
+            idempotency_key,
+            request,
+            source_through_sequence,
+            None,
+            0,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_conversation_summary_batch(
+        &self,
+        conversation_id: &str,
+        summary_id: &str,
+        local_task_id: &str,
+        idempotency_key: &str,
+        request: &Value,
+        source_through_sequence: i64,
+        source_message_id: Option<&str>,
+        source_character_offset: usize,
     ) -> Result<BrokerTaskRecord, AppError> {
         let request_json = serde_json::to_string(request)
             .map_err(|error| AppError::BrokerContract(error.to_string()))?;
@@ -47,13 +72,16 @@ impl Database {
         transaction.execute(
             "INSERT INTO conversation_summaries(
                 id, conversation_id, broker_task_id,
-                source_through_sequence, status
-             ) VALUES (?1, ?2, ?3, ?4, 'generating')",
+                source_through_sequence, source_message_id,
+                source_character_offset, status
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'generating')",
             params![
                 summary_id,
                 conversation_id,
                 local_task_id,
-                source_through_sequence
+                source_through_sequence,
+                source_message_id,
+                source_character_offset as i64
             ],
         )?;
         transaction.execute(
@@ -88,7 +116,8 @@ impl Database {
             connection
                 .query_row(
                     "SELECT id, status, draft_text, approved_text,
-                            source_through_sequence, broker_task_id, updated_at
+                            source_through_sequence, source_message_id,
+                            source_character_offset, broker_task_id, updated_at
                      FROM conversation_summaries
                      WHERE conversation_id = ?1 AND status = ?2
                      ORDER BY updated_at DESC, rowid DESC
@@ -101,8 +130,10 @@ impl Database {
                             draft_text: row.get(2)?,
                             approved_text: row.get(3)?,
                             source_through_sequence: row.get(4)?,
-                            broker_task_id: row.get(5)?,
-                            updated_at: row.get(6)?,
+                            source_message_id: row.get(5)?,
+                            source_character_offset: row.get::<_, i64>(6)? as usize,
+                            broker_task_id: row.get(7)?,
+                            updated_at: row.get(8)?,
                         })
                     },
                 )
