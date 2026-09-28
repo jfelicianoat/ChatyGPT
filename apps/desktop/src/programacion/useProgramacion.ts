@@ -676,11 +676,42 @@ export function useProgramacion(bootstrapListo: boolean) {
   };
 
   const removeSchedule = async (task: ScheduledTaskView) => {
-    if (!window.confirm(`¿Eliminar la programación “${task.name}”?`)) return;
+    // H15: eliminar ya no borra el historial. Se dice así antes de decidir.
+    if (
+      !window.confirm(
+        `¿Retirar la programación “${task.name}”? Dejará de ejecutarse; su historial seguirá consultable y podrás borrarlo después.`
+      )
+    ) {
+      return;
+    }
     setScheduleBusyId(task.id);
     setScheduleError(null);
     try {
       await platform.deleteScheduledTask(task.id);
+      setScheduledTasks({
+        state: "ready",
+        value: await platform.listScheduledTasks()
+      });
+    } catch (error) {
+      setScheduleError(describeError(error));
+    } finally {
+      setScheduleBusyId(null);
+    }
+  };
+
+  /** Borra el historial de una programación ya retirada: decisión aparte (H15). */
+  const purgeScheduleHistory = async (task: ScheduledTaskView) => {
+    if (
+      !window.confirm(
+        `¿Borrar para siempre el historial de “${task.name}”? Se eliminan sus ${task.runs.length > 0 ? "ejecuciones registradas" : "datos"} y no se puede deshacer.`
+      )
+    ) {
+      return;
+    }
+    setScheduleBusyId(task.id);
+    setScheduleError(null);
+    try {
+      await platform.purgeScheduledTaskHistory(task.id);
       setScheduledTasks({
         state: "ready",
         value: await platform.listScheduledTasks()
@@ -710,6 +741,7 @@ export function useProgramacion(bootstrapListo: boolean) {
     markSchedulerNotificationRead,
     reloadWindowsStartupStatus,
     removeSchedule,
+    purgeScheduleHistory,
     removeScheduledTaskTemplate,
     retryScheduledRun,
     runScheduledTaskNow,

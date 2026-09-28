@@ -552,7 +552,10 @@ class BuildConfigurationTests(unittest.TestCase):
         relacionaba con el arranque.
         """
         arranque = (ROOT / "scripts" / "Start-ChatyGPT.ps1").read_text(encoding="utf-8")
-        self.assertIn("/api/v1/dashboard/tasks?limit=1", arranque)
+        # Auditoria 28-sep-2026 (H20): el endpoint que el contrato reserva para
+        # esto, el mismo que usan la aplicacion y el inicio con Windows.
+        self.assertIn("/api/v1/auth/check", arranque)
+        self.assertNotIn("dashboard/tasks", arranque)
         self.assertNotIn(
             "$capabilitiesUrl",
             arranque,
@@ -560,6 +563,18 @@ class BuildConfigurationTests(unittest.TestCase):
         )
         # Un rechazo se distingue de un broker apagado: mandan a sitios distintos.
         self.assertIn("$status -eq 401 -or $status -eq 403", arranque)
+
+    def test_the_launcher_opens_the_app_without_a_broker(self) -> None:
+        """H20: sin Broker los datos siguen siendo locales y accesibles.
+
+        El lanzador abortaba si no podia comprobar la credencial, y con el Broker
+        apagado no habia forma de abrir las conversaciones desde el acceso habitual.
+        """
+        arranque = (ROOT / "scripts" / "Start-ChatyGPT.ps1").read_text(encoding="utf-8")
+        self.assertNotIn("throw (\"No se pudo hablar con Broker AI", arranque)
+        self.assertNotIn("throw \"Broker AI rechazo la credencial", arranque)
+        self.assertIn("se abrira sin conexion", arranque)
+        self.assertIn("$offline = $true", arranque)
 
     def test_windows_icon_required_by_tauri_is_a_real_ico(self) -> None:
         content = WINDOWS_ICON.read_bytes()

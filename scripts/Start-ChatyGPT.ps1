@@ -132,8 +132,11 @@ function Test-BrokerCredential {
         return $false
     }
     try {
+        # El endpoint que el contrato del broker reserva para esto (Client_API §3), el
+        # mismo que usan la aplicacion y el inicio con Windows: los tres caminos dan el
+        # mismo veredicto para el mismo token.
         $headers = @{ "x-admin-token" = $Token }
-        Invoke-RestMethod -UseBasicParsing -Uri "$BaseUrl/api/v1/dashboard/tasks?limit=1" `
+        Invoke-RestMethod -UseBasicParsing -Uri "$BaseUrl/api/v1/auth/check" `
             -Headers $headers -TimeoutSec 15 | Out-Null
         return $true
     }
@@ -162,6 +165,7 @@ if (-not $token) {
 }
 
 $validated = $false
+$offline = $false
 for ($intento = 0; $intento -lt 3; $intento++) {
     if ($token) {
         $veredicto = Test-BrokerCredential -BaseUrl $BrokerBaseUrl -Token $token
@@ -170,8 +174,12 @@ for ($intento = 0; $intento -lt 3; $intento++) {
             break
         }
         if ($null -eq $veredicto) {
-            throw ("No se pudo hablar con Broker AI en " + $BrokerBaseUrl +
-                ". Comprueba que esta arrancado; la credencial no se ha podido comprobar.")
+            # Sin broker no se puede comprobar nada, pero los datos son locales: la
+            # aplicacion se abre igual, muestra el estado y se reconecta sola.
+            Write-Warning ("Broker AI no responde en " + $BrokerBaseUrl +
+                ". ChatyGPT se abrira sin conexion: podras leer y organizar tus conversaciones.")
+            $offline = $true
+            break
         }
         if ($fromDisk) {
             Write-Host "La credencial guardada ya no vale: el broker la rechaza."
@@ -186,11 +194,13 @@ for ($intento = 0; $intento -lt 3; $intento++) {
     $fromDisk = $false
 }
 
-if (-not $validated) {
-    throw "Broker AI rechazo la credencial tres veces. Copia el token que muestra el broker al arrancar."
+if (-not $validated -and -not $offline) {
+    Write-Warning ("Broker AI rechazo la credencial tres veces. ChatyGPT se abrira igualmente; " +
+        "introduce el token actual en Ajustes > Credencial de Broker AI.")
+    $offline = $true
 }
 
-if ((Read-StoredToken -Path $credentialPath) -ne $token) {
+if ($validated -and (Read-StoredToken -Path $credentialPath) -ne $token) {
     # Se guarda despues de comprobarla, nunca antes: escribir una credencial sin
     # comprobar sustituiria una que quiza funcionaba por otra que no. Y se guarda venga
     # de donde venga —del entorno o del teclado— porque lo que rompio un dia fue
@@ -200,9 +210,17 @@ if ((Read-StoredToken -Path $credentialPath) -ne $token) {
     }
 }
 
-$env:AI_BROKER_ADMIN_TOKEN = $token
+if ($validated) {
+    $env:AI_BROKER_ADMIN_TOKEN = $token
+}
 $env:CHATYGPT_BROKER_BASE_URL = $BrokerBaseUrl
 
+if ($offline) {
+    if ($ValidateOnly) {
+        exit 1
+    }
+}
+else {
 try {
     $capabilities = Invoke-RestMethod -UseBasicParsing `
         -Uri "$BrokerBaseUrl/api/v1/capabilities" -TimeoutSec 10
@@ -213,6 +231,7 @@ catch {
     # dice nada sobre la credencial, que ya se comprobo arriba.
     Write-Host "Broker AI listo."
 }
+}
 
 if ($ValidateOnly) {
     exit 0
@@ -221,9 +240,21 @@ if ($ValidateOnly) {
 # -- Athena y aplicacion ------------------------------------------------------
 
 $raiz = Split-Path -Parent $PSScriptRoot
-& (Join-Path $PSScriptRoot "Start-AthenaForChatyGPT.ps1") `
-    -BrokerBaseUrl $BrokerBaseUrl -BrokerToken $token -PreferredModel $PreferredModel `
-    -AllowedModels $AllowedModels
+if ($validated) {
+    try {
+        & (Join-Path $PSScriptRoot "Start-AthenaForChatyGPT.ps1") `
+            -BrokerBaseUrl $BrokerBaseUrl -BrokerToken $token -PreferredModel $PreferredModel `
+            -AllowedModels $AllowedModels
+    }
+    catch {
+        # Athena es un servicio aparte: que no arranque no impide conversar.
+        Write-Warning ("Athena no pudo arrancar: " + $_.Exception.Message +
+            ". El chat funciona; el area Athena lo indicara.")
+    }
+}
+else {
+    Write-Host "Athena no se arranca sin una credencial de Broker AI comprobada."
+}
 
 $releaseExe = Join-Path $raiz "apps\desktop\src-tauri\target\release\chatygpt.exe"
 $appExit = 1

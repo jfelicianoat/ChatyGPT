@@ -6,7 +6,7 @@ sin acoplar la interfaz a su API HTTP.
 ## Estado
 
 Producto local en evolución, revisado contra el código el **13 de septiembre de 2026**
-(versión 0.2.0, esquema SQLite 24).
+(versión 0.3.0, esquema SQLite 25).
 Las fases 0 a 4 son cortes históricos de entrega, no una versión del producto. El estado
 normativo y los límites actuales están en [`docs/CURRENT_STATE.md`](docs/CURRENT_STATE.md).
 La base durable, los GPTs personales, la investigación y el cliente Athena incluyen:
@@ -118,7 +118,7 @@ La base durable, los GPTs personales, la investigación y el cliente Athena incl
 - índices de proyecto y memoria aprobada regenerados al exportar a Obsidian, excluyendo
   recuerdos sensibles y protegiendo cualquier edición externa;
 - ejecución opcional de Python en el sandbox desechable de Broker AI, habilitada para un solo turno;
-- comprobación redundante de la capacidad `sandbox_run_code` antes de persistir y enviar la tarea;
+- comprobación de la capacidad `sandbox_run_code` antes de persistir y enviar la tarea cuando `/capabilities` responde; si no responde, el turno sale igualmente, queda marcado como «capacidad no comprobada» y la interfaz lo avisa (el Broker valida y puede rechazarlo);
 - aviso explícito cuando el mensaje pide ejecutar o probar código sin haber concedido todavía el permiso;
 - privacidad, estrategia, profundidad, coste máximo y tratamiento de documentos largos configurables por conversación;
 - selección entre modelos locales y proveedores cloud habilitados, gobernada por la clasificación de datos del contrato Broker;
@@ -179,7 +179,9 @@ fragmentos relacionados y su contexto próximo, con un presupuesto total de 24.0
 hay selección local, el archivo completo no se vuelve a enviar al modelo. La
 respuesta permite revisar cada fragmento desde **Ver contexto utilizado**.
 Cada fragmento se indexa además de forma progresiva mediante embeddings locales:
-solo hay una tarea activa por documento, el trabajo continúa tras reiniciar y la
+una cola local deja como mucho cuatro fragmentos trabajando a la vez por base de datos
+(las preguntas del chat no esperan en ella), el lote se persiste entero en una sola
+transacción, el trabajo continúa tras reiniciar y la
 recuperación combina significado y coincidencias literales. Si el modelo de la
 consulta no es compatible o falla un vector, se conserva la selección por texto.
 Cuando la conversión falla, la tarjeta del adjunto traduce los límites conocidos
@@ -240,8 +242,10 @@ funcionando tras iniciar sesión sin abrir la aplicación a mano. Es una opción
 reversible por usuario: no instala servicios ni solicita permisos de
 administrador. La credencial del Broker se cifra con DPAPI para la cuenta de
 Windows, no se guarda en React, SQLite ni en el script de arranque. El iniciador
-espera a que el Broker acepte una consulta autenticada de capacidades y evita
-abrir una segunda instancia. Si cambia el token, basta con abrir una vez
+comprueba la credencial con `/api/v1/auth/check` —el mismo endpoint que el lanzador
+y la propia aplicación—, espera como mucho unos cinco minutos a que el Broker aparezca
+y abre ChatyGPT igualmente si no llega, porque los datos son locales; evita abrir una
+segunda instancia. Si cambia el token, basta con abrir una vez
 ChatyGPT mediante `Arrancar ChatyGPT.bat` para renovar la copia protegida.
 En **Inicio → Apariencia** puede elegirse tema **Windows**, **Claro** u
 **Oscuro**. La preferencia se guarda solo en WebView2 y se aplica en el HTML
@@ -373,8 +377,9 @@ Servicio Athena:
 Compatibilidad con AI Broker 2.10:
 
 - La especificación de cliente vigente es [Client_API.md](../docs/Client_API.md).
-- Las capacidades nuevas son aditivas. Si no pueden verificarse, ChatyGPT avisa
-  pero permite enviar; la creación de la tarea sigue siendo la autoridad final.
+- Las capacidades nuevas son aditivas. Si no pueden verificarse, ChatyGPT envía por
+  compatibilidad, marca el turno con las capacidades no comprobadas y lo muestra en el
+  progreso; la creación de la tarea sigue siendo la autoridad final y puede rechazarlo.
 - El selector de adjuntos usa los grupos de `ingestion_formats` anunciados por
   el Broker. Si todavía no se pudieron leer, conserva el filtro compatible
   anterior sin bloquear la selección.

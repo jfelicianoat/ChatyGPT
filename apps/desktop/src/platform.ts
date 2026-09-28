@@ -51,7 +51,12 @@ import type {
   WorkflowDefinition,
   WorkflowRunView,
   WorkflowSummary,
-  WorkflowView
+  WorkflowView,
+  ArchiveOverview,
+  BackupReport,
+  ConversationMessagePage,
+  ConversationSearchHit,
+  EffectiveExecutionPolicy,
 } from "./domain";
 
 export const platform = {
@@ -250,8 +255,16 @@ export const platform = {
   listTaskArtifacts(remoteTaskId: string): Promise<TaskArtifact[]> {
     return invoke<TaskArtifact[]>("list_task_artifacts", { remoteTaskId });
   },
+  /** Conserva el artefacto en el equipo y devuelve la ruta de la copia (H23). */
   saveTaskArtifact(remoteTaskId: string, artifactId: string): Promise<string> {
     return invoke<string>("save_task_artifact", { remoteTaskId, artifactId });
+  },
+  /** «Guardar como…»: `null` si la persona cerró el diálogo. */
+  saveTaskArtifactAs(remoteTaskId: string, artifactId: string): Promise<string | null> {
+    return invoke<string | null>("save_task_artifact_as", { remoteTaskId, artifactId });
+  },
+  revealTaskArtifact(remoteTaskId: string, artifactId: string): Promise<string> {
+    return invoke<string>("reveal_task_artifact", { remoteTaskId, artifactId });
   },
   listScheduledTasks(): Promise<ScheduledTaskView[]> {
     return invoke<ScheduledTaskView[]>("list_scheduled_tasks");
@@ -347,6 +360,13 @@ export const platform = {
       confirmed: true
     });
   },
+  /** Borra el historial de una programación ya retirada (H15). */
+  purgeScheduledTaskHistory(scheduledTaskId: string): Promise<void> {
+    return invoke<void>("purge_scheduled_task_history", {
+      scheduledTaskId,
+      confirmed: true
+    });
+  },
   retryScheduledRun(scheduledRunId: string): Promise<ScheduledTaskView> {
     return invoke<ScheduledTaskView>("retry_scheduled_run", {
       scheduledRunId,
@@ -371,8 +391,26 @@ export const platform = {
   listConversations(): Promise<ConversationSummary[]> {
     return invoke<ConversationSummary[]>("list_conversations");
   },
-  getConversation(conversationId: string): Promise<ConversationView> {
-    return invoke<ConversationView>("get_conversation", { conversationId });
+  /** Conversación con, como mucho, `messageLimit` mensajes recientes (H17). */
+  getConversation(conversationId: string, messageLimit?: number): Promise<ConversationView> {
+    return invoke<ConversationView>("get_conversation", { conversationId, messageLimit });
+  },
+  getConversationMessagesBefore(
+    conversationId: string,
+    beforeSequence: number,
+    limit: number
+  ): Promise<ConversationMessagePage> {
+    return invoke<ConversationMessagePage>("get_conversation_messages_before", {
+      conversationId,
+      beforeSequence,
+      limit
+    });
+  },
+  /** Privacidad, coste y destino que se aplicarán al próximo mensaje (H01). */
+  getEffectiveExecutionPolicy(conversationId: string): Promise<EffectiveExecutionPolicy> {
+    return invoke<EffectiveExecutionPolicy>("get_effective_execution_policy", {
+      conversationId
+    });
   },
   updateConversationExecutionPreferences(
     conversationId: string,
@@ -401,8 +439,20 @@ export const platform = {
   revealContextSource(localTaskId: string, sourceReference: string): Promise<string> {
     return invoke<string>("reveal_context_source", { localTaskId, sourceReference });
   },
-  searchConversations(query: string): Promise<ConversationSummary[]> {
-    return invoke<ConversationSummary[]>("search_conversations", { query });
+  searchConversations(query: string, includeArchived = false): Promise<ConversationSearchHit[]> {
+    return invoke<ConversationSearchHit[]>("search_conversations", { query, includeArchived });
+  },
+  getArchiveOverview(): Promise<ArchiveOverview> {
+    return invoke<ArchiveOverview>("get_archive_overview");
+  },
+  restoreConversation(conversationId: string): Promise<ConversationSummary> {
+    return invoke<ConversationSummary>("restore_conversation", { conversationId });
+  },
+  restoreProject(projectId: string): Promise<ProjectSummary> {
+    return invoke<ProjectSummary>("restore_project", { projectId });
+  },
+  purgeConversation(conversationId: string): Promise<void> {
+    return invoke<void>("purge_conversation", { conversationId, confirmed: true });
   },
   renameConversation(conversationId: string, title: string): Promise<ConversationSummary> {
     return invoke<ConversationSummary>("rename_conversation", { conversationId, title });
@@ -694,6 +744,18 @@ export const platform = {
   pickObsidianVault(): Promise<string | null> {
     return invoke<string | null>("pick_obsidian_vault");
   },
+  pickBackupFolder(): Promise<string | null> {
+    return invoke<string | null>("pick_backup_folder");
+  },
+  createBackup(destinationFolder: string): Promise<BackupReport> {
+    return invoke<BackupReport>("create_backup", { destinationFolder });
+  },
+  inspectBackup(folder: string): Promise<BackupReport> {
+    return invoke<BackupReport>("inspect_backup", { folder });
+  },
+  scheduleBackupRestore(folder: string): Promise<BackupReport> {
+    return invoke<BackupReport>("schedule_backup_restore", { folder, confirmed: true });
+  },
   exportConversation(
     conversationId: string,
     destinationPath: string,
@@ -723,8 +785,12 @@ export const platform = {
     toolsEnabled: boolean,
     sandboxEnabled: boolean,
     semanticMemoryEnabled: boolean,
-    researchMode: boolean
+    researchMode: boolean,
+    clientOperationId?: string
   ): Promise<LocalTaskSnapshot> {
+    // El identificador de operación acompaña al borrador: si hay que repetir
+    // un envío cuyo resultado no se conoció, Rust devuelve la tarea del
+    // primero en vez de crear otra (H12).
     return invoke<LocalTaskSnapshot>("send_chat_turn", {
       conversationId,
       text,
@@ -732,7 +798,8 @@ export const platform = {
       toolsEnabled,
       sandboxEnabled,
       semanticMemoryEnabled,
-      researchMode
+      researchMode,
+      clientOperationId
     });
   },
   resolveToolCalls(

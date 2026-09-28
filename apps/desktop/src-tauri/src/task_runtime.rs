@@ -39,20 +39,49 @@ fn preserve_stricter_data_classification(
     preferences: &mut ConversationExecutionPreferences,
     inherited: Option<&str>,
 ) {
-    fn rank(value: &str) -> u8 {
-        match value {
-            "public" => 0,
-            "internal" => 1,
-            "confidential" => 2,
-            "local_only" => 3,
-            _ => 0,
-        }
-    }
     if let Some(inherited) = inherited {
-        if rank(inherited) > rank(&preferences.data_classification) {
+        if crate::politica::classification_rank(inherited)
+            > crate::politica::classification_rank(&preferences.data_classification)
+        {
             preferences.data_classification = inherited.to_owned();
         }
     }
+}
+
+/// Política que se aplicará al próximo mensaje corriente de la conversación.
+///
+/// Calcula con las mismas piezas que `start_chat_turn`: perfil del GPT,
+/// clasificación heredada del historial reciente y recuerdos que se
+/// adjuntarían. La interfaz la muestra antes de enviar.
+pub fn effective_policy_for_conversation(
+    database: &Database,
+    broker: &BrokerClient,
+    conversation_id: &str,
+) -> Result<crate::politica::EffectiveExecutionPolicy, AppError> {
+    let chat = database.conversation_execution_preferences(conversation_id)?;
+    let custom_gpt_context = database.custom_gpt_for_conversation(conversation_id)?;
+    let budget = custom_gpt_context_budget(custom_gpt_context.as_ref());
+    let context = database.recent_context(
+        conversation_id,
+        budget.recent_messages,
+        budget.recent_characters,
+    )?;
+    let inherited = database.context_data_classification(conversation_id, &context)?;
+    let memories = database.active_memories_for_conversation_with_limits(
+        conversation_id,
+        budget.memory_items,
+        budget.memory_characters,
+    )?;
+    let sensitive = memories
+        .iter()
+        .any(|memory| memory.sensitivity.eq_ignore_ascii_case("sensitive"));
+    Ok(crate::politica::effective_policy(
+        &chat,
+        custom_gpt_context.as_ref(),
+        inherited.as_deref(),
+        sensitive,
+        &broker.base_url(),
+    ))
 }
 
 const SUMMARY_INPUT_CHARACTER_BUDGET: usize = 48_000;
@@ -156,9 +185,10 @@ pub fn start_attachment_semantic_index(
     if chunks.is_empty() {
         return Ok(None);
     }
-    // Primero se persiste el lote entero. Solo después se lanza la primera
-    // petición HTTP, para que una pregunta nunca observe 12 de 259 tareas.
-    let mut records = Vec::with_capacity(chunks.len());
+    // Primero se persiste el lote entero, en una sola transacción. Solo
+    // después se lanza la primera petición HTTP, para que una pregunta nunca
+    // observe 12 de 259 tareas, tampoco tras un cierre a mitad del lote.
+    let mut prepared = Vec::with_capacity(chunks.len());
     for chunk in chunks {
         let local_id = format!("local_{}", Uuid::new_v4().simple());
         let idempotency_key = if retry_failed {
@@ -184,11 +214,15 @@ pub fn start_attachment_semantic_index(
         if dependencies_enabled {
             request["group"] = json!(document_embedding_group(attachment_id));
         }
-        records.push(database.prepare_broker_task(&local_id, &idempotency_key, &request)?);
+        prepared.push((local_id, idempotency_key, request));
     }
+    let records = database.prepare_broker_tasks(&prepared)?;
     let snapshot = database.task_snapshot(&records[0].id)?;
+    // Cada fragmento espera turno en la cola de indexación: un documento de
+    // miles de fragmentos no abre miles de peticiones a la vez ni retrasa las
+    // preguntas de la persona, que no pasan por esta cola.
     for record in records {
-        spawn_submission_and_poll(database.clone(), broker.clone(), record);
+        spawn_bounded_index_task(database.clone(), broker.clone(), record);
     }
     Ok(Some(snapshot))
 }
@@ -286,6 +320,7 @@ pub fn start_memory_search(
     database.memory_search(&search_id)
 }
 
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub async fn start_chat_turn(
     database: Database,
@@ -298,6 +333,103 @@ pub async fn start_chat_turn(
     semantic_memory_enabled: bool,
     research_mode: bool,
 ) -> Result<LocalTaskSnapshot, AppError> {
+    start_chat_turn_with_identity(
+        database,
+        broker,
+        conversation_id,
+        user_text,
+        attachment_ids,
+        ChatTurnOptions {
+            tools_enabled,
+            sandbox_enabled,
+            semantic_memory_enabled,
+            research_mode,
+        },
+        None,
+    )
+    .await
+}
+
+/// Opciones de un turno que la persona decide al enviarlo.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ChatTurnOptions {
+    pub tools_enabled: bool,
+    pub sandbox_enabled: bool,
+    pub semantic_memory_enabled: bool,
+    pub research_mode: bool,
+}
+
+/// Turno de una ejecución programada: su identidad deriva de la ejecución.
+pub async fn start_chat_turn_for_operation(
+    database: Database,
+    broker: BrokerClient,
+    conversation_id: &str,
+    user_text: &str,
+    operation_key: &str,
+) -> Result<LocalTaskSnapshot, AppError> {
+    start_chat_turn_with_identity(
+        database,
+        broker,
+        conversation_id,
+        user_text,
+        &[],
+        ChatTurnOptions::default(),
+        Some(operation_key),
+    )
+    .await
+}
+
+/// Normaliza el identificador de operación que propone la interfaz.
+///
+/// Solo se aceptan caracteres que el contrato del Broker admite en una clave
+/// idempotente; cualquier otra cosa se rechaza en vez de sanearse, para no
+/// fundir en una misma identidad dos operaciones distintas.
+pub fn client_operation_key(raw: &str) -> Result<String, AppError> {
+    let raw = raw.trim();
+    let valid = !raw.is_empty()
+        && raw.len() <= 80
+        && raw
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'));
+    if !valid {
+        return Err(AppError::Validation(
+            "el identificador de operación del envío no es válido".to_owned(),
+        ));
+    }
+    Ok(format!("chatygpt:turn:{raw}"))
+}
+
+/// Envía un turno con identidad opcional.
+///
+/// Con `operation_key`, repetir la llamada —porque la anterior no contestó,
+/// porque la aplicación se reinició entre crear y enlazar— devuelve la tarea
+/// ya creada en lugar de crear una segunda con otra clave.
+pub async fn start_chat_turn_with_identity(
+    database: Database,
+    broker: BrokerClient,
+    conversation_id: &str,
+    user_text: &str,
+    attachment_ids: &[String],
+    options: ChatTurnOptions,
+    operation_key: Option<&str>,
+) -> Result<LocalTaskSnapshot, AppError> {
+    let ChatTurnOptions {
+        tools_enabled,
+        sandbox_enabled,
+        semantic_memory_enabled,
+        research_mode,
+    } = options;
+    let semantic_operation_key = operation_key.map(|key| format!("{key}:semantic-search"));
+    if let Some(key) = operation_key {
+        for candidate in [Some(key), semantic_operation_key.as_deref()]
+            .into_iter()
+            .flatten()
+        {
+            if let Some(existing) = database.task_id_by_idempotency_key(candidate)? {
+                return database.task_snapshot(&existing);
+            }
+        }
+    }
     let user_text = user_text.trim();
     if user_text.is_empty() {
         return Err(AppError::BrokerContract(
@@ -346,6 +478,22 @@ pub async fn start_chat_turn(
     } else {
         None
     };
+    // H21: si `/capabilities` no respondió, el turno sigue por compatibilidad
+    // —el Broker valida igualmente y puede rechazarlo—, pero lo declara. La
+    // interfaz lo muestra como «capacidad no comprobada» en vez de callarlo.
+    let capabilities_requested = sandbox_enabled || research_mode || !attachments.is_empty();
+    let mut unverified_capabilities: Vec<&str> = Vec::new();
+    if capabilities_requested && capabilities.is_none() {
+        if sandbox_enabled {
+            unverified_capabilities.push("sandbox");
+        }
+        if research_mode {
+            unverified_capabilities.push("research");
+        }
+        if !attachments.is_empty() {
+            unverified_capabilities.push("document_dependencies");
+        }
+    }
     let has_tabular_attachment = attachments.iter().any(is_tabular_attachment);
     if has_tabular_attachment && !sandbox_enabled {
         return Err(AppError::Conflict(
@@ -434,8 +582,9 @@ pub async fn start_chat_turn(
         let workflow_id = format!("semantic_chat_{}", Uuid::new_v4().simple());
         let local_task_id = format!("local_{}", Uuid::new_v4().simple());
         let content_sha256 = format!("{:x}", Sha256::digest(user_text.as_bytes()));
-        let idempotency_key =
-            format!("chatygpt:semantic-chat-search:{workflow_id}:{content_sha256}");
+        let idempotency_key = semantic_operation_key.clone().unwrap_or_else(|| {
+            format!("chatygpt:semantic-chat-search:{workflow_id}:{content_sha256}")
+        });
         let request = embedding_request(
             &idempotency_key,
             if semantic_memory_enabled {
@@ -447,7 +596,9 @@ pub async fn start_chat_turn(
             user_text,
             &content_sha256,
         );
-        let request = apply_document_index_dependency(request, document_index_dependency.as_ref());
+        let mut request =
+            apply_document_index_dependency(request, document_index_dependency.as_ref());
+        mark_unverified_capabilities(&mut request, &unverified_capabilities);
         let record = database.prepare_semantic_chat_turn_with_project_instruction(
             &workflow_id,
             conversation_id,
@@ -477,7 +628,9 @@ pub async fn start_chat_turn(
         context_budget.memory_characters,
     )?;
     let local_task_id = format!("local_{}", Uuid::new_v4().simple());
-    let idempotency_key = format!("chatygpt:turn:{}", Uuid::new_v4());
+    let idempotency_key = operation_key
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("chatygpt:turn:{}", Uuid::new_v4()));
     let mut request = chat_request_with_project_instruction_and_classification(
         conversation_id,
         &idempotency_key,
@@ -499,6 +652,7 @@ pub async fn start_chat_turn(
         request = apply_deep_research_plan(request, plan)?;
     }
     request = apply_document_index_dependency(request, document_index_dependency.as_ref());
+    mark_unverified_capabilities(&mut request, &unverified_capabilities);
     let record = database.prepare_chat_turn_with_project_instruction(
         conversation_id,
         &user_message_id,
@@ -519,5 +673,21 @@ pub async fn start_chat_turn(
     Ok(snapshot)
 }
 
+/// Anota en la petición qué capacidades no pudieron comprobarse antes de enviar.
+fn mark_unverified_capabilities(request: &mut serde_json::Value, unverified: &[&str]) {
+    if unverified.is_empty() {
+        return;
+    }
+    if let Some(metadata) = request
+        .pointer_mut("/content/metadata")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        metadata.insert("unverified_capabilities".to_owned(), json!(unverified));
+    }
+}
+
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod tests_auditoria;

@@ -21,6 +21,52 @@ pub struct ConversationSummary {
     pub updated_at: String,
 }
 
+/// Resultado de búsqueda: la conversación y dónde coincidió (H22).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationSearchHit {
+    pub id: String,
+    pub title: String,
+    pub project_id: Option<String>,
+    pub updated_at: String,
+    /// La conversación está archivada: solo aparece si se pidió incluirlas.
+    pub archived: bool,
+    /// Mensaje donde está la coincidencia, para abrir la conversación en él.
+    pub matched_message_id: Option<String>,
+    /// Texto alrededor de la coincidencia, ya recortado.
+    pub snippet: Option<String>,
+}
+
+/// Lo que la persona archivó o eliminó y todavía puede recuperar (H14).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchiveOverview {
+    pub conversations: Vec<ArchivedConversation>,
+    pub trash: Vec<ArchivedConversation>,
+    pub projects: Vec<ArchivedProject>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchivedConversation {
+    pub id: String,
+    pub title: String,
+    pub project_name: Option<String>,
+    pub message_count: i64,
+    pub archived_at: Option<String>,
+    pub deleted_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchivedProject {
+    pub id: String,
+    pub name: String,
+    pub archived_at: String,
+    /// Conversaciones que volverán al proyecto si se restaura.
+    pub conversation_count: i64,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationSummaryRevision {

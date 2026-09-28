@@ -183,9 +183,16 @@ impl Database {
             transaction.commit()?;
         }
         let current: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if current < SCHEMA_VERSION {
+        if current < 24 {
             let transaction = connection.transaction()?;
             transaction.execute_batch(SUMMARY_FRAGMENTS_MIGRATION)?;
+            transaction.pragma_update(None, "user_version", 24)?;
+            transaction.commit()?;
+        }
+        let current: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        if current < SCHEMA_VERSION {
+            let transaction = connection.transaction()?;
+            transaction.execute_batch(AUDIT_2026_09_28_MIGRATION)?;
             transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             transaction.commit()?;
         }
@@ -209,6 +216,7 @@ impl Database {
         )?;
         connection.busy_timeout(std::time::Duration::from_secs(5))?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
+        register_search_functions(&connection)?;
         Ok(connection)
     }
 
@@ -293,6 +301,81 @@ impl Database {
             params![id],
         )?;
         self.task_record(id)
+    }
+
+    /// Persiste un lote de tareas entero o nada.
+    ///
+    /// La indexación de un documento prepara cientos de fragmentos: si la
+    /// aplicación se cerrara a mitad de una serie de inserciones sueltas, la
+    /// recuperación vería un índice parcial como si fuera el lote completo.
+    pub fn prepare_broker_tasks(
+        &self,
+        tasks: &[(String, String, Value)],
+    ) -> Result<Vec<BrokerTaskRecord>, AppError> {
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        for (id, idempotency_key, request) in tasks {
+            let request_json = serde_json::to_string(request)
+                .map_err(|error| AppError::BrokerContract(error.to_string()))?;
+            transaction.execute(
+                "INSERT INTO broker_tasks(
+                    id, idempotency_key, request_json, remote_status, local_state
+                 ) VALUES (?1, ?2, ?3, 'not_submitted', 'created')",
+                params![id, idempotency_key, request_json],
+            )?;
+            transaction.execute(
+                "INSERT INTO broker_task_events(
+                    broker_task_id, event_type, remote_status, payload_json, occurred_at
+                 ) VALUES (?1, 'local.prepared', 'not_submitted', '{}', datetime('now'))",
+                params![id],
+            )?;
+        }
+        transaction.commit()?;
+        tasks
+            .iter()
+            .map(|(id, _, _)| self.task_record(id))
+            .collect()
+    }
+
+    /// Copia coherente de la base, aunque haya escrituras en el WAL (H16).
+    pub fn vacuum_into(&self, destination: &Path) -> Result<(), AppError> {
+        let target = destination.to_string_lossy().into_owned();
+        self.connect()?.execute("VACUUM INTO ?1", params![target])?;
+        Ok(())
+    }
+
+    /// Resultado de `PRAGMA integrity_check`: `ok` si la base está sana.
+    pub fn integrity_check(&self) -> Result<String, AppError> {
+        Ok(self
+            .connect()?
+            .query_row("PRAGMA integrity_check", [], |row| row.get(0))?)
+    }
+
+    pub fn conversation_count(&self) -> Result<i64, AppError> {
+        Ok(self.connect()?.query_row(
+            "SELECT COUNT(*) FROM conversations WHERE deleted_at IS NULL",
+            [],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// Revoca todas las carpetas autorizadas tras restaurar una copia.
+    ///
+    /// En otra cuenta o en otro equipo, la misma ruta no tiene por qué ser la
+    /// misma carpeta: reutilizar el permiso sería concederlo sin preguntar.
+    pub fn revoke_all_authorized_folders(&self) -> Result<usize, AppError> {
+        let connection = self.connect()?;
+        let revoked = connection.execute(
+            "UPDATE authorized_folders SET revoked_at = datetime('now')
+             WHERE revoked_at IS NULL",
+            [],
+        )?;
+        connection.execute(
+            "INSERT INTO audit_events(event_type, actor, payload_json)
+             VALUES ('backup.restored', 'user', ?1)",
+            params![serde_json::json!({"revoked_folders": revoked}).to_string()],
+        )?;
+        Ok(revoked)
     }
 
     pub fn path(&self) -> &Path {

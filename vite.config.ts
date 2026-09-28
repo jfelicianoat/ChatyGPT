@@ -43,14 +43,15 @@ export default defineConfig({
         "src/**/*.test.{ts,tsx}"
       ],
       thresholds: {
-        // Baseline del frontend completo (13/09/2026): 56,20 % de líneas y
-        // sentencias, 72,61 % de ramas y 41,53 % de funciones. El margen solo
-        // absorbe pequeñas variaciones de instrumentación; una caída material
-        // hace fallar la puerta.
-        lines: 55,
-        functions: 40,
-        statements: 55,
-        branches: 70
+        // Baseline del frontend completo (28/09/2026, tras la auditoría):
+        // 58,16 % de líneas y sentencias, 73,85 % de ramas y 45,33 % de
+        // funciones (antes 56,20 / 72,61 / 41,53). El margen solo absorbe
+        // pequeñas variaciones de instrumentación; una caída material hace
+        // fallar la puerta.
+        lines: 57,
+        functions: 44,
+        statements: 57,
+        branches: 72
       }
     }
   }

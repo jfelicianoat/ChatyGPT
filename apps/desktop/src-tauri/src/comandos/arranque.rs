@@ -13,7 +13,63 @@ pub(crate) fn bootstrap_app(state: State<'_, AppState>) -> Result<BootstrapRepor
         recovered_attachments: state.recovered_attachments_at_start,
         recovered_workflows: state.recovered_workflows_at_start,
         recovery_items: state.recovery_items_at_start.clone(),
+        restore_notice: state.restore_notice.clone(),
     })
+}
+
+/// Elige la carpeta donde crear o desde la que leer una copia de seguridad.
+#[tauri::command]
+pub(crate) fn pick_backup_folder() -> Result<Option<String>, AppError> {
+    crate::comandos::pick_folder("Elige la carpeta de las copias de seguridad de ChatyGPT")
+}
+
+/// Crea una copia completa y verificada (H16).
+#[tauri::command]
+pub(crate) async fn create_backup(
+    destination_folder: String,
+    state: State<'_, AppState>,
+) -> Result<respaldo::BackupReport, AppError> {
+    let database = state.database.clone();
+    let data_dir = state.data_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        respaldo::create_backup(
+            &database,
+            &data_dir,
+            std::path::Path::new(&destination_folder),
+        )
+    })
+    .await
+    .map_err(|error| AppError::DataDirectory(error.to_string()))?
+}
+
+/// Verifica una copia sin tocar los datos en uso.
+#[tauri::command]
+pub(crate) async fn inspect_backup(folder: String) -> Result<respaldo::BackupReport, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        respaldo::verify_backup(std::path::Path::new(&folder))
+    })
+    .await
+    .map_err(|error| AppError::DataDirectory(error.to_string()))?
+}
+
+/// Programa la restauración de una copia para el próximo arranque.
+#[tauri::command]
+pub(crate) async fn schedule_backup_restore(
+    folder: String,
+    confirmed: bool,
+    state: State<'_, AppState>,
+) -> Result<respaldo::BackupReport, AppError> {
+    if !confirmed {
+        return Err(AppError::Validation(
+            "restaurar una copia requiere confirmación explícita".to_owned(),
+        ));
+    }
+    let data_dir = state.data_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        respaldo::schedule_restore(&data_dir, std::path::Path::new(&folder))
+    })
+    .await
+    .map_err(|error| AppError::DataDirectory(error.to_string()))?
 }
 
 #[tauri::command]

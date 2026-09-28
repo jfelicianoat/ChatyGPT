@@ -105,6 +105,10 @@ export type LocalTaskSnapshot = {
   };
   pendingToolCalls: ToolCallView[];
   updatedAt: string;
+  /** La persona pidió cancelar y el Broker aún no lo ha confirmado (H08). */
+  cancelRequested?: boolean;
+  /** Capacidades que no pudieron comprobarse antes de enviar (H21). */
+  unverifiedCapabilities?: string[];
 };
 
 const TASK_PHASE_LABELS: Record<string, string> = {

@@ -326,9 +326,10 @@ impl Database {
         if changed == 0 {
             return Err(AppError::NotFound(format!("proyecto {id}")));
         }
+        // Se recuerda la agrupación para poder deshacerla al restaurar (H14).
         transaction.execute(
             "UPDATE conversations
-             SET project_id = NULL, updated_at = datetime('now')
+             SET project_id = NULL, archived_project_id = ?1, updated_at = datetime('now')
              WHERE project_id = ?1 AND deleted_at IS NULL",
             params![id],
         )?;
@@ -339,5 +340,41 @@ impl Database {
         )?;
         transaction.commit()?;
         Ok(())
+    }
+
+    /// Restaura un proyecto archivado y le devuelve sus conversaciones.
+    ///
+    /// Solo vuelven las que no se movieron a otro proyecto mientras tanto:
+    /// restaurar no deshace decisiones posteriores de la persona.
+    pub fn restore_project(&self, id: &str) -> Result<ProjectSummary, AppError> {
+        let connection = self.connect()?;
+        let transaction = connection.unchecked_transaction()?;
+        let changed = transaction.execute(
+            "UPDATE projects SET archived_at = NULL, updated_at = datetime('now')
+             WHERE id = ?1 AND archived_at IS NOT NULL",
+            params![id],
+        )?;
+        if changed == 0 {
+            return Err(AppError::NotFound(format!("proyecto archivado {id}")));
+        }
+        let returned = transaction.execute(
+            "UPDATE conversations
+             SET project_id = archived_project_id, archived_project_id = NULL,
+                 updated_at = datetime('now')
+             WHERE archived_project_id = ?1 AND project_id IS NULL",
+            params![id],
+        )?;
+        transaction.execute(
+            "UPDATE conversations SET archived_project_id = NULL
+             WHERE archived_project_id = ?1",
+            params![id],
+        )?;
+        transaction.execute(
+            "INSERT INTO audit_events(event_type, actor, payload_json)
+             VALUES ('project.restored', 'user', ?1)",
+            params![serde_json::json!({"project_id": id, "conversations": returned}).to_string()],
+        )?;
+        transaction.commit()?;
+        self.project_summary(id)
     }
 }

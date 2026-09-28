@@ -120,28 +120,78 @@ pub fn validate_fetch_url(raw: &str) -> Result<Url, AppError> {
 }
 
 fn reject_private_address(address: IpAddr) -> Result<(), AppError> {
-    let private = match address {
-        IpAddr::V4(v4) => {
-            v4.is_loopback() || v4.is_private() || v4.is_link_local() || v4.is_unspecified()
-        }
-        IpAddr::V6(v6) => {
-            if let Some(v4) = v6.to_ipv4_mapped() {
-                return reject_private_address(IpAddr::V4(v4));
-            }
-            v6.is_loopback()
-                || v6.is_unspecified()
-                // Direcciones únicas locales (fc00::/7), el equivalente a las privadas de IPv4.
-                || (v6.segments()[0] & 0xfe00) == 0xfc00
-                // Enlace local (fe80::/10).
-                || (v6.segments()[0] & 0xffc0) == 0xfe80
-        }
-    };
-    if private {
+    if !is_public_address(address) {
         return Err(AppError::Validation(
             "no se abren direcciones del propio equipo ni de la red local".to_owned(),
         ));
     }
     Ok(())
+}
+
+/// Solo las direcciones globales son destinos admisibles.
+///
+/// `is_private` e `is_loopback` no bastan: dejan pasar la red compartida de
+/// los operadores (100.64/10), los rangos de documentación y de pruebas,
+/// difusión, multidifusión, la red «esta» (0/8) y las IPv6 que envuelven una
+/// IPv4 interna (NAT64, 6to4, compatibles).
+pub(crate) fn is_public_address(address: IpAddr) -> bool {
+    match address {
+        IpAddr::V4(v4) => {
+            let [a, b, c, _] = v4.octets();
+            !(v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || v4.is_documentation()
+                || v4.is_multicast()
+                || a == 0
+                // Red compartida de operadores (CGNAT), 100.64.0.0/10.
+                || (a == 100 && (64..128).contains(&b))
+                // Asignaciones de protocolo del IETF, 192.0.0.0/24.
+                || (a == 192 && b == 0 && c == 0)
+                // Pruebas de rendimiento, 198.18.0.0/15.
+                || (a == 198 && (b == 18 || b == 19))
+                // Reservado para uso futuro, 240.0.0.0/4.
+                || a >= 240)
+        }
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_public_address(IpAddr::V4(v4));
+            }
+            let segments = v6.segments();
+            // NAT64 (64:ff9b::/96) y 6to4 (2002::/16) llevan una IPv4 dentro.
+            if segments[0] == 0x0064 && segments[1] == 0xff9b {
+                let v4 = std::net::Ipv4Addr::new(
+                    (segments[6] >> 8) as u8,
+                    segments[6] as u8,
+                    (segments[7] >> 8) as u8,
+                    segments[7] as u8,
+                );
+                return is_public_address(IpAddr::V4(v4));
+            }
+            if segments[0] == 0x2002 {
+                let v4 = std::net::Ipv4Addr::new(
+                    (segments[1] >> 8) as u8,
+                    segments[1] as u8,
+                    (segments[2] >> 8) as u8,
+                    segments[2] as u8,
+                );
+                return is_public_address(IpAddr::V4(v4));
+            }
+            !(v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                // IPv4 compatibles (::a.b.c.d), obsoletas pero resolubles.
+                || (segments[..6].iter().all(|segment| *segment == 0))
+                // Direcciones únicas locales (fc00::/7), el equivalente a las privadas de IPv4.
+                || (segments[0] & 0xfe00) == 0xfc00
+                // Enlace local (fe80::/10).
+                || (segments[0] & 0xffc0) == 0xfe80
+                // Documentación, 2001:db8::/32.
+                || (segments[0] == 0x2001 && segments[1] == 0x0db8))
+        }
+    }
 }
 
 fn reject_private_destinations(addresses: &[SocketAddr]) -> Result<(), AppError> {
@@ -156,30 +206,141 @@ fn reject_private_destinations(addresses: &[SocketAddr]) -> Result<(), AppError>
     Ok(())
 }
 
-async fn validate_resolved_destination(url: &Url) -> Result<(), AppError> {
+/// Resuelve el destino una sola vez y comprueba cada dirección obtenida.
+///
+/// Devuelve las direcciones admitidas para que la conexión use exactamente
+/// esas: si el cliente HTTP volviera a resolver el nombre, una segunda
+/// respuesta DNS distinta —la técnica de «DNS rebinding»— podría llevarlo a la
+/// red local después de haber superado la comprobación.
+async fn resolve_admitted_addresses(
+    url: &Url,
+    policy: AddressPolicy,
+) -> Result<Vec<SocketAddr>, AppError> {
     let host = url
         .host_str()
         .ok_or_else(|| AppError::Validation("la URL indicada no tiene servidor".to_owned()))?
+        .trim_start_matches('[')
+        .trim_end_matches(']')
         .to_owned();
     let port = url.port_or_known_default().unwrap_or(80);
-    let addresses = tauri::async_runtime::spawn_blocking(move || {
-        (host.as_str(), port)
-            .to_socket_addrs()
-            .map(|items| items.collect::<Vec<_>>())
-    })
-    .await
-    .map_err(|error| AppError::BrokerTransport(error.to_string()))?
-    .map_err(|error| {
-        AppError::BrokerTransport(format!("no se pudo resolver el destino: {error}"))
-    })?;
-    reject_private_destinations(&addresses)
+    let resolver = policy.resolver();
+    let addresses = tauri::async_runtime::spawn_blocking(move || resolver(&host, port))
+        .await
+        .map_err(|error| AppError::BrokerTransport(error.to_string()))?
+        .map_err(|error| {
+            AppError::BrokerTransport(format!("no se pudo resolver el destino: {error}"))
+        })?;
+    policy.admit(&addresses)?;
+    Ok(addresses)
 }
 
+type Resolver = fn(&str, u16) -> std::io::Result<Vec<SocketAddr>>;
+
+fn system_resolver(host: &str, port: u16) -> std::io::Result<Vec<SocketAddr>> {
+    (host, port).to_socket_addrs().map(|items| items.collect())
+}
+
+/// Qué direcciones puede alcanzar una descarga.
+///
+/// En producción solo hay una política. La variante de pruebas sustituye el
+/// resolvedor y admite el bucle local, que es donde vive el servidor de la
+/// prueba; así se puede demostrar que la conexión va a la dirección validada
+/// y no a la que devolvería una segunda consulta DNS.
+#[derive(Clone, Copy)]
+pub(crate) enum AddressPolicy {
+    PublicOnly,
+    #[cfg(test)]
+    Test {
+        resolver: Resolver,
+        allow_loopback: bool,
+    },
+}
+
+impl AddressPolicy {
+    fn resolver(self) -> Resolver {
+        match self {
+            Self::PublicOnly => system_resolver,
+            #[cfg(test)]
+            Self::Test { resolver, .. } => resolver,
+        }
+    }
+
+    fn admit(self, addresses: &[SocketAddr]) -> Result<(), AppError> {
+        match self {
+            Self::PublicOnly => reject_private_destinations(addresses),
+            #[cfg(test)]
+            Self::Test { allow_loopback, .. } => {
+                if allow_loopback && addresses.iter().all(|address| address.ip().is_loopback()) {
+                    Ok(())
+                } else {
+                    reject_private_destinations(addresses)
+                }
+            }
+        }
+    }
+}
+
+/// Cliente de un solo salto, clavado a las direcciones ya validadas.
+///
+/// Sin proxies automáticos: una variable `HTTP_PROXY` del sistema desviaría la
+/// conexión a otro equipo, que resolvería el nombre por su cuenta y dejaría
+/// sin efecto la comprobación.
+fn pinned_client(url: &Url, addresses: &[SocketAddr]) -> Result<Client, AppError> {
+    let mut builder = Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(FETCH_TIMEOUT_SECONDS))
+        // Cada salto se sigue manualmente en `fetch_url`: así se valida su
+        // destino literal y su resolución DNS antes de abrir la conexión.
+        .redirect(reqwest::redirect::Policy::none())
+        .no_proxy()
+        .user_agent(concat!("ChatyGPT/", env!("CARGO_PKG_VERSION")));
+    if let Some(Host::Domain(domain)) = url.host() {
+        builder = builder.resolve_to_addrs(domain, addresses);
+    }
+    builder
+        .build()
+        .map_err(|error| AppError::BrokerTransport(error.to_string()))
+}
+
+#[cfg(test)]
 fn redirect_target(current: &Url, location: &str) -> Result<Url, AppError> {
+    redirect_target_with_policy(current, location, AddressPolicy::PublicOnly)
+}
+
+fn redirect_target_with_policy(
+    current: &Url,
+    location: &str,
+    policy: AddressPolicy,
+) -> Result<Url, AppError> {
     let target = current.join(location).map_err(|_| {
         AppError::Validation("la redirección contiene una URL no válida".to_owned())
     })?;
-    validate_fetch_url(target.as_str())
+    validate_fetch_url_with_policy(target.as_str(), policy)
+}
+
+/// Igual que `validate_fetch_url`, pero la variante de pruebas admite el
+/// bucle local donde escucha su servidor.
+fn validate_fetch_url_with_policy(raw: &str, policy: AddressPolicy) -> Result<Url, AppError> {
+    match policy {
+        AddressPolicy::PublicOnly => validate_fetch_url(raw),
+        #[cfg(test)]
+        AddressPolicy::Test {
+            allow_loopback: true,
+            ..
+        } => {
+            let url = Url::parse(raw.trim())
+                .map_err(|_| AppError::Validation("la URL indicada no es válida".to_owned()))?;
+            if url.host_str() == Some("127.0.0.1")
+                || url.host_str().is_some_and(|host| host.ends_with(".test"))
+            {
+                Ok(url)
+            } else {
+                validate_fetch_url(raw)
+            }
+        }
+        #[cfg(test)]
+        AddressPolicy::Test { .. } => validate_fetch_url(raw),
+    }
 }
 
 /// Reduce un HTML a texto legible.
@@ -277,22 +438,6 @@ fn collapse_whitespace(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Cliente HTTP para abrir páginas, separado del que habla con el Broker.
-///
-/// No lleva la credencial del Broker ni sus tiempos de espera: son destinos
-/// distintos y mezclarlos arriesgaría enviar el token a un tercero.
-pub fn web_client() -> Result<Client, AppError> {
-    Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(5))
-        .timeout(std::time::Duration::from_secs(FETCH_TIMEOUT_SECONDS))
-        // Cada salto se sigue manualmente en `fetch_url`: así se valida su
-        // destino literal y su resolución DNS antes de abrir la conexión.
-        .redirect(reqwest::redirect::Policy::none())
-        .user_agent(concat!("ChatyGPT/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .map_err(|error| AppError::BrokerTransport(error.to_string()))
-}
-
 /// Ejecuta una consulta GET sin credenciales, cuerpo ni cabeceras aportadas por
 /// el modelo. Las redirecciones se desactivan para que una URL pública no pueda
 /// saltar después a la red local.
@@ -313,25 +458,26 @@ pub fn external_api_get_with_auth(
         .host_str()
         .ok_or_else(|| AppError::Validation("la API no tiene servidor".to_owned()))?;
     let port = url.port_or_known_default().unwrap_or(443);
-    let addresses = (host, port)
+    let addresses = (host.trim_start_matches('[').trim_end_matches(']'), port)
         .to_socket_addrs()
         .map_err(|error| {
             AppError::BrokerTransport(format!("no se pudo resolver el destino de la API: {error}"))
         })?
         .collect::<Vec<_>>();
-    if addresses.is_empty() {
-        return Err(AppError::BrokerTransport(
-            "la API no resolvió ninguna dirección".to_owned(),
-        ));
-    }
-    for address in addresses {
-        reject_private_address(address.ip())?;
-    }
-    let client = BlockingClient::builder()
+    reject_private_destinations(&addresses)?;
+    // La conexión usa exactamente las direcciones comprobadas y nunca un
+    // proxy del sistema: ni una segunda resolución ni un intermediario pueden
+    // llevar la credencial de la API a la red local.
+    let mut builder = BlockingClient::builder()
         .connect_timeout(std::time::Duration::from_secs(5))
         .timeout(std::time::Duration::from_secs(FETCH_TIMEOUT_SECONDS))
         .redirect(reqwest::redirect::Policy::none())
-        .user_agent(concat!("ChatyGPT/", env!("CARGO_PKG_VERSION")))
+        .no_proxy()
+        .user_agent(concat!("ChatyGPT/", env!("CARGO_PKG_VERSION")));
+    if let Some(Host::Domain(domain)) = url.host() {
+        builder = builder.resolve_to_addrs(domain, &addresses);
+    }
+    let client = builder
         .build()
         .map_err(|error| AppError::BrokerTransport(error.to_string()))?;
     let mut request = client.get(url).header(
@@ -408,11 +554,21 @@ pub fn external_api_get_with_auth(
 }
 
 /// Abre una página y devuelve su texto.
-pub async fn fetch_url(client: &Client, raw_url: &str) -> Result<FetchedPage, AppError> {
-    let mut url = validate_fetch_url(raw_url)?;
+pub async fn fetch_url(raw_url: &str) -> Result<FetchedPage, AppError> {
+    fetch_url_with_policy(raw_url, AddressPolicy::PublicOnly).await
+}
+
+pub(crate) async fn fetch_url_with_policy(
+    raw_url: &str,
+    policy: AddressPolicy,
+) -> Result<FetchedPage, AppError> {
+    let mut url = validate_fetch_url_with_policy(raw_url, policy)?;
     let mut followed_redirects = 0;
     let mut response = loop {
-        validate_resolved_destination(&url).await?;
+        // Cada salto se resuelve y valida una vez, y su conexión queda clavada
+        // a esas direcciones.
+        let addresses = resolve_admitted_addresses(&url, policy).await?;
+        let client = pinned_client(&url, &addresses)?;
         let response = client
             .get(url.clone())
             .send()
@@ -433,7 +589,7 @@ pub async fn fetch_url(client: &Client, raw_url: &str) -> Result<FetchedPage, Ap
             .ok_or_else(|| {
                 AppError::Validation("la redirección no indica un destino válido".to_owned())
             })?;
-        url = redirect_target(&url, location)?;
+        url = redirect_target_with_policy(&url, location, policy)?;
         followed_redirects += 1;
     };
     let final_url = url.to_string();
@@ -614,5 +770,110 @@ mod tests {
         let (text, _) = extract_readable_text("İ<script>oculto</script>é", 100);
         assert_eq!(text, "İé");
         assert!(!text.contains("oculto"));
+    }
+
+    mod dns_fijado {
+        //! H03 (auditoría 28-sep-2026): la conexión va a la dirección validada.
+        use super::super::{fetch_url_with_policy, is_public_address, AddressPolicy};
+        use std::io::{Read, Write};
+        use std::net::{IpAddr, SocketAddr, TcpListener};
+        use std::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        static PORT: AtomicU16 = AtomicU16::new(0);
+
+        fn resolves_to_loopback(_host: &str, _port: u16) -> std::io::Result<Vec<SocketAddr>> {
+            Ok(vec![SocketAddr::from((
+                [127, 0, 0, 1],
+                PORT.load(Ordering::SeqCst),
+            ))])
+        }
+
+        /// Servidor de una página que cuenta las conexiones que recibe.
+        fn page_server() -> (u16, Arc<AtomicUsize>) {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("puerto libre");
+            let port = listener.local_addr().expect("dirección").port();
+            let connections = Arc::new(AtomicUsize::new(0));
+            let counter = connections.clone();
+            std::thread::spawn(move || {
+                for stream in listener.incoming() {
+                    let Ok(mut stream) = stream else { continue };
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    let mut buffer = [0_u8; 2048];
+                    let _ = stream.read(&mut buffer);
+                    let body = "<title>Fijada</title><p>contenido servido</p>";
+                    let _ = write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                }
+            });
+            (port, connections)
+        }
+
+        #[test]
+        fn the_connection_uses_the_addresses_that_passed_validation() {
+            let (port, connections) = page_server();
+            PORT.store(port, Ordering::SeqCst);
+            // «rebind.test» no existe en ningún DNS: si el cliente volviera a
+            // resolver el nombre, fallaría. Solo llega si usa lo validado.
+            let page = tauri::async_runtime::block_on(fetch_url_with_policy(
+                &format!("http://rebind.test:{port}/pagina"),
+                AddressPolicy::Test {
+                    resolver: resolves_to_loopback,
+                    allow_loopback: true,
+                },
+            ))
+            .expect("la conexión debe ir a la dirección fijada");
+            assert!(page.text.contains("contenido servido"));
+            assert_eq!(connections.load(Ordering::SeqCst), 1);
+        }
+
+        #[test]
+        fn a_name_that_resolves_to_the_local_network_never_receives_a_connection() {
+            let (port, connections) = page_server();
+            PORT.store(port, Ordering::SeqCst);
+            let error = tauri::async_runtime::block_on(fetch_url_with_policy(
+                &format!("http://rebind.test:{port}/pagina"),
+                AddressPolicy::Test {
+                    resolver: resolves_to_loopback,
+                    allow_loopback: false,
+                },
+            ))
+            .expect_err("una resolución privada debe rechazarse");
+            assert!(error.to_string().contains("red local"), "{error}");
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            assert_eq!(connections.load(Ordering::SeqCst), 0);
+        }
+
+        #[test]
+        fn special_purpose_ranges_are_not_public() {
+            for address in [
+                "100.64.0.1",
+                "100.127.255.254",
+                "198.18.0.1",
+                "192.0.0.8",
+                "192.0.2.1",
+                "224.0.0.1",
+                "240.0.0.1",
+                "255.255.255.255",
+                "0.1.2.3",
+                "64:ff9b::7f00:1",
+                "64:ff9b::c0a8:0134",
+                "2002:c0a8:0134::1",
+                "::127.0.0.1",
+                "2001:db8::1",
+                "ff02::1",
+            ] {
+                let ip: IpAddr = address.parse().expect("dirección válida");
+                assert!(!is_public_address(ip), "debía rechazarse: {address}");
+            }
+            for address in ["93.184.216.34", "2606:4700:4700::1111", "100.128.0.1"] {
+                let ip: IpAddr = address.parse().expect("dirección válida");
+                assert!(is_public_address(ip), "debía admitirse: {address}");
+            }
+        }
     }
 }

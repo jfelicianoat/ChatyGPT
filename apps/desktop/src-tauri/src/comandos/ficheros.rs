@@ -505,3 +505,122 @@ pub(crate) async fn retry_attachment_semantic_index(
     )?;
     state.database.attachment_view(&attachment_id)
 }
+
+/// Diálogo nativo «Guardar como» para cualquier tipo de fichero.
+///
+/// La elección de la persona en el diálogo es la autorización: no se escribe
+/// en ninguna otra ruta.
+pub(crate) fn pick_save_destination(suggested_name: &str) -> Result<Option<String>, AppError> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        let safe_name: String = suggested_name
+            .chars()
+            .map(|character| match character {
+                '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
+                '\r' | '\n' => ' ',
+                other => other,
+            })
+            .take(120)
+            .collect();
+        let script = r#"
+            Add-Type -AssemblyName System.Windows.Forms
+            $dialog = New-Object System.Windows.Forms.SaveFileDialog
+            $dialog.Title = 'Guardar fichero generado'
+            $dialog.Filter = 'Todos los archivos|*.*'
+            $dialog.OverwritePrompt = $true
+            $dialog.FileName = $env:CHATYGPT_SAVE_NAME
+            if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+                [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+                [Console]::Out.Write($dialog.FileName)
+            }
+        "#;
+        let output = std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-STA", "-Command", script])
+            .env("CHATYGPT_SAVE_NAME", safe_name.trim())
+            .creation_flags(0x0800_0000)
+            .output()
+            .map_err(|error| {
+                AppError::Validation(format!("no se pudo abrir el selector: {error}"))
+            })?;
+        if !output.status.success() {
+            return Err(AppError::Validation(
+                String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+            ));
+        }
+        let selected = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        Ok((!selected.is_empty()).then_some(selected))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = suggested_name;
+        Err(AppError::Validation(
+            "guardar como todavía solo está disponible en Windows".to_owned(),
+        ))
+    }
+}
+
+/// Abre el Explorador de Windows con el fichero seleccionado.
+pub(crate) fn reveal_in_explorer(path: &std::path::Path) -> Result<(), AppError> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        std::process::Command::new("explorer.exe")
+            .arg(format!("/select,{}", path.display()))
+            .creation_flags(0x0800_0000)
+            .spawn()
+            .map_err(|error| {
+                AppError::Validation(format!(
+                    "no se pudo mostrar el archivo en el Explorador: {error}"
+                ))
+            })?;
+        Ok(())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = path;
+        Err(AppError::Validation(
+            "mostrar el archivo todavía solo está disponible en Windows".to_owned(),
+        ))
+    }
+}
+
+/// Selector de carpeta nativo que no concede ningún permiso por sí mismo.
+pub(crate) fn pick_folder(description: &str) -> Result<Option<String>, AppError> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        let script = r#"
+            Add-Type -AssemblyName System.Windows.Forms
+            $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+            $dialog.Description = $env:CHATYGPT_FOLDER_DESCRIPTION
+            $dialog.ShowNewFolderButton = $true
+            if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+                [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+                [Console]::Write($dialog.SelectedPath)
+            }
+        "#;
+        let output = std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-STA", "-Command", script])
+            .env("CHATYGPT_FOLDER_DESCRIPTION", description)
+            .creation_flags(0x0800_0000)
+            .output()
+            .map_err(|error| {
+                AppError::Validation(format!("no se pudo abrir el selector: {error}"))
+            })?;
+        if !output.status.success() {
+            return Err(AppError::Validation(
+                String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+            ));
+        }
+        let path = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        Ok((!path.is_empty()).then_some(path))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = description;
+        Err(AppError::Validation(
+            "el selector de carpetas todavía solo está disponible en Windows".to_owned(),
+        ))
+    }
+}

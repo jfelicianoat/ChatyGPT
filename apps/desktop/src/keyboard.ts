@@ -43,3 +43,15 @@ export function isEditableKeyboardTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
   return target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName);
 }
+
+/**
+ * La tecla pertenece a una composición de texto en curso (IME).
+ *
+ * Con un método de entrada —japonés, chino, coreano, o los acentos muertos de
+ * algunos teclados— Enter confirma la palabra que se está componiendo. Enviar
+ * en ese momento manda un texto a medias (auditoría 28-sep-2026, H24).
+ * WebView2 marca `isComposing`; algunos IME solo informan `keyCode` 229.
+ */
+export function isImeComposition(event: { isComposing?: boolean; keyCode?: number }): boolean {
+  return Boolean(event.isComposing) || event.keyCode === 229;
+}

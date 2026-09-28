@@ -6,7 +6,7 @@ documentos. No recorta ni modifica los archivos originales.
 
 ## Dónde encontrarla
 
-1. Abre **Inicio → GPTs**.
+1. Abre el área **GPTs** en la barra lateral.
 2. Crea un GPT o pulsa **Editar** en uno existente.
 3. Busca **Cantidad de contexto**, debajo de **Proyecto predeterminado**.
 

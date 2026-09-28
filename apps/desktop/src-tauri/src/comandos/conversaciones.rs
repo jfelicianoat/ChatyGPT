@@ -29,10 +29,63 @@ pub(crate) fn list_conversations(
 #[tauri::command]
 pub(crate) fn search_conversations(
     query: String,
+    include_archived: Option<bool>,
     state: State<'_, AppState>,
-) -> Result<Vec<ConversationSummary>, AppError> {
+) -> Result<Vec<crate::db::ConversationSearchHit>, AppError> {
     let query = validated_text(&query, "la búsqueda", 200)?;
-    state.database.search_conversations(&query, 50)
+    state
+        .database
+        .search_conversation_hits(&query, 50, include_archived.unwrap_or(false))
+}
+
+/// Archivo y papelera: lo que se puede recuperar (H14).
+#[tauri::command]
+pub(crate) fn get_archive_overview(
+    state: State<'_, AppState>,
+) -> Result<crate::db::ArchiveOverview, AppError> {
+    state.database.archive_overview()
+}
+
+#[tauri::command]
+pub(crate) fn restore_conversation(
+    conversation_id: String,
+    state: State<'_, AppState>,
+) -> Result<ConversationSummary, AppError> {
+    state.database.restore_conversation(&conversation_id)
+}
+
+#[tauri::command]
+pub(crate) fn restore_project(
+    project_id: String,
+    state: State<'_, AppState>,
+) -> Result<ProjectSummary, AppError> {
+    state.database.restore_project(&project_id)
+}
+
+/// Borra para siempre una conversación de la papelera y las copias
+/// gestionadas de sus adjuntos que ya nadie usa.
+#[tauri::command]
+pub(crate) fn purge_conversation(
+    conversation_id: String,
+    confirmed: bool,
+    state: State<'_, AppState>,
+) -> Result<(), AppError> {
+    let orphaned = state
+        .database
+        .purge_conversation(&conversation_id, confirmed)?;
+    let managed = std::fs::canonicalize(&state.attachments_dir).ok();
+    for path in orphaned {
+        // Solo se toca lo que vive dentro del almacén gestionado: una ruta de
+        // la base nunca puede llevar a borrar un fichero de la persona.
+        let inside = std::fs::canonicalize(&path)
+            .ok()
+            .zip(managed.as_ref())
+            .is_some_and(|(file, root)| file.starts_with(root));
+        if inside {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]

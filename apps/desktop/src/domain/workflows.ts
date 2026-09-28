@@ -114,6 +114,8 @@ export type WorkflowNodeRunView = {
   brokerTaskId?: string | null;
   error?: Record<string, unknown> | null;
   updatedAt: string;
+  /** Clasificación con la que se produjo la salida (H02). */
+  dataClassification?: "public" | "internal" | "confidential" | "local_only" | null;
 };
 
 export type WorkflowRunView = {
@@ -185,6 +187,16 @@ export type ConversationView = {
   executionPreferences: ConversationExecutionPreferences;
   messages: ConversationMessage[];
   researchRuns: ResearchRunView[];
+  /** Mensajes de la conversación, estén o no en esta página (H17). */
+  totalMessageCount?: number;
+  /** Quedan mensajes anteriores por cargar desde Rust. */
+  hasEarlierMessages?: boolean;
+};
+
+/** Página de mensajes anteriores (H17). */
+export type ConversationMessagePage = {
+  messages: ConversationMessage[];
+  hasEarlierMessages: boolean;
 };
 
 export type ResearchStepView = {

@@ -16,6 +16,12 @@ import { describeError } from "./errors";
 import { MarkdownContent } from "./MarkdownContent";
 import { platform } from "./platform";
 import { describeWorkflowFailure } from "./workflowFailure";
+import {
+  applyWorkflowDraft,
+  discardWorkflowDraft,
+  loadWorkflowDraft,
+  saveWorkflowDraft
+} from "./workflowDrafts";
 
 type WorkflowStudioProps = {
   projects: ProjectSummary[];
@@ -68,6 +74,8 @@ export function WorkflowStudio({ projects, customGpts, onOpenBrokerCredential, o
   const [projectFiles, setProjectFiles] = useState<AttachmentView[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
+  /** Fecha del borrador local recuperado al abrir el flujo (H13). */
+  const [recoveredDraftAt, setRecoveredDraftAt] = useState<number | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [scheduleOpen, setScheduleOpen] = useState(false);
@@ -89,13 +97,27 @@ export function WorkflowStudio({ projects, customGpts, onOpenBrokerCredential, o
   const selectedNode = selected?.definition.nodes.find((node) => node.id === selectedNodeId);
   const runFailure = currentRun ? describeWorkflowFailure(currentRun) : null;
 
+  /** Muestra un flujo con sus cambios locales sin guardar, si los tiene (H13). */
+  const showWorkflow = (view: WorkflowView) => {
+    const draft = loadWorkflowDraft(view.id);
+    if (draft) {
+      setSelected(applyWorkflowDraft(view, draft));
+      setDirty(true);
+      setRecoveredDraftAt(draft.savedAt);
+    } else {
+      setSelected(view);
+      setDirty(false);
+      setRecoveredDraftAt(null);
+    }
+  };
+
   const refreshList = async (preferredId?: string) => {
     const items = await platform.listWorkflows();
     setWorkflows(items);
     const workflowId = preferredId ?? selected?.id ?? items[0]?.id;
     if (workflowId) {
       const view = await platform.getWorkflow(workflowId);
-      setSelected(view);
+      showWorkflow(view);
       setRuns(await platform.listWorkflowRuns(workflowId));
     } else {
       setSelected(null);
@@ -106,6 +128,12 @@ export function WorkflowStudio({ projects, customGpts, onOpenBrokerCredential, o
   useEffect(() => {
     void refreshList().catch((reason) => setError(describeError(reason)));
   }, []);
+
+  // Cada cambio sin guardar se copia en local en cuanto ocurre: abrir otro
+  // flujo, cambiar de área o cerrar la ventana ya no puede perderlo (H13).
+  useEffect(() => {
+    if (selected && dirty) saveWorkflowDraft(selected);
+  }, [selected, dirty]);
 
   useEffect(() => {
     const projectId = selected?.projectId;
@@ -208,10 +236,13 @@ export function WorkflowStudio({ projects, customGpts, onOpenBrokerCredential, o
   const openWorkflow = async (workflowId: string) => {
     setBusy("open");
     setError(null);
+    if (selected && dirty) {
+      saveWorkflowDraft(selected);
+      setNotice(`Los cambios sin guardar de «${selected.name}» se conservan; los recuperarás al volver a él.`);
+    }
     try {
       const view = await platform.getWorkflow(workflowId);
-      setSelected(view);
-      setDirty(false);
+      showWorkflow(view);
       setSelectedNodeId(null);
       setConnectionSource(null);
       setRuns(await platform.listWorkflowRuns(workflowId));
@@ -333,14 +364,32 @@ export function WorkflowStudio({ projects, customGpts, onOpenBrokerCredential, o
         selected.definition
       );
       if (publish) saved = await platform.publishWorkflow(saved.id);
+      // Guardado en la base: el borrador local ya no hace falta.
+      discardWorkflowDraft(saved.id);
+      setRecoveredDraftAt(null);
       setSelected(saved);
-      setDirty(!publish);
+      setDirty(false);
       await refreshList(saved.id);
       setNotice(publish ? `Versión ${saved.publishedVersionNo} publicada.` : "Borrador guardado.");
     } catch (reason) {
       setError(describeError(reason));
     } finally {
       setBusy(null);
+    }
+  };
+
+  /** Descarta los cambios locales y vuelve a la versión guardada. */
+  const discardLocalChanges = async () => {
+    if (!selected) return;
+    if (!window.confirm(`¿Descartar los cambios sin guardar de «${selected.name}»?`)) return;
+    discardWorkflowDraft(selected.id);
+    setRecoveredDraftAt(null);
+    try {
+      setSelected(await platform.getWorkflow(selected.id));
+      setDirty(false);
+      setNotice("Cambios descartados.");
+    } catch (reason) {
+      setError(describeError(reason));
     }
   };
 
@@ -460,7 +509,10 @@ export function WorkflowStudio({ projects, customGpts, onOpenBrokerCredential, o
             {workflows.map((workflow) => (
               <button key={workflow.id} className={selected?.id === workflow.id ? "active" : ""} onClick={() => void openWorkflow(workflow.id)}>
                 <strong>{workflow.name}</strong>
-                <span>{workflow.nodeCount} nodos · {workflow.publishedVersionNo ? `versión ${workflow.publishedVersionNo}` : "borrador"}</span>
+                <span>
+                  {workflow.nodeCount} nodos · {workflow.publishedVersionNo ? `versión ${workflow.publishedVersionNo}` : "borrador"}
+                  {(selected?.id === workflow.id ? dirty : Boolean(loadWorkflowDraft(workflow.id))) && " · cambios sin guardar"}
+                </span>
               </button>
             ))}
             {workflows.length === 0 && <p>Crea el primer flujo para abrir el editor.</p>}
@@ -469,12 +521,24 @@ export function WorkflowStudio({ projects, customGpts, onOpenBrokerCredential, o
 
         {selected ? (
           <div className="workflow-editor-shell">
+            {dirty && (
+              <div className="workflow-message draft" role="status">
+                <span>
+                  {recoveredDraftAt
+                    ? `Cambios sin guardar recuperados (${new Date(recoveredDraftAt).toLocaleString("es-ES")}).`
+                    : "Hay cambios sin guardar. Se conservan en este equipo hasta que guardes o los descartes."}
+                </span>
+                <button className="secondary" onClick={() => void discardLocalChanges()}>
+                  Descartar cambios
+                </button>
+              </div>
+            )}
             <header className="workflow-editor-header">
               <label><span>Nombre</span><input value={selected.name} onChange={(event) => { setSelected({ ...selected, name: event.target.value }); setDirty(true); }} /></label>
               <label><span>Descripción</span><input value={selected.description ?? ""} onChange={(event) => { setSelected({ ...selected, description: event.target.value }); setDirty(true); }} placeholder="Qué resuelve este flujo" /></label>
               <label><span>Proyecto</span><select value={selected.projectId ?? ""} onChange={(event) => { setSelected({ ...selected, projectId: event.target.value || null, definition: { ...selected.definition, projectContext: null, nodes: selected.definition.nodes.map((node) => ({ ...node, attachmentIds: [] })) } }); setDirty(true); }}><option value="">Global</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
               <div className="workflow-editor-actions">
-                <button className="secondary" onClick={() => void save()} disabled={busy !== null}>{busy === "save" ? "Guardando…" : "Guardar borrador"}</button>
+                <button className="secondary" onClick={() => void save()} disabled={busy !== null}>{busy === "save" ? "Guardando…" : "Guardar borrador"}{dirty && busy !== "save" && <span aria-hidden="true"> •</span>}</button>
                 <button className="secondary" onClick={() => void save(true)} disabled={busy !== null}>{busy === "publish" ? "Publicando…" : "Publicar versión"}</button>
               </div>
             </header>
@@ -524,6 +588,11 @@ export function WorkflowStudio({ projects, customGpts, onOpenBrokerCredential, o
                     {node.kind !== "input" && <button className="workflow-port input" aria-label={`Conectar con ${node.label}`} onClick={(event) => { event.stopPropagation(); connectTo(node.id); }}>●</button>}
                     <span>{nodeGptIcon && <b className="workflow-node-gpt-icon" aria-hidden="true">{nodeGptIcon}</b>}{nodeKindLabel[node.kind]}</span>
                     <strong>{node.label}</strong>
+                    {nodeRun?.dataClassification && ["confidential", "local_only"].includes(nodeRun.dataClassification) && (
+                      <span className="workflow-node-privacy" title="La salida solo puede tratarse con modelos locales en los nodos siguientes">
+                        Solo modelos locales
+                      </span>
+                    )}
                     <small>{nodeRun ? runStatusLabelForNode(nodeRun.status) : node.kind === "custom_gpt" ? nodeGpt?.name ?? node.customGptName ?? "Selecciona un GPT" : node.kind === "prompt" ? node.instruction || "Escribe una instrucción" : nodeKindLabel[node.kind]}</small>
                     {node.kind !== "result" && <button className={`workflow-port output ${connectionSource === node.id ? "active" : ""}`} aria-label={`Conectar salida de ${node.label}`} onClick={(event) => { event.stopPropagation(); setConnectionSource(connectionSource === node.id ? null : node.id); }}>●</button>}
                   </article>

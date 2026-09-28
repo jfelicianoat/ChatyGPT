@@ -80,6 +80,23 @@ const DEFAULTS: Record<string, unknown> = {
   listAthenaModels: { default: "", models: [] },
   getMemoryOverview: { enabled: false, items: [] },
   getLatestMemorySearch: null,
+  getEffectiveExecutionPolicy: {
+    dataClassification: "internal",
+    maxCostUsd: 0.1,
+    strategy: "single",
+    preset: "fast",
+    priority: 100,
+    longContext: "fail",
+    sources: { dataClassification: "chat", maxCostUsd: "chat", routing: "chat" },
+    customGptName: null,
+    destination: {
+      host: "127.0.0.1:8765",
+      localMachine: true,
+      encrypted: false,
+      warning: null
+    },
+    notes: []
+  },
   getPerformanceReport: {
     sampleLimit: 200,
     totalSamples: 12,
@@ -171,14 +188,14 @@ describe("navegación principal simplificada", () => {
     await userEvent.click(screen.getByRole("button", { name: "Flujos" }));
     expect(screen.getByRole("button", { name: "Flujos" }).getAttribute("aria-current"))
       .toBe("page");
-    expect(screen.getByRole("heading", { name: "Flujos" })).toBeDefined();
+    expect(await screen.findByRole("heading", { name: "Flujos" })).toBeDefined();
     expect(screen.getByRole("button", { name: "Crear flujo" })).toBeDefined();
 
     await userEvent.click(screen.getByRole("button", { name: "Athena" }));
     expect(screen.getByRole("button", { name: "Athena" }).getAttribute("aria-current"))
       .toBe("page");
     expect(document.querySelector(".home-athena")).not.toBeNull();
-    expect(screen.getByRole("heading", { name: "Athena" })).toBeDefined();
+    expect(await screen.findByRole("heading", { name: "Athena" })).toBeDefined();
     expect(screen.getByRole("heading", { name: "Iniciar un trabajo" })).toBeDefined();
     expect(screen.getByRole("button", { name: "Lanzar trabajo" })).toBeDefined();
     expect(document.querySelector(".athena-form-objective")).not.toBeNull();
@@ -202,7 +219,7 @@ describe("navegación principal simplificada", () => {
     await mountHome();
 
     await userEvent.click(screen.getByRole("button", { name: "Athena" }));
-    await userEvent.type(screen.getByLabelText("Token de Athena"), "token-del-servicio");
+    await userEvent.type(await screen.findByLabelText("Token de Athena"), "token-del-servicio");
     await userEvent.click(screen.getByRole("button", { name: "Guardar y conectar" }));
 
     await waitFor(() => {
@@ -229,7 +246,7 @@ describe("navegación principal simplificada", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Athena" }));
     await userEvent.type(
-      screen.getByLabelText("Objetivo"),
+      await screen.findByLabelText("Objetivo"),
       "Revisa el proyecto y ejecuta sus pruebas"
     );
     expect((screen.getByRole("button", { name: "Lanzar trabajo" }) as HTMLButtonElement).disabled)
@@ -396,7 +413,10 @@ describe("navegación principal simplificada", () => {
     expect(platformMethod("getLocalTask")).toHaveBeenCalledWith("task-chat");
   }, 10_000);
 
-  it("abre un chat largo por el final y permite recuperar mensajes anteriores", async () => {
+  it("abre un chat largo por el final y pide a Rust los mensajes anteriores", async () => {
+    // H17 (auditoría 28-sep-2026): antes Rust enviaba el historial entero y la
+    // interfaz solo ocultaba mensajes. Ahora llega un lote acotado y la página
+    // anterior se pide aparte, sin huecos ni duplicados.
     const summary = {
       id: "conversation-long",
       title: "Historial largo",
@@ -426,8 +446,14 @@ describe("navegación principal simplificada", () => {
         longContext: "fail",
         priority: 50
       },
-      messages,
-      researchRuns: []
+      messages: messages.slice(2),
+      researchRuns: [],
+      totalMessageCount: 82,
+      hasEarlierMessages: true
+    });
+    platformMethod("getConversationMessagesBefore").mockResolvedValue({
+      messages: messages.slice(0, 2),
+      hasEarlierMessages: false
     });
     platformMethod("listAttachments").mockResolvedValue([]);
     platformMethod("listProjectFiles").mockResolvedValue([]);
@@ -435,13 +461,21 @@ describe("navegación principal simplificada", () => {
     render(<App />);
     await screen.findByRole("heading", { name: summary.title });
 
+    expect(platformMethod("getConversation")).toHaveBeenCalledWith("conversation-long", 80);
     expect(screen.queryByText("Mensaje histórico 1")).toBeNull();
     expect(screen.getByText("Mensaje histórico 82")).toBeDefined();
+    expect(screen.getByText("2 mensajes anteriores sin cargar")).toBeDefined();
     await userEvent.click(
-      screen.getByRole("button", { name: "Mostrar 2 mensajes anteriores" })
+      screen.getByRole("button", { name: "Mostrar 50 mensajes anteriores" })
     );
     expect(await screen.findByText("Mensaje histórico 1")).toBeDefined();
-    expect(screen.queryByText(/todavía ocultos/)).toBeNull();
+    expect(platformMethod("getConversationMessagesBefore")).toHaveBeenCalledWith(
+      "conversation-long",
+      3,
+      50
+    );
+    expect(screen.queryByRole("button", { name: /mensajes anteriores/ })).toBeNull();
+    expect(screen.getAllByText(/Mensaje histórico \d+$/)).toHaveLength(82);
   });
 
   it("muestra los avisos de dependencias y las citas no consultadas del contrato 2.8", async () => {
@@ -681,7 +715,7 @@ describe("navegación principal simplificada", () => {
 
     await mountHome();
     await userEvent.click(screen.getByRole("button", { name: "Flujos" }));
-    await userEvent.type(screen.getByLabelText("Nombre del flujo"), flow.name);
+    await userEvent.type(await screen.findByLabelText("Nombre del flujo"), flow.name);
     await userEvent.click(screen.getByRole("button", { name: "Crear flujo" }));
     await screen.findByRole("button", { name: "Instrucción rápida" });
     await userEvent.click(screen.getByRole("button", { name: "Instrucción rápida" }));

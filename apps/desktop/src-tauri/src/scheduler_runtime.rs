@@ -18,32 +18,37 @@ pub async fn dispatch_claim(
                 "la programación no identifica la versión del flujo".to_owned(),
             )
         })?;
-        let run = crate::workflow_runtime::start_version(
+        // La clave deriva de la ejecución programada: si la aplicación se
+        // cierra entre crear el flujo y enlazarlo, la recuperación encuentra
+        // el mismo flujo en vez de lanzar otro.
+        let run = crate::workflow_runtime::start_version_for_operation(
             database.clone(),
             broker,
             workflow_id,
             workflow_version_id,
             &claim.prompt,
+            &scheduled_operation_key(&claim.run_id),
         )?;
         database.start_scheduled_workflow_run(&claim.run_id, &run.id)
     } else {
         let conversation_id = claim.conversation_id.as_deref().ok_or_else(|| {
             AppError::BrokerContract("la programación no identifica su conversación".to_owned())
         })?;
-        let task = crate::task_runtime::start_chat_turn(
+        let task = crate::task_runtime::start_chat_turn_for_operation(
             database.clone(),
             broker,
             conversation_id,
             &claim.prompt,
-            &[],
-            false,
-            false,
-            false,
-            false,
+            &scheduled_operation_key(&claim.run_id),
         )
         .await?;
         database.start_scheduled_run(&claim.run_id, &task.id)
     }
+}
+
+/// Identidad estable del trabajo que lanza una ejecución programada.
+pub(crate) fn scheduled_operation_key(run_id: &str) -> String {
+    format!("chatygpt:scheduled-run:{run_id}")
 }
 
 pub fn start(database: Database, broker: BrokerClient) {

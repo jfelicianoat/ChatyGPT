@@ -1178,7 +1178,9 @@ fn custom_gpt_execution_profile_overrides_chat_preferences_safely() {
     assert_eq!(request["execution"]["preset"], "slow");
     assert_eq!(request["execution"]["scheduling"], "adaptive");
     assert_eq!(request["risk"]["data_classification"], "confidential");
-    assert_eq!(request["model_requirements"]["max_cost_usd"], 0.75);
+    // Auditoría 28-sep-2026 (H01): el GPT ya no amplía el límite de gasto del
+    // chat (0,10 USD por defecto). Manda el menor de los dos.
+    assert_eq!(request["model_requirements"]["max_cost_usd"], 0.1);
     assert_eq!(request["priority"], 50);
 }
 

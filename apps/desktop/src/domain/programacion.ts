@@ -36,6 +36,8 @@ export type BootstrapReport = {
   recoveredAttachments: number;
   recoveredWorkflows: number;
   recoveryItems: RecoveryItemView[];
+  /** Resultado de una restauración de copia aplicada en este arranque. */
+  restoreNotice?: string | null;
 };
 
 /**
@@ -104,6 +106,8 @@ export type ScheduledTaskView = {
   nextRunAt?: string;
   createdAt: string;
   updatedAt: string;
+  /** Retirada: ya no se ejecuta, pero conserva su historial (H15). */
+  retiredAt?: string | null;
   runs: ScheduledRunView[];
 };
 

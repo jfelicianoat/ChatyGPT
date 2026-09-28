@@ -3,12 +3,38 @@
 use super::*;
 use crate::*;
 
+/// Mensajes que se cargan al abrir una conversación si la interfaz no pide otra cifra.
+const DEFAULT_MESSAGE_PAGE: usize = 80;
+/// Tope de una página: mantener la posición de lectura tras varias páginas
+/// no puede convertirse en pedir el historial entero de una vez.
+const MAX_MESSAGE_PAGE: usize = 2_000;
+
 #[tauri::command]
 pub(crate) fn get_conversation(
     conversation_id: String,
+    message_limit: Option<usize>,
     state: State<'_, AppState>,
 ) -> Result<ConversationView, AppError> {
-    state.database.conversation_view(&conversation_id)
+    let limit = message_limit
+        .unwrap_or(DEFAULT_MESSAGE_PAGE)
+        .clamp(1, MAX_MESSAGE_PAGE);
+    state
+        .database
+        .conversation_page(&conversation_id, Some(limit))
+}
+
+/// Página de mensajes anteriores para «Mostrar anteriores» (H17).
+#[tauri::command]
+pub(crate) fn get_conversation_messages_before(
+    conversation_id: String,
+    before_sequence: i64,
+    limit: Option<usize>,
+    state: State<'_, AppState>,
+) -> Result<crate::db::ConversationMessagePage, AppError> {
+    let limit = limit.unwrap_or(50).clamp(1, MAX_MESSAGE_PAGE);
+    state
+        .database
+        .conversation_messages_before(&conversation_id, before_sequence, limit)
 }
 
 #[tauri::command]
@@ -136,18 +162,29 @@ pub(crate) async fn send_chat_turn(
     sandbox_enabled: bool,
     semantic_memory_enabled: bool,
     research_mode: bool,
+    client_operation_id: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<LocalTaskSnapshot, AppError> {
-    task_runtime::start_chat_turn(
+    // La interfaz genera un identificador por mensaje redactado y lo repite si
+    // tiene que reintentar un envío cuyo resultado no llegó a conocer: el
+    // segundo intento devuelve la tarea del primero en vez de duplicarla.
+    let operation_key = client_operation_id
+        .as_deref()
+        .map(task_runtime::client_operation_key)
+        .transpose()?;
+    task_runtime::start_chat_turn_with_identity(
         state.database.clone(),
         state.broker.clone(),
         &conversation_id,
         &text,
         &attachment_ids,
-        tools_enabled,
-        sandbox_enabled,
-        semantic_memory_enabled,
-        research_mode,
+        task_runtime::ChatTurnOptions {
+            tools_enabled,
+            sandbox_enabled,
+            semantic_memory_enabled,
+            research_mode,
+        },
+        operation_key.as_deref(),
     )
     .await
 }
@@ -166,4 +203,17 @@ pub(crate) async fn resolve_tool_calls(
         &decisions,
     )
     .await
+}
+
+/// Privacidad, coste y destino que se aplicarán al próximo mensaje (H01, H04).
+#[tauri::command]
+pub(crate) fn get_effective_execution_policy(
+    conversation_id: String,
+    state: State<'_, AppState>,
+) -> Result<crate::politica::EffectiveExecutionPolicy, AppError> {
+    task_runtime::effective_policy_for_conversation(
+        &state.database,
+        &state.broker,
+        &conversation_id,
+    )
 }

@@ -7,7 +7,8 @@ impl Database {
         let connection = self.connect()?;
         connection
             .query_row(
-                "SELECT id, remote_task_id, request_json, consecutive_poll_errors
+                "SELECT id, remote_task_id, request_json, consecutive_poll_errors, attempt,
+                        cancel_requested_at IS NOT NULL
                  FROM broker_tasks WHERE id = ?1",
                 params![id],
                 |row| {
@@ -24,11 +25,25 @@ impl Database {
                         remote_task_id: row.get(1)?,
                         request,
                         consecutive_poll_errors: row.get(3)?,
+                        attempt: row.get(4)?,
+                        cancel_requested: row.get(5)?,
                     })
                 },
             )
             .optional()?
             .ok_or_else(|| AppError::BrokerContract(format!("tarea local no encontrada: {id}")))
+    }
+
+    /// Tarea local creada con esta clave idempotente, si existe.
+    pub fn task_id_by_idempotency_key(&self, key: &str) -> Result<Option<String>, AppError> {
+        Ok(self
+            .connect()?
+            .query_row(
+                "SELECT id FROM broker_tasks WHERE idempotency_key = ?1",
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()?)
     }
 
     pub fn recoverable_tasks(&self) -> Result<Vec<BrokerTaskRecord>, AppError> {
@@ -46,16 +61,71 @@ impl Database {
         ids.into_iter().map(|id| self.task_record(&id)).collect()
     }
 
-    pub fn mark_submitting(&self, id: &str) -> Result<(), AppError> {
+    /// Anota un nuevo intento de creación y devuelve si puede hacerse.
+    ///
+    /// La guarda y el contador van en la misma sentencia: una cancelación que
+    /// llegue a la vez gana o pierde entera. Si gana, el intento no sale; si
+    /// pierde, el contador ya dice que la petición pudo transmitirse y la
+    /// cancelación sabe que tiene que reconciliar con el Broker.
+    pub fn mark_submitting(&self, id: &str) -> Result<bool, AppError> {
         let connection = self.connect()?;
-        connection.execute(
+        let changed = connection.execute(
             "UPDATE broker_tasks
              SET local_state = 'submitting', attempt = attempt + 1,
+                 updated_at = datetime('now')
+             WHERE id = ?1
+               AND cancel_requested_at IS NULL
+               AND local_state NOT IN ('terminal', 'orphaned')",
+            params![id],
+        )?;
+        Ok(changed == 1)
+    }
+
+    /// Registra que la persona quiere cancelar y decide cómo completarlo.
+    ///
+    /// La intención se persiste siempre, incluso sin identidad remota, para
+    /// que ni el bucle de envío ni una recuperación tras reiniciar lleguen a
+    /// transmitir una pregunta que ya se retiró.
+    pub fn request_task_cancellation(&self, id: &str) -> Result<CancellationRoute, AppError> {
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let (remote_task_id, local_state, attempt): (Option<String>, String, u32) = transaction
+            .query_row(
+                "SELECT remote_task_id, local_state, attempt FROM broker_tasks WHERE id = ?1",
+                params![id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?
+            .ok_or_else(|| AppError::NotFound(format!("tarea local {id}")))?;
+        if local_state == "terminal" {
+            return Ok(CancellationRoute::AlreadyFinished);
+        }
+        transaction.execute(
+            "UPDATE broker_tasks
+             SET cancel_requested_at = COALESCE(
+                    cancel_requested_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                 ),
                  updated_at = datetime('now')
              WHERE id = ?1",
             params![id],
         )?;
-        Ok(())
+        transaction.execute(
+            "INSERT INTO broker_task_events(
+                broker_task_id, event_type, remote_status, payload_json, occurred_at
+             ) SELECT id, 'local.cancel_requested', remote_status, ?2, datetime('now')
+               FROM broker_tasks WHERE id = ?1",
+            params![
+                id,
+                serde_json::json!({"remote_task_id": remote_task_id, "attempt": attempt})
+                    .to_string()
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(match remote_task_id {
+            Some(remote_id) => CancellationRoute::Remote(remote_id),
+            None if attempt == 0 => CancellationRoute::LocalOnly,
+            None => CancellationRoute::PendingReconciliation,
+        })
     }
 
     pub fn attach_remote_task(&self, id: &str, accepted: &TaskAccepted) -> Result<(), AppError> {
@@ -86,15 +156,24 @@ impl Database {
 
     pub fn record_remote_state(&self, id: &str, state: &TaskState) -> Result<(), AppError> {
         let connection = self.connect()?;
-        let (previous, request_message_id, response_message_id, conversation_id, request): (
+        #[allow(clippy::type_complexity)]
+        let (
+            previous,
+            request_message_id,
+            response_message_id,
+            conversation_id,
+            request,
+            current_local_state,
+        ): (
             String,
             Option<String>,
             Option<String>,
             Option<String>,
             Value,
+            String,
         ) = connection.query_row(
             "SELECT remote_status, request_message_id, response_message_id, conversation_id,
-                    request_json
+                    request_json, local_state
              FROM broker_tasks WHERE id = ?1",
             params![id],
             |row| {
@@ -106,9 +185,23 @@ impl Database {
                         Box::new(error),
                     )
                 })?;
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, request))
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    request,
+                    row.get(5)?,
+                ))
             },
         )?;
+        // Los estados terminales son definitivos. Una lectura que empezó antes
+        // de cancelar puede resolverse después: si se aplicara, reabriría una
+        // tarea cancelada y borraría su hora de cierre. Una huérfana solo
+        // admite su desenlace real, nunca volver a «en curso».
+        if !remote_state_can_apply(&current_local_state, state.status.is_terminal()) {
+            return Ok(());
+        }
         let local_state = if state.status.is_terminal() {
             "terminal"
         } else if state.status.as_str() == "waiting_for_tools" {
@@ -133,7 +226,7 @@ impl Database {
         let payload_json = serde_json::to_string(state)
             .map_err(|error| AppError::BrokerContract(error.to_string()))?;
         let transaction = connection.unchecked_transaction()?;
-        transaction.execute(
+        let changed = transaction.execute(
             "UPDATE broker_tasks
              SET remote_status = ?2, local_state = ?3,
                  consecutive_poll_errors = 0, result_json = ?4, error_json = ?5,
@@ -145,7 +238,9 @@ impl Database {
                  END,
                  next_poll_at = CASE WHEN ?3 = 'polling' THEN datetime('now') ELSE NULL END,
                  updated_at = datetime('now')
-             WHERE id = ?1",
+             WHERE id = ?1
+               AND local_state != 'terminal'
+               AND (local_state != 'orphaned' OR ?3 = 'terminal')",
             params![
                 id,
                 state.status.as_str(),
@@ -155,6 +250,11 @@ impl Database {
                 progress_json
             ],
         )?;
+        if changed == 0 {
+            // Otra escritura cerró la tarea entre la lectura y esta
+            // transacción. Se descarta todo lo que dependía de este estado.
+            return Ok(());
+        }
         let research_phase = state
             .progress
             .get("phase")
@@ -693,19 +793,40 @@ impl Database {
                 params![id],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )?;
-        transaction.execute(
+        let changed = transaction.execute(
             "UPDATE broker_tasks
              SET local_state = 'orphaned', error_json = ?2, next_poll_at = NULL,
                  updated_at = datetime('now')
-             WHERE id = ?1",
+             WHERE id = ?1 AND local_state != 'terminal'",
             params![id, payload.to_string()],
         )?;
+        if changed == 0 {
+            // Ya terminó: su desenlace real prevalece sobre el fallo local.
+            return Ok(());
+        }
         transaction.execute(
             "INSERT INTO broker_task_events(
                 broker_task_id, event_type, remote_status, payload_json, occurred_at
              ) SELECT id, 'local.orphaned', remote_status, ?2, datetime('now')
                FROM broker_tasks WHERE id = ?1",
             params![id, payload.to_string()],
+        )?;
+        // Lo que dependía de la tarea tampoco puede quedarse esperando: un
+        // resumen «generando» o una investigación «en curso» sin worker que
+        // los avance serían una espera eterna en la interfaz.
+        transaction.execute(
+            "UPDATE conversation_summaries
+             SET status = 'failed', updated_at = datetime('now')
+             WHERE broker_task_id = ?1 AND status = 'generating'",
+            params![id],
+        )?;
+        transaction.execute(
+            "UPDATE research_runs
+             SET status = 'failed', updated_at = datetime('now'),
+                 completed_at = COALESCE(completed_at, datetime('now'))
+             WHERE broker_task_id = ?1
+               AND status NOT IN ('completed', 'failed', 'cancelled')",
+            params![id],
         )?;
         if let Some(message_id) = response_message_id {
             transaction.execute(
@@ -737,5 +858,37 @@ impl Database {
         }
         transaction.commit()?;
         Ok(())
+    }
+
+    /// Cierra una tarea cuyo resultado llegó pero no pudo guardarse.
+    ///
+    /// Se conserva el estado remoto real —el Broker sí terminó— para que el
+    /// arranque no intente cancelarla, y la persona ve el motivo en el
+    /// mensaje en lugar de una espera indefinida.
+    pub fn mark_unmaterializable(
+        &self,
+        id: &str,
+        remote_status: &str,
+        message: &str,
+    ) -> Result<(), AppError> {
+        self.mark_orphaned(id, message)?;
+        self.connect()?.execute(
+            "UPDATE broker_tasks SET remote_status = ?2, updated_at = datetime('now')
+             WHERE id = ?1 AND local_state = 'orphaned'",
+            params![id, remote_status],
+        )?;
+        Ok(())
+    }
+}
+
+/// Decide si un estado remoto puede aplicarse sobre el estado local actual.
+///
+/// Es la regla de monotonía de las tareas: lo terminal no se reabre, y una
+/// tarea dada por perdida solo acepta conocer su desenlace.
+pub(crate) fn remote_state_can_apply(local_state: &str, remote_is_terminal: bool) -> bool {
+    match local_state {
+        "terminal" => false,
+        "orphaned" => remote_is_terminal,
+        _ => true,
     }
 }

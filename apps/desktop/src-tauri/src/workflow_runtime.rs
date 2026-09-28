@@ -183,12 +183,18 @@ pub fn start(
     database.workflow_run(&run_id)
 }
 
-pub fn start_version(
+/// Lanza la versión fijada de un flujo con una identidad estable.
+///
+/// Si la operación ya creó su ejecución —por ejemplo, antes de un cierre
+/// inesperado— se devuelve esa y no se crea otra. La recuperación de flujos
+/// ya la retoma si quedó a medias.
+pub fn start_version_for_operation(
     database: Database,
     broker: BrokerClient,
     workflow_id: &str,
     workflow_version_id: &str,
     input_text: &str,
+    operation_key: &str,
 ) -> Result<WorkflowRunView, AppError> {
     let input_text = input_text.trim();
     if input_text.is_empty() || input_text.chars().count() > 200_000 {
@@ -196,11 +202,17 @@ pub fn start_version(
             "la entrada debe tener entre 1 y 200.000 caracteres".to_owned(),
         ));
     }
-    let record =
-        database.create_workflow_run_from_version(workflow_id, workflow_version_id, input_text)?;
+    let (record, created) = database.create_workflow_run_for_operation(
+        workflow_id,
+        workflow_version_id,
+        input_text,
+        operation_key,
+    )?;
     validate_definition(&record.definition)?;
     let run_id = record.run_id.clone();
-    spawn_run(database.clone(), broker, record);
+    if created {
+        spawn_run(database.clone(), broker, record);
+    }
     database.workflow_run(&run_id)
 }
 
@@ -304,6 +316,22 @@ async fn execute_run(
                 .map(|output| (node.node_id.clone(), output.clone()))
         })
         .collect::<HashMap<_, _>>();
+    // H02: cada salida conserva la clasificación con la que se produjo. Una
+    // salida completada sin clasificación registrada procede de una versión
+    // anterior; se trata como la más estricta porque no se sabe qué contuvo.
+    let mut classifications = current
+        .node_runs
+        .iter()
+        .filter(|node| node.status == "completed")
+        .map(|node| {
+            (
+                node.node_id.clone(),
+                node.data_classification
+                    .clone()
+                    .unwrap_or_else(|| "local_only".to_owned()),
+            )
+        })
+        .collect::<HashMap<_, _>>();
     let mut statuses = current
         .node_runs
         .iter()
@@ -340,6 +368,12 @@ async fn execute_run(
         )?;
         statuses.insert(input.id.clone(), "completed".to_owned());
         outputs.insert(input.id.clone(), record.input_text.clone());
+    }
+    // La entrada la escribe la persona al lanzar el flujo: no añade
+    // restricción propia y cada nodo aplica su perfil sobre ella.
+    if !classifications.contains_key(&input.id) || current_input_is_legacy(&current, &input.id) {
+        database.set_workflow_node_classification(&record.run_id, &input.id, "public")?;
+        classifications.insert(input.id.clone(), "public".to_owned());
     }
 
     loop {
@@ -389,7 +423,11 @@ async fn execute_run(
                 continue;
             }
             let input_text = join_parent_outputs(&record.definition, node, &outputs);
+            let inherited = inherited_classification(&parents, &classifications);
             if node.kind == "approval" {
+                // Aprobar deja pasar la entrada tal cual: la salida hereda la
+                // clasificación de lo que se aprobó, también tras reiniciar.
+                database.set_workflow_node_classification(&record.run_id, &node.id, &inherited)?;
                 database.update_workflow_node_run(
                     &record.run_id,
                     &node.id,
@@ -403,18 +441,19 @@ async fn execute_run(
                 progressed = true;
                 continue;
             }
-            runnable.push((node.clone(), input_text));
+            runnable.push((node.clone(), input_text, inherited));
         }
         let mut executions = tokio::task::JoinSet::new();
-        for (node, input_text) in runnable {
+        for (node, input_text, inherited) in runnable {
             let database = database.clone();
             let broker = broker.clone();
             let record = record.clone();
             executions.spawn(async move {
                 let result = if node.kind == "result" {
-                    Ok(input_text.clone())
+                    Ok((input_text.clone(), inherited))
                 } else {
-                    execute_model_node(&database, &broker, &record, &node, &input_text).await
+                    execute_model_node(&database, &broker, &record, &node, &input_text, &inherited)
+                        .await
                 };
                 (node, input_text, result)
             });
@@ -423,7 +462,13 @@ async fn execute_run(
             let (node, input_text, result) =
                 joined.map_err(|error| AppError::BrokerTransport(error.to_string()))?;
             match result {
-                Ok(output) => {
+                Ok((output, classification)) => {
+                    database.set_workflow_node_classification(
+                        &record.run_id,
+                        &node.id,
+                        &classification,
+                    )?;
+                    classifications.insert(node.id.clone(), classification);
                     database.update_workflow_node_run(
                         &record.run_id,
                         &node.id,
@@ -543,7 +588,8 @@ async fn execute_model_node(
     record: &WorkflowExecutionRecord,
     node: &WorkflowNode,
     input_text: &str,
-) -> Result<String, AppError> {
+    inherited_classification: &str,
+) -> Result<(String, String), AppError> {
     let mut attachments =
         database.ready_workflow_attachments(&record.workflow_id, &node.attachment_ids)?;
     let custom_gpt_id = node.custom_gpt_id.as_deref();
@@ -705,11 +751,16 @@ async fn execute_model_node(
         .iter()
         .chain(project_memories.iter())
         .any(|memory| memory.sensitivity.eq_ignore_ascii_case("sensitive"));
-    let data_classification = if contains_sensitive_knowledge {
+    let own_classification = if contains_sensitive_knowledge {
         "local_only"
     } else {
         profile.map_or("internal", |value| value.data_classification.as_str())
     };
+    // Lo que llega de nodos anteriores nunca se trata con menos cuidado del
+    // que tuvo al producirse, aunque este nodo use otro GPT o ninguno.
+    let data_classification =
+        crate::politica::stricter_classification(own_classification, inherited_classification)
+            .to_owned();
     let max_cost_usd = profile.map_or(0.10, |value| value.max_cost_usd);
     let priority = profile.map_or(50, |value| value.priority);
     let request = json!({
@@ -746,6 +797,10 @@ async fn execute_model_node(
         },
         "execution": execution,
         "risk": {"data_classification": data_classification},
+        "auxiliary_invocations": !matches!(
+            data_classification.as_str(),
+            "confidential" | "local_only"
+        ),
         "priority": priority
     });
 
@@ -809,7 +864,7 @@ async fn execute_model_node(
                     .result
                     .as_ref()
                     .and_then(result_text)
-                    .map(str::to_owned)
+                    .map(|text| (text.to_owned(), data_classification.clone()))
                     .ok_or_else(|| {
                         AppError::BrokerContract(
                             "el Broker completó el nodo sin contenido de respuesta".to_owned(),
@@ -855,6 +910,33 @@ async fn abandon_remote_node(broker: &BrokerClient, task_id: &str, cause: AppErr
             "{cause}; tampoco se pudo cancelar la tarea remota {task_id}: {cancel_error}"
         )),
     }
+}
+
+/// La clasificación más estricta entre las salidas que recibe un nodo.
+///
+/// Un padre sin clasificación conocida cuenta como la más estricta: no se
+/// puede demostrar que su salida admita una política más laxa.
+fn inherited_classification(parents: &[&str], classifications: &HashMap<String, String>) -> String {
+    parents
+        .iter()
+        .map(|parent| {
+            classifications
+                .get(*parent)
+                .map(String::as_str)
+                .unwrap_or("local_only")
+        })
+        .fold("public", |current, next| {
+            crate::politica::stricter_classification(current, next)
+        })
+        .to_owned()
+}
+
+/// La entrada de una ejecución anterior a la 0.3.0 no tiene clasificación
+/// registrada, pero la escribió la persona: no hereda la regla conservadora.
+fn current_input_is_legacy(run: &WorkflowRunView, input_id: &str) -> bool {
+    run.node_runs
+        .iter()
+        .any(|node| node.node_id == input_id && node.data_classification.is_none())
 }
 
 fn parent_ids<'a>(definition: &'a WorkflowDefinition, node_id: &str) -> Vec<&'a str> {

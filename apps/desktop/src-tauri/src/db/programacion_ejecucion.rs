@@ -11,12 +11,16 @@ impl Database {
     pub fn recover_claimed_scheduled_runs(&self) -> Result<Vec<ScheduledClaim>, AppError> {
         let connection = self.connect()?;
         let mut statement = connection.prepare(
+            // La instrucción y el destino salen de la propia ejecución: la
+            // programación pudo editarse entre el reclamo y este arranque, y lo
+            // reclamado es lo que hay que ejecutar. Las ejecuciones anteriores
+            // a la versión 0.3.0 no guardaban copia y usan la programación.
             "SELECT run.id, run.scheduled_task_id,
-                    COALESCE(json_extract(task.payload_json, '$.target_kind'), 'conversation'),
-                    json_extract(task.payload_json, '$.conversation_id'),
-                    json_extract(task.payload_json, '$.workflow_id'),
-                    json_extract(task.payload_json, '$.workflow_version_id'),
-                    json_extract(task.payload_json, '$.prompt')
+                    COALESCE(json_extract(COALESCE(run.payload_json, task.payload_json), '$.target_kind'), 'conversation'),
+                    json_extract(COALESCE(run.payload_json, task.payload_json), '$.conversation_id'),
+                    json_extract(COALESCE(run.payload_json, task.payload_json), '$.workflow_id'),
+                    json_extract(COALESCE(run.payload_json, task.payload_json), '$.workflow_version_id'),
+                    json_extract(COALESCE(run.payload_json, task.payload_json), '$.prompt')
              FROM scheduled_runs run
              JOIN scheduled_tasks task ON task.id = run.scheduled_task_id
              WHERE run.status = 'claimed'
@@ -52,11 +56,22 @@ impl Database {
                         json_extract(payload_json, '$.workflow_id'),
                         json_extract(payload_json, '$.workflow_version_id'),
                         json_extract(payload_json, '$.prompt')
-                 FROM scheduled_tasks
+                 FROM scheduled_tasks task
                  WHERE enabled = 1
+                   AND retired_at IS NULL
                    AND confirmed_at IS NOT NULL
                    AND next_run_at IS NOT NULL
                    AND datetime(next_run_at) <= datetime('now')
+                   -- Una ejecución única no se omite nunca: si otra de la misma
+                   -- programación sigue en curso, espera a que termine.
+                   AND NOT (
+                       schedule_expression = 'once'
+                       AND EXISTS(
+                           SELECT 1 FROM scheduled_runs active
+                           WHERE active.scheduled_task_id = task.id
+                             AND active.status IN ('claimed', 'running')
+                       )
+                   )
                  ORDER BY datetime(next_run_at), created_at
                  LIMIT 1",
                 [],
@@ -91,11 +106,45 @@ impl Database {
         };
         let claim_key = format!("{scheduled_task_id}:{due_at}");
         let run_id = format!("scheduled_run_{}", Uuid::new_v4().simple());
+        // Nunca dos ejecuciones activas de la misma programación. Una fecha
+        // recurrente que vence mientras la anterior sigue trabajando se omite
+        // —y queda escrita en el historial con su motivo— en lugar de
+        // acumularse o de solaparse con ella.
+        let active_run_exists: bool = transaction.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM scheduled_runs
+                WHERE scheduled_task_id = ?1 AND status IN ('claimed', 'running')
+             )",
+            params![scheduled_task_id],
+            |row| row.get(0),
+        )?;
+        let status = if active_run_exists {
+            "skipped"
+        } else {
+            "claimed"
+        };
+        let skipped_result = active_run_exists.then(|| {
+            serde_json::json!({
+                "message": "Se omitió esta fecha porque la ejecución anterior de la programación seguía en curso."
+            })
+            .to_string()
+        });
         let inserted = transaction.execute(
             "INSERT OR IGNORE INTO scheduled_runs(
-                id, scheduled_task_id, due_at, claim_key, status, attempt
-             ) VALUES (?1, ?2, ?3, ?4, 'claimed', 1)",
-            params![run_id, scheduled_task_id, due_at, claim_key],
+                id, scheduled_task_id, due_at, claim_key, status, attempt, result_json,
+                payload_json
+             ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, 1, ?6,
+                (SELECT payload_json FROM scheduled_tasks WHERE id = ?2)
+             )",
+            params![
+                run_id,
+                scheduled_task_id,
+                due_at,
+                claim_key,
+                status,
+                skipped_result
+            ],
         )?;
         if inserted == 0 {
             transaction.commit()?;
@@ -118,6 +167,9 @@ impl Database {
             params![scheduled_task_id, claim_key, next_run_at],
         )?;
         transaction.commit()?;
+        if active_run_exists {
+            return Ok(None);
+        }
         Ok(Some(ScheduledClaim {
             run_id,
             scheduled_task_id,
@@ -157,6 +209,7 @@ impl Database {
                  JOIN scheduled_tasks task ON task.id = source.scheduled_task_id
                  WHERE source.id = ?1
                    AND source.status = 'failed'
+                   AND task.retired_at IS NULL
                    AND (
                        (
                            COALESCE(json_extract(task.payload_json, '$.target_kind'), 'conversation') = 'conversation'
@@ -217,9 +270,10 @@ impl Database {
         );
         transaction.execute(
             "INSERT INTO scheduled_runs(
-                id, scheduled_task_id, due_at, claim_key, status, attempt
+                id, scheduled_task_id, due_at, claim_key, status, attempt, payload_json
              ) VALUES (
-                ?1, ?2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?3, 'claimed', ?4
+                ?1, ?2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?3, 'claimed', ?4,
+                (SELECT payload_json FROM scheduled_tasks WHERE id = ?2)
              )",
             params![retry_run_id, scheduled_task_id, claim_key, attempt],
         )?;
@@ -270,6 +324,7 @@ impl Database {
                         json_extract(task.payload_json, '$.prompt')
                  FROM scheduled_tasks task
                  WHERE task.id = ?1
+                   AND task.retired_at IS NULL
                    AND (
                        (
                            COALESCE(json_extract(task.payload_json, '$.target_kind'), 'conversation') = 'conversation'
@@ -317,9 +372,10 @@ impl Database {
         let claim_key = format!("{scheduled_task_id}:manual:{}", Uuid::new_v4().simple());
         transaction.execute(
             "INSERT INTO scheduled_runs(
-                id, scheduled_task_id, due_at, claim_key, status, attempt
+                id, scheduled_task_id, due_at, claim_key, status, attempt, payload_json
              ) VALUES (
-                ?1, ?2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?3, 'claimed', 1
+                ?1, ?2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?3, 'claimed', 1,
+                (SELECT payload_json FROM scheduled_tasks WHERE id = ?2)
              )",
             params![manual_run_id, scheduled_task_id, claim_key],
         )?;

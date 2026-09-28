@@ -334,11 +334,14 @@ pub(super) fn chat_request_with_project_instruction_and_classification(
         sandbox_enabled,
         execution_preferences,
     } = options;
-    // Un GPT puede fijar un perfil reproducible. Si no lo hace, conserva el
-    // comportamiento histórico y hereda las opciones visibles del chat.
-    let execution_preferences = custom_gpt_context
-        .and_then(|context| context.execution_profile.clone())
-        .unwrap_or(execution_preferences);
+    // Un GPT puede fijar un perfil reproducible, pero no ampliar lo que la
+    // persona restringió en el chat: la privacidad es la más estricta y el
+    // gasto el menor de ambos. La misma regla alimenta la vista previa del
+    // chat (`politica::effective_policy`), así que lo visible es lo enviado.
+    let (execution_preferences, _) = crate::politica::merge_execution_preferences(
+        &execution_preferences,
+        custom_gpt_context.and_then(|context| context.execution_profile.as_ref()),
+    );
     let prior_context = &context[..context.len().saturating_sub(1)];
     let history = serde_json::to_string(prior_context)
         .map_err(|error| AppError::BrokerContract(error.to_string()))?;

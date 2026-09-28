@@ -10,7 +10,7 @@
 :root[data-theme="dark"] { --app-background: #151310; color: #eee9df; }
 
 * { box-sizing: border-box; }
-body { margin: 0; min-width: 980px; min-height: 100vh; background: var(--app-background, #f3f0e9); }
+body { margin: 0; min-width: 900px; min-height: 100vh; background: var(--app-background, #f3f0e9); }
 button { font: inherit; }
 .skip-link { position: fixed; top: 10px; left: 12px; z-index: 100; transform: translateY(-160%); border-radius: 9px; background: #fff8ed; color: #2d2924; padding: 10px 14px; font-weight: 800; text-decoration: none; box-shadow: 0 8px 28px #17120c55; }
 .skip-link:focus { transform: translateY(0); }
@@ -815,7 +815,7 @@ nav { margin-top: 14px; overflow-y: auto; min-height: 0; padding-right: 2px; }
   .content { padding: 32px; }
   .hero-card { grid-template-columns: 1fr; }
   .orb { display: none; }
-  .conversation-toolbar button:not(.danger-text) { display: none; }
+  .conversation-toolbar button:not(.danger-text):not(.context-inspector-toggle) { display: none; }
   .conversation-toolbar .export-action { display: inline-flex !important; }
   .execution-settings-grid { grid-template-columns: 1fr; }
   .execution-setting-check { grid-column: auto; }
@@ -1121,6 +1121,27 @@ body {
 .home-settings > .broker-credential, .home-settings > .authorized-folders { display: grid !important; }
 .home-workflows > .workflow-studio { display: grid !important; }
 .home-athena > .athena-area { display: grid !important; }
+.home-archive > .archive-card, .home-settings > .backup-card { display: grid !important; gap: 10px; }
+.home-workflows > p, .home-athena > p { display: block !important; }
+
+/* Auditoría 28-sep-2026 */
+.archive-row { display: flex; justify-content: space-between; gap: 14px; align-items: center; padding: 10px 12px; border: 1px solid var(--border, #e2d9cc); border-radius: 10px; }
+.archive-row small { display: block; margin-top: 3px; color: #7a6f63; font-size: 12px; }
+.archive-card h4 { margin: 12px 0 4px; font-size: 13px; }
+.archive-notice, .restore-notice { padding: 10px 12px; border-radius: 10px; background: #eef5ea; color: #2f5130; }
+.credential-banner, .composer-refresh-notice { display: flex; gap: 12px; align-items: center; justify-content: space-between; padding: 10px 12px; border-radius: 10px; background: #fdf1dd; color: #6a4a12; }
+.effective-policy { margin: 6px 0 10px; padding: 10px 12px; border-radius: 10px; background: #f4efe6; font-size: 12px; }
+.effective-policy ul { margin: 6px 0 0; padding-left: 18px; }
+.policy-warning { color: #8a3b12 !important; font-weight: 600; }
+.search-scope { display: flex; gap: 6px; align-items: center; margin: -4px 0 8px; font-size: 12px; color: #6f655a; }
+.conversation-link.search-result { display: grid; gap: 2px; text-align: left; }
+.search-snippet { color: #7a6f63; font-size: 11px; line-height: 1.35; white-space: normal; }
+.search-archived { color: #9a7b4f; font-style: normal; font-size: 11px; }
+.message.search-hit { outline: 2px solid #c8923f; outline-offset: 4px; border-radius: 10px; transition: outline-color 1s; }
+.message-artifact { display: flex; flex-wrap: wrap; gap: 8px; justify-content: space-between; align-items: center; }
+.message-artifact small { display: block; color: #7a6f63; }
+.message-artifact-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.workflow-message.draft { display: flex; justify-content: space-between; align-items: center; gap: 12px; background: #fdf1dd; color: #6a4a12; }
 
 .workflow-studio { gap: 18px; min-width: 0; }
 .workflow-studio-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; padding: 24px 28px; border: 1px solid #ddd5c8; border-radius: 18px; background: #fffaf3; }
@@ -1627,3 +1648,44 @@ body {
 :root[data-theme="dark"] .athena-tareas li[data-estado="completed"] { border-left-color: #6f8a74; }
 :root[data-theme="dark"] .athena-tareas li[data-estado="failed"] { border-left-color: #a86a5c; }
 :root[data-theme="dark"] .athena-rol { background: #33291b; color: #cfc4b5; }
+
+.workflow-node-privacy { display: inline-block; margin: 4px 0; padding: 2px 6px; border-radius: 999px; background: #efe3ff; color: #4d2c7a; font-size: 10px; font-weight: 700; }
+
+.task-cancelled { display: grid; gap: 4px; padding: 10px 12px; border-radius: 10px; background: #f1ede6; color: #5d554b; }
+
+/* Tema oscuro de las superficies de la auditoría del 28-sep-2026 */
+:root[data-theme="dark"] .workspace :is(.archive-card, .backup-card) { border-color: #403a33; background: #211e1a; }
+:root[data-theme="dark"] .archive-row { border-color: #403a33; background: #1b1916; }
+:root[data-theme="dark"] .workspace .archive-row small { color: #bcb3a8; }
+:root[data-theme="dark"] .workspace :is(.archive-notice, .restore-notice) { background: #1f2a1e; color: #bfe0b8; }
+:root[data-theme="dark"] .workspace :is(.credential-banner, .composer-refresh-notice, .workflow-message.draft) { background: #33291b; color: #f2d39c; }
+:root[data-theme="dark"] .workspace :is(.credential-banner, .composer-refresh-notice, .workflow-message.draft) span { color: #f2d39c; }
+:root[data-theme="dark"] .workspace .effective-policy { background: #2a2621; color: #d8cfc3; }
+:root[data-theme="dark"] .workspace .policy-warning { color: #ffb38a !important; }
+:root[data-theme="dark"] .workspace .task-cancelled { background: #2a2621; color: #d8cfc3; }
+:root[data-theme="dark"] .workspace .task-cancelled span { color: #bcb3a8; }
+:root[data-theme="dark"] .workspace .workflow-node-privacy { background: #3a2c52; color: #e3d2ff; }
+:root[data-theme="dark"] .sidebar .search-scope { color: #bcb3a8; }
+:root[data-theme="dark"] .sidebar .search-snippet { color: #a99f93; }
+
+.execution-destination-warning { margin: 6px 0 10px; font-size: 12px; }
+
+/* La conversación conserva siempre su espacio: el compositor no puede
+   crecer hasta dejar la lista de mensajes en unas pocas líneas (28-sep-2026). */
+.chat-surface > .composer { max-height: min(60vh, 600px); overflow-y: auto; }
+.project-file-library > summary { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; cursor: pointer; list-style: none; }
+.project-file-library > summary::-webkit-details-marker { display: none; }
+.project-file-library > summary::before { content: "▸"; color: #9a7b4f; }
+.project-file-library[open] > summary::before { content: "▾"; }
+.project-file-library[open] > .project-file-list { margin-top: 8px; }
+
+/* El botón Enviar nunca queda fuera de la vista: si el compositor tiene que
+   desplazarse, su pie se queda pegado abajo (28-sep-2026). */
+.chat-surface > .composer .composer-footer { position: sticky; bottom: -18px; z-index: 2; margin-bottom: -18px; padding: 10px 0 18px; background: #f4f0e9; }
+:root[data-theme="dark"] .chat-surface > .composer .composer-footer { background: #1d1a17; }
+
+.composer-footer, .composer-footer .task-actions { flex-wrap: wrap; }
+@media (max-width: 1180px) {
+  .composer-footer > span { display: none; }
+  .composer-footer { justify-content: flex-end; }
+}

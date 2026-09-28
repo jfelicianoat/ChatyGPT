@@ -8,6 +8,7 @@ use super::*;
 // El entregable y su hash vienen del espejo del contrato del Broker, no de
 // una lectura suelta de `result` (Client_API.md, 8.3).
 use crate::broker::final_artifact;
+use crate::db::CancellationRoute;
 use serde_json::Value;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -819,9 +820,6 @@ pub(super) fn spawn_research_tool_execution(
         {
             return;
         }
-        let Ok(client) = crate::research_tools::web_client() else {
-            return;
-        };
         let mut outcomes = Vec::with_capacity(pending.len());
         for call in &pending {
             let (status, content) = match call.name.as_str() {
@@ -832,7 +830,7 @@ pub(super) fn spawn_research_tool_execution(
                         .and_then(serde_json::Value::as_str)
                         .unwrap_or_default()
                         .to_owned();
-                    match crate::research_tools::fetch_url(&client, &url).await {
+                    match crate::research_tools::fetch_url(&url).await {
                         Ok(page) => {
                             logging::info(
                                 "research.tool_executed",
@@ -932,26 +930,36 @@ pub(super) fn spawn_tool_resume(database: Database, broker: BrokerClient, local_
             };
             match broker.submit_tool_results(&remote_id, &payload).await {
                 Ok(state) => {
-                    if database
+                    match database
                         .mark_tool_results_submitted(&local_task_id)
                         .and_then(|()| database.record_remote_state(&local_task_id, &state))
-                        .is_ok()
                     {
-                        spawn_polling(database, broker, local_task_id);
+                        Ok(()) => spawn_polling(database, broker, local_task_id),
+                        Err(error) => close_unmaterializable(
+                            &database,
+                            &broker,
+                            &local_task_id,
+                            &state,
+                            &error,
+                        ),
                     }
                     return;
                 }
                 Err(error) if is_permanent(&error) => {
                     match broker.get_task(&remote_id).await {
-                        Ok(state) if state.status.as_str() != "waiting_for_tools" => {
-                            if database
-                                .mark_tool_results_submitted(&local_task_id)
-                                .and_then(|()| database.record_remote_state(&local_task_id, &state))
-                                .is_ok()
-                            {
-                                spawn_polling(database, broker, local_task_id);
-                            }
-                        }
+                        Ok(state) if state.status.as_str() != "waiting_for_tools" => match database
+                            .mark_tool_results_submitted(&local_task_id)
+                            .and_then(|()| database.record_remote_state(&local_task_id, &state))
+                        {
+                            Ok(()) => spawn_polling(database, broker, local_task_id),
+                            Err(error) => close_unmaterializable(
+                                &database,
+                                &broker,
+                                &local_task_id,
+                                &state,
+                                &error,
+                            ),
+                        },
                         _ => {
                             let _ = database.mark_orphaned(&local_task_id, &error.to_string());
                         }
@@ -977,30 +985,142 @@ pub async fn cancel_task(
     broker: BrokerClient,
     local_id: &str,
 ) -> Result<LocalTaskSnapshot, AppError> {
-    let record = database.task_record(local_id)?;
-    let remote_id = record.remote_task_id.ok_or_else(|| {
-        AppError::BrokerContract("la tarea todavía no tiene identificador remoto".to_owned())
-    })?;
-    let state = broker.cancel_task(&remote_id).await?;
-    logging::info(
-        "task.cancel_requested",
-        Some(local_id),
-        &[("status", logging::code(state.status.as_str()))],
-    );
-    database.record_remote_state(local_id, &state)?;
-    advance_semantic_chat(database.clone(), broker, local_id);
+    // La intención se guarda antes de hablar con nadie: si el Broker no
+    // responde, o la aplicación se cierra ahora, la cancelación sigue en pie y
+    // el envío o el sondeo la completarán en cuanto puedan.
+    match database.request_task_cancellation(local_id)? {
+        CancellationRoute::AlreadyFinished => {}
+        CancellationRoute::LocalOnly => {
+            logging::info(
+                "task.cancelled_before_submit",
+                Some(local_id),
+                &[("status", logging::code("cancelled"))],
+            );
+            database.record_remote_state(
+                local_id,
+                &locally_cancelled_state(
+                    "La pregunta se canceló antes de enviarse a Broker AI; no se ejecutará.",
+                ),
+            )?;
+            advance_semantic_chat(database.clone(), broker, local_id);
+        }
+        CancellationRoute::PendingReconciliation => {
+            // Un intento anterior pudo llegar al Broker sin que conociéramos su
+            // identidad. El bucle de envío reconcilia con la misma clave
+            // idempotente —no crea otra tarea— y la cancela allí.
+            let record = database.task_record(local_id)?;
+            spawn_submission_and_poll(database.clone(), broker, record);
+        }
+        CancellationRoute::Remote(remote_id) => match broker.cancel_task(&remote_id).await {
+            Ok(state) => {
+                logging::info(
+                    "task.cancel_requested",
+                    Some(local_id),
+                    &[("status", logging::code(state.status.as_str()))],
+                );
+                database.record_remote_state(local_id, &state)?;
+                advance_semantic_chat(database.clone(), broker, local_id);
+            }
+            Err(error) => {
+                // No se pierde: el sondeo vuelve a pedirla en cada vuelta hasta
+                // que el Broker la confirme. La interfaz ve la petición
+                // pendiente en `cancel_requested`.
+                logging::warn(
+                    "task.cancel_deferred",
+                    Some(local_id),
+                    &[("error_kind", logging::error_kind(&error))],
+                );
+            }
+        },
+    }
     database.task_snapshot(local_id)
+}
+
+/// Estado terminal para una tarea que nunca llegó a salir del equipo.
+pub(super) fn locally_cancelled_state(message: &str) -> crate::broker::TaskState {
+    let now = chrono::Utc::now().to_rfc3339();
+    serde_json::from_value(json!({
+        "task_id": "",
+        "status": "cancelled",
+        "created_at": now,
+        "updated_at": now,
+        "progress": {"phase": "cancelled"},
+        "result": null,
+        "error": {"code": "CANCELLED_LOCALLY", "message": message}
+    }))
+    .expect("estado local de cancelación bien formado")
+}
+
+/// Cierra de forma visible una tarea cuyo estado llegó pero no pudo guardarse.
+///
+/// Antes el worker simplemente terminaba: la tarea seguía «en curso» en la
+/// base y en la interfaz, sin nadie que la avanzara. Un fallo de contrato
+/// (un resumen sin Markdown, un embedding no numérico) no mejora repitiéndolo.
+fn close_unmaterializable(
+    database: &Database,
+    broker: &BrokerClient,
+    local_id: &str,
+    state: &crate::broker::TaskState,
+    error: &AppError,
+) {
+    logging::error(
+        "task.materialization_failed",
+        Some(local_id),
+        &[
+            ("status", logging::code(state.status.as_str())),
+            ("error_kind", logging::error_kind(error)),
+        ],
+    );
+    let _ = database.mark_unmaterializable(
+        local_id,
+        state.status.as_str(),
+        &format!("Broker AI respondió, pero ChatyGPT no pudo guardar el resultado: {error}"),
+    );
+    advance_semantic_chat(database.clone(), broker.clone(), local_id);
+}
+
+/// Resultado de un intento de envío.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SubmitOutcome {
+    /// La tarea tiene identidad remota y puede sondearse.
+    Submitted,
+    /// La persona la canceló antes de que saliera: no hay nada que sondear.
+    CancelledLocally,
 }
 
 pub(super) async fn submit_or_resume(
     database: Database,
     broker: BrokerClient,
     record: BrokerTaskRecord,
-) -> Result<(), AppError> {
-    if record.remote_task_id.is_some() {
-        return Ok(());
-    }
-    database.mark_submitting(&record.id)?;
+) -> Result<SubmitOutcome, AppError> {
+    let mut record = record;
+    let reconciling = loop {
+        if record.remote_task_id.is_some() {
+            return Ok(SubmitOutcome::Submitted);
+        }
+        if record.cancel_requested && record.attempt == 0 {
+            // Nunca se transmitió: cerrarla aquí basta para que no se ejecute.
+            database.record_remote_state(
+                &record.id,
+                &locally_cancelled_state(
+                    "La pregunta se canceló antes de enviarse a Broker AI; no se ejecutará.",
+                ),
+            )?;
+            return Ok(SubmitOutcome::CancelledLocally);
+        }
+        // Con una cancelación pendiente y un intento previo, este envío es una
+        // reconciliación: la clave idempotente es la misma, así que el Broker
+        // devuelve la tarea original si la aceptó y no crea una segunda.
+        if record.cancel_requested {
+            break true;
+        }
+        if database.mark_submitting(&record.id)? {
+            break false;
+        }
+        // Una cancelación entró entre la lectura y el intento. Se decide con
+        // el estado recién leído, nunca con el anterior.
+        record = database.task_record(&record.id)?;
+    };
     match broker.create_task(&record.request).await {
         Ok(accepted) => {
             // Enlaza la identidad local con la remota: es la traza que permite
@@ -1013,7 +1133,13 @@ pub(super) async fn submit_or_resume(
                     ("status", logging::code(accepted.status.as_str())),
                 ],
             );
-            database.attach_remote_task(&record.id, &accepted)
+            database.attach_remote_task(&record.id, &accepted)?;
+            if reconciling {
+                if let Ok(state) = broker.cancel_task(&accepted.task_id).await {
+                    database.record_remote_state(&record.id, &state)?;
+                }
+            }
+            Ok(SubmitOutcome::Submitted)
         }
         Err(error) => {
             if is_permanent(&error) {
@@ -1135,46 +1261,109 @@ pub(super) fn spawn_submission_and_poll(
     broker: BrokerClient,
     initial_record: BrokerTaskRecord,
 ) {
+    tauri::async_runtime::spawn(submit_and_poll(database, broker, initial_record));
+}
+
+/// Fragmentos de documento que pueden estar indexándose a la vez (H19).
+const INDEX_CONCURRENCY: usize = 4;
+
+/// Cola de indexación de una base de datos.
+///
+/// Hay una por base y no una global: la aplicación solo abre una, pero las
+/// pruebas abren muchas en el mismo proceso y no deben competir por turnos.
+fn index_queue(database: &Database) -> std::sync::Arc<tokio::sync::Semaphore> {
+    type Queues = std::sync::Mutex<
+        std::collections::HashMap<std::path::PathBuf, std::sync::Arc<tokio::sync::Semaphore>>,
+    >;
+    static QUEUES: std::sync::OnceLock<Queues> = std::sync::OnceLock::new();
+    QUEUES
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .entry(database.path().to_path_buf())
+        .or_insert_with(|| std::sync::Arc::new(tokio::sync::Semaphore::new(INDEX_CONCURRENCY)))
+        .clone()
+}
+
+/// La tarea vectoriza un fragmento de documento: va por la cola acotada.
+pub(super) fn is_index_task(record: &BrokerTaskRecord) -> bool {
+    record
+        .request
+        .pointer("/content/metadata/source_type")
+        .and_then(Value::as_str)
+        == Some("attachment_chunk")
+}
+
+/// Envía y sigue una tarea de indexación cuando la cola le da turno.
+///
+/// El permiso se mantiene hasta que la tarea se asienta, así que nunca hay
+/// más de `INDEX_CONCURRENCY` fragmentos trabajando en el Broker por culpa de
+/// ChatyGPT. Los turnos de chat no pasan por aquí y no esperan a la cola.
+pub(super) fn spawn_bounded_index_task(
+    database: Database,
+    broker: BrokerClient,
+    record: BrokerTaskRecord,
+) {
     tauri::async_runtime::spawn(async move {
-        let local_id = initial_record.id.clone();
-        let policy = PollPolicy::default();
-        let mut record = initial_record;
-        loop {
-            match submit_or_resume(database.clone(), broker.clone(), record).await {
-                Ok(()) => {
-                    spawn_polling(database, broker, local_id);
-                    return;
-                }
-                Err(error) if is_permanent(&error) => {
-                    advance_semantic_chat(database, broker, &local_id);
-                    return;
-                }
-                Err(_) => {
-                    let current = match database.task_record(&local_id) {
-                        Ok(current) => current,
-                        Err(_) => return,
-                    };
-                    let delay = policy.delay_ms(
-                        current.consecutive_poll_errors,
-                        deterministic_jitter(&local_id, current.consecutive_poll_errors as u64),
-                    );
-                    tokio::time::sleep(Duration::from_millis(delay)).await;
-                    record = match database.task_record(&local_id) {
-                        Ok(record) => record,
-                        Err(_) => return,
-                    };
-                }
-            }
-        }
+        let Ok(_permit) = index_queue(&database).acquire_owned().await else {
+            return;
+        };
+        submit_and_poll(database, broker, record).await;
     });
 }
 
+async fn submit_and_poll(
+    database: Database,
+    broker: BrokerClient,
+    initial_record: BrokerTaskRecord,
+) {
+    let local_id = initial_record.id.clone();
+    let policy = PollPolicy::default();
+    let mut record = initial_record;
+    loop {
+        match submit_or_resume(database.clone(), broker.clone(), record).await {
+            Ok(SubmitOutcome::Submitted) => {
+                poll_task(database, broker, local_id).await;
+                return;
+            }
+            Ok(SubmitOutcome::CancelledLocally) => {
+                advance_semantic_chat(database, broker, &local_id);
+                return;
+            }
+            Err(error) if is_permanent(&error) => {
+                advance_semantic_chat(database, broker, &local_id);
+                return;
+            }
+            Err(_) => {
+                let current = match database.task_record(&local_id) {
+                    Ok(current) => current,
+                    Err(_) => return,
+                };
+                let delay = policy.delay_ms(
+                    current.consecutive_poll_errors,
+                    deterministic_jitter(&local_id, current.consecutive_poll_errors as u64),
+                );
+                tokio::time::sleep(Duration::from_millis(delay)).await;
+                record = match database.task_record(&local_id) {
+                    Ok(record) => record,
+                    Err(_) => return,
+                };
+            }
+        }
+    }
+}
+
 pub(super) fn spawn_polling(database: Database, broker: BrokerClient, local_id: String) {
-    tauri::async_runtime::spawn(async move {
+    tauri::async_runtime::spawn(poll_task(database, broker, local_id));
+}
+
+async fn poll_task(database: Database, broker: BrokerClient, local_id: String) {
+    {
         let policy = PollPolicy::default();
         let mut unchanged_polls = 0_u32;
         let mut last_status = String::new();
         let mut poll_no = 0_u64;
+        let mut storage_retries = 0_u32;
 
         loop {
             let record = match database.task_record(&local_id) {
@@ -1185,12 +1374,38 @@ pub(super) fn spawn_polling(database: Database, broker: BrokerClient, local_id: 
                 return;
             };
 
-            match broker.get_task(&remote_id).await {
+            // Una cancelación que el Broker no pudo confirmar en su momento se
+            // repite aquí: cancelar es idempotente y devuelve el estado, de
+            // modo que sirve también como lectura.
+            let reading = if record.cancel_requested {
+                broker.cancel_task(&remote_id).await
+            } else {
+                broker.get_task(&remote_id).await
+            };
+            match reading {
                 Ok(state) => {
                     let status = state.status.as_str().to_owned();
-                    if database.record_remote_state(&local_id, &state).is_err() {
+                    if let Err(error) = database.record_remote_state(&local_id, &state) {
+                        // Un bloqueo pasajero de SQLite se reintenta: el estado
+                        // remoto seguirá ahí en la próxima vuelta. Cualquier otro
+                        // fallo cierra la tarea con su motivo a la vista.
+                        if matches!(error, AppError::Database(_)) && storage_retries < 5 {
+                            storage_retries += 1;
+                            logging::warn(
+                                "task.storage_retry",
+                                Some(&local_id),
+                                &[("error_kind", logging::error_kind(&error))],
+                            );
+                            tokio::time::sleep(Duration::from_millis(
+                                500 * u64::from(storage_retries),
+                            ))
+                            .await;
+                            continue;
+                        }
+                        close_unmaterializable(&database, &broker, &local_id, &state, &error);
                         return;
                     }
+                    storage_retries = 0;
                     if state.status.is_terminal() || status == "waiting_for_tools" {
                         logging::info(
                             "task.state_settled",
@@ -1257,7 +1472,7 @@ pub(super) fn spawn_polling(database: Database, broker: BrokerClient, local_id: 
             ))
             .await;
         }
-    });
+    }
 }
 
 pub(super) fn advance_semantic_chat(

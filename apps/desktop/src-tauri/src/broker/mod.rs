@@ -24,6 +24,12 @@ use crate::secrets;
 const DEFAULT_BROKER_BASE_URL: &str = "http://192.168.1.52:8765";
 const MAX_ARTIFACT_BYTES: usize = 20 * 1024 * 1024;
 const MAX_CONVERTED_TEXT_BYTES: usize = 64 * 1024 * 1024;
+/// Presupuesto de una respuesta JSON del Broker (H18).
+///
+/// El estado de una tarea lleva su resultado entero; 32 MB cubren con holgura
+/// una respuesta larga y cortan una respuesta defectuosa antes de que llene la
+/// memoria. El tiempo de espera no es un presupuesto de bytes.
+pub(crate) const MAX_JSON_BYTES: usize = 32 * 1024 * 1024;
 
 /// Convierte el token en cabecera HTTP sin filtrar su contenido al error.
 fn header_token(value: &str) -> Result<HeaderValue, AppError> {
@@ -121,6 +127,12 @@ pub struct BrokerDiagnostic {
     /// —separar sus propias llamadas de las de la tarea y acusar recibo de la
     /// poda del prompt—, no solo qué respondió.
     pub demonstrable_execution: Option<bool>,
+    /// Veredicto de `/api/v1/auth/check` sobre la credencial guardada (H20):
+    /// `valid`, `rejected`, `not_required`, `backend_unavailable` o `unknown`.
+    /// `/health` y `/capabilities` responden a cualquiera y no prueban nada.
+    pub credential: Option<String>,
+    /// Adónde viajan de verdad prompts y resultados, y si van cifrados (H04).
+    pub destination: Option<crate::politica::BrokerDestination>,
     pub latency_ms: u128,
     pub message: String,
 }
@@ -320,11 +332,13 @@ impl BrokerClient {
         operation: &str,
         response: reqwest::Response,
     ) -> Result<T, AppError> {
-        let status = response.status();
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|error| transport_failure(operation, error))?;
+        let (status, bytes) = read_body_limited(
+            operation,
+            response,
+            MAX_JSON_BYTES,
+            "La respuesta de Broker AI",
+        )
+        .await?;
         if !status.is_success() {
             let message = rejection_message(status, &bytes);
             // Se registra el código HTTP, no el detalle: puede citar el contenido enviado.
@@ -558,9 +572,19 @@ impl BrokerClient {
                 .send()
                 .map_err(|error| transport_failure("upload_file", error))?;
             let status = response.status();
-            let bytes = response
-                .bytes()
-                .map_err(|error| transport_failure("upload_file", error))?;
+            let mut bytes = Vec::new();
+            {
+                use std::io::Read;
+                response
+                    .take((MAX_JSON_BYTES + 1) as u64)
+                    .read_to_end(&mut bytes)
+                    .map_err(|error| transport_failure("upload_file", error))?;
+            }
+            if bytes.len() > MAX_JSON_BYTES {
+                return Err(AppError::BrokerContract(
+                    "la respuesta de Broker AI a la subida supera el límite local".to_owned(),
+                ));
+            }
             if !status.is_success() {
                 let message = rejection_message(status, &bytes);
                 logging::warn(
@@ -661,7 +685,33 @@ impl BrokerClient {
 
     /// Diagnostica el Broker y deja constancia del resultado, no de su mensaje.
     pub async fn diagnose(&self) -> BrokerDiagnostic {
-        let diagnostic = self.probe().await;
+        let mut diagnostic = self.probe().await;
+        diagnostic.destination = Some(crate::politica::broker_destination(&self.base_url()));
+        if diagnostic.reachable {
+            let credential = self.check_credential().await;
+            match credential.as_str() {
+                "rejected" => {
+                    diagnostic.ready = false;
+                    diagnostic.message = "Broker AI rechaza la credencial guardada: el Broker \
+                        cambia su token en cada arranque. Introduce el token actual en Ajustes."
+                        .to_owned();
+                }
+                "backend_unavailable" => {
+                    diagnostic.ready = false;
+                    diagnostic.message = "Broker AI no puede comprobar credenciales ahora \
+                        (falla su llavero del sistema); reintentar con otro token no lo arregla."
+                        .to_owned();
+                }
+                "not_required" => {
+                    diagnostic.message.push_str(
+                        ". Este Broker no exige credencial: cualquiera en su red puede usarlo.",
+                    );
+                }
+                _ => {}
+            }
+            diagnostic.credential = Some(credential);
+        }
+        let diagnostic = diagnostic;
         logging::info(
             "broker.diagnosed",
             None,
@@ -676,6 +726,37 @@ impl BrokerClient {
             ],
         );
         diagnostic
+    }
+
+    /// Comprueba la credencial contra el único endpoint que la prueba.
+    ///
+    /// La misma pregunta que hacen el lanzador y el inicio con Windows: los
+    /// tres caminos dan el mismo veredicto para el mismo token.
+    pub async fn check_credential(&self) -> String {
+        let Ok(url) = self.endpoint("/api/v1/auth/check") else {
+            return "unknown".to_owned();
+        };
+        let response = match self.authorize(self.http.get(url)).send().await {
+            Ok(response) => response,
+            Err(_) => return "unknown".to_owned(),
+        };
+        match response.status().as_u16() {
+            200 => {
+                let body = read_body_limited("auth_check", response, 64 * 1024, "La respuesta")
+                    .await
+                    .ok()
+                    .and_then(|(_, bytes)| serde_json::from_slice::<Value>(&bytes).ok());
+                match body.and_then(|value| value.get("auth_required").and_then(Value::as_bool)) {
+                    Some(false) => "not_required",
+                    Some(true) => "valid",
+                    None => "unknown",
+                }
+            }
+            401 | 403 => "rejected",
+            503 => "backend_unavailable",
+            _ => "unknown",
+        }
+        .to_owned()
     }
 
     async fn probe(&self) -> BrokerDiagnostic {
@@ -703,6 +784,8 @@ impl BrokerClient {
                     max_active_workflows: None,
                     content_exclusivity: None,
                     demonstrable_execution: None,
+                    credential: None,
+                    destination: None,
                     latency_ms: started.elapsed().as_millis(),
                     message: error.to_string(),
                 };
@@ -738,6 +821,8 @@ impl BrokerClient {
                         max_active_workflows: capabilities.max_active_workflows,
                         content_exclusivity: Some(content_exclusivity),
                         demonstrable_execution: Some(demonstrable_execution),
+                        credential: None,
+                        destination: None,
                         latency_ms,
                         message: "Broker AI está listo".to_owned(),
                     }
@@ -765,6 +850,8 @@ impl BrokerClient {
                     max_active_workflows: None,
                     content_exclusivity: None,
                     demonstrable_execution: None,
+                    credential: None,
+                    destination: None,
                     latency_ms,
                     message: format!(
                         "Broker AI está listo, pero tiene capacidades no verificadas: {error}"
@@ -791,6 +878,8 @@ impl BrokerClient {
                 max_active_workflows: None,
                 content_exclusivity: None,
                 demonstrable_execution: None,
+                credential: None,
+                destination: None,
                 latency_ms,
                 message: if response.status() == StatusCode::SERVICE_UNAVAILABLE {
                     "Broker AI responde, pero no está listo".to_owned()
@@ -818,6 +907,8 @@ impl BrokerClient {
                 max_active_workflows: None,
                 content_exclusivity: None,
                 demonstrable_execution: None,
+                credential: None,
+                destination: None,
                 latency_ms,
                 message: format!("Broker AI no está accesible: {error}"),
             },
@@ -1505,5 +1596,59 @@ mod tests {
         assert!(diagnostic.ready);
         assert_eq!(diagnostic.content_exclusivity, None);
         assert_eq!(diagnostic.demonstrable_execution, None);
+    }
+
+    /// H18: una respuesta por trozos que no acaba nunca se corta al superar el
+    /// presupuesto, sin acumularla entera ni esperar a que termine.
+    #[test]
+    fn an_endless_response_is_cut_at_the_local_budget() {
+        let (base_url, written) = crate::pruebas_red::endless_chunked_server(96);
+        let client = BrokerClient::for_base_url(&base_url).expect("cliente");
+        let error = block_on(client.get_task("sin-fin")).expect_err("debe cortarse");
+        assert!(error.to_string().contains("supera el límite"), "{error}");
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let sent = written.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            sent < 64,
+            "el cliente debía cerrar cerca de los 32 MB; el servidor escribió {sent} MB"
+        );
+    }
+
+    /// H20: el diagnóstico prueba la credencial con `/api/v1/auth/check`, como
+    /// el lanzador; un token caducado ya no aparece como «Broker AI está listo».
+    #[test]
+    fn diagnosis_reports_a_rejected_credential_instead_of_ready() {
+        let simulated = SimulatedBroker::start();
+        simulated.always(
+            "GET /health/ready",
+            ScriptedResponse::ok(json!({"status": "ready"})),
+        );
+        simulated.always("GET /api/v1/auth/check", ScriptedResponse::status(403));
+        let client = BrokerClient::for_base_url(simulated.base_url()).expect("cliente");
+        let diagnostic = block_on(client.diagnose());
+        assert!(diagnostic.reachable);
+        assert!(!diagnostic.ready);
+        assert_eq!(diagnostic.credential.as_deref(), Some("rejected"));
+        assert!(
+            diagnostic.message.contains("token actual"),
+            "{}",
+            diagnostic.message
+        );
+        let destination = diagnostic.destination.expect("destino");
+        assert!(destination.local_machine);
+
+        let open = SimulatedBroker::start();
+        open.always(
+            "GET /health/ready",
+            ScriptedResponse::ok(json!({"status": "ready"})),
+        );
+        open.always(
+            "GET /api/v1/auth/check",
+            ScriptedResponse::ok(json!({"authenticated": true, "auth_required": false})),
+        );
+        let client = BrokerClient::for_base_url(open.base_url()).expect("cliente");
+        let diagnostic = block_on(client.diagnose());
+        assert_eq!(diagnostic.credential.as_deref(), Some("not_required"));
+        assert!(diagnostic.message.contains("no exige credencial"));
     }
 }

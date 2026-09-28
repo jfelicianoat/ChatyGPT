@@ -333,3 +333,70 @@ pub(crate) fn select_global_document_chunks(
     }
     Ok(selected)
 }
+
+/// Pliega un texto para buscar: minúsculas y sin diacríticos (H22).
+///
+/// `LIKE ... COLLATE NOCASE` solo iguala mayúsculas ASCII: «Árbol» no
+/// aparecía buscando «árbol» ni «arbol». Cada carácter se convierte en
+/// exactamente un carácter, de modo que una posición en el texto plegado es la
+/// misma posición en el original y el fragmento de coincidencia puede
+/// recortarse sobre el texto real.
+pub(crate) fn fold_for_search(text: &str) -> String {
+    text.chars().map(fold_char).collect()
+}
+
+fn fold_char(character: char) -> char {
+    let lower = character.to_lowercase().next().unwrap_or(character);
+    match lower {
+        'á' | 'à' | 'ä' | 'â' | 'ã' | 'å' | 'ā' | 'ă' | 'ą' => 'a',
+        'é' | 'è' | 'ë' | 'ê' | 'ē' | 'ė' | 'ę' | 'ě' => 'e',
+        'í' | 'ì' | 'ï' | 'î' | 'ī' | 'į' | 'ı' => 'i',
+        'ó' | 'ò' | 'ö' | 'ô' | 'õ' | 'ō' | 'ő' | 'ø' => 'o',
+        'ú' | 'ù' | 'ü' | 'û' | 'ū' | 'ů' | 'ű' | 'ų' => 'u',
+        'ñ' | 'ń' | 'ň' => 'n',
+        'ç' | 'ć' | 'č' => 'c',
+        'ý' | 'ÿ' => 'y',
+        'š' | 'ś' => 's',
+        'ž' | 'ź' | 'ż' => 'z',
+        other => other,
+    }
+}
+
+/// Registra en la conexión las funciones SQL que usa la búsqueda.
+pub(crate) fn register_search_functions(connection: &Connection) -> Result<(), AppError> {
+    use rusqlite::functions::FunctionFlags;
+    connection.create_scalar_function(
+        "chatygpt_fold",
+        1,
+        FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+        |context| {
+            let value = context.get::<Option<String>>(0)?;
+            Ok(value.map(|text| fold_for_search(&text)))
+        },
+    )?;
+    Ok(())
+}
+
+/// Fragmento legible alrededor de la primera coincidencia.
+pub(crate) fn search_snippet(text: &str, folded_query: &str) -> Option<String> {
+    let folded = fold_for_search(text);
+    let byte_index = folded.find(folded_query)?;
+    let start_char = folded[..byte_index].chars().count();
+    let query_chars = folded_query.chars().count();
+    let characters = text.chars().collect::<Vec<_>>();
+    let from = start_char.saturating_sub(60);
+    let to = (start_char + query_chars + 60).min(characters.len());
+    let mut snippet = characters[from..to]
+        .iter()
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if from > 0 {
+        snippet.insert(0, '…');
+    }
+    if to < characters.len() {
+        snippet.push('…');
+    }
+    Some(snippet)
+}

@@ -146,6 +146,63 @@ fn fallo_transporte(operacion: &str, error: impl std::fmt::Display) -> AppError 
     AppError::AthenaTransport(error.to_string())
 }
 
+/// Presupuesto de una respuesta JSON de Athena (H18).
+const MAX_JSON_BYTES: usize = 16 * 1024 * 1024;
+/// Presupuesto de un resultado externalizado que se descarga a memoria.
+const MAX_ARTIFACT_BYTES: usize = 16 * 1024 * 1024;
+/// Lo que se lee de un cuerpo de error: basta para su código y su mensaje.
+const MAX_ERROR_BYTES: usize = 64 * 1024;
+
+/// Lee un cuerpo por trozos y se detiene en cuanto supera el límite.
+///
+/// `Content-Length` se comprueba primero, pero no basta: una respuesta por
+/// trozos no lo declara, y un servidor defectuoso puede mentir. Se cuenta lo
+/// que llega de verdad.
+async fn leer_limitado(
+    mut respuesta: Response,
+    limite: usize,
+    operacion: &str,
+    descripcion: &str,
+) -> Result<Vec<u8>, AppError> {
+    let excedido = || {
+        AppError::AthenaContract(format!(
+            "{descripcion} supera el límite local de {} MB",
+            limite / (1024 * 1024)
+        ))
+    };
+    if respuesta
+        .content_length()
+        .is_some_and(|longitud| longitud > limite as u64)
+    {
+        return Err(excedido());
+    }
+    let mut bytes = Vec::with_capacity(limite.min(64 * 1024));
+    while let Some(trozo) = respuesta
+        .chunk()
+        .await
+        .map_err(|error| fallo_transporte(operacion, error))?
+    {
+        if bytes.len().saturating_add(trozo.len()) > limite {
+            return Err(excedido());
+        }
+        bytes.extend_from_slice(&trozo);
+    }
+    Ok(bytes)
+}
+
+/// Lee como mucho `limite` bytes de un cuerpo de error y descarta el resto.
+async fn leer_prefijo(mut respuesta: Response, limite: usize) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    while let Ok(Some(trozo)) = respuesta.chunk().await {
+        let cabe = limite.saturating_sub(bytes.len()).min(trozo.len());
+        bytes.extend_from_slice(&trozo[..cabe]);
+        if bytes.len() >= limite {
+            break;
+        }
+    }
+    bytes
+}
+
 /// Extrae la parte accionable de un rechazo, sin arrastrar el cuerpo entero.
 fn mensaje_rechazo(bytes: &[u8]) -> (String, String) {
     match serde_json::from_slice::<contracts::CuerpoError>(bytes) {
@@ -253,7 +310,7 @@ impl AthenaClient {
         if estado.is_success() {
             return Ok(respuesta);
         }
-        let bytes = respuesta.bytes().await.unwrap_or_default();
+        let bytes = leer_prefijo(respuesta, MAX_ERROR_BYTES).await;
         let (codigo, mensaje) = mensaje_rechazo(&bytes);
         logging::warn(
             "athena.rejected",
@@ -287,10 +344,13 @@ impl AthenaClient {
         respuesta: Response,
         operacion: &str,
     ) -> Result<T, AppError> {
-        let bytes = respuesta
-            .bytes()
-            .await
-            .map_err(|error| fallo_transporte(operacion, error))?;
+        let bytes = leer_limitado(
+            respuesta,
+            MAX_JSON_BYTES,
+            operacion,
+            "La respuesta de Athena",
+        )
+        .await?;
         serde_json::from_slice(&bytes).map_err(|error| {
             logging::warn(
                 "athena.contract_mismatch",
@@ -570,7 +630,7 @@ impl AthenaClient {
             .enviar(Method::POST, &ruta, "revise_goal", Some(&cuerpo), None)
             .await?;
         if respuesta.status() == StatusCode::CONFLICT {
-            let bytes = respuesta.bytes().await.unwrap_or_default();
+            let bytes = leer_prefijo(respuesta, MAX_JSON_BYTES).await;
             let (codigo, mensaje) = mensaje_rechazo(&bytes);
             if codigo != "goal_conflict" {
                 // Un 409 que no es de revisión es otra cosa —un run que ya terminó, por
@@ -759,10 +819,14 @@ impl AthenaClient {
             .enviar(Method::GET, &ruta, "fetch_artifact", None::<&Value>, None)
             .await?;
         let respuesta = Self::interpretar(respuesta, "fetch_artifact").await?;
-        respuesta
-            .text()
-            .await
-            .map_err(|error| fallo_transporte("fetch_artifact", error))
+        let bytes = leer_limitado(
+            respuesta,
+            MAX_ARTIFACT_BYTES,
+            "fetch_artifact",
+            "El resultado de Athena",
+        )
+        .await?;
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
     }
 
     /// Abre el flujo de eventos de un run.

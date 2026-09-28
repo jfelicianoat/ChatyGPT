@@ -62,46 +62,260 @@ impl Database {
         Ok(conversations)
     }
 
+    #[cfg(test)]
     pub fn search_conversations(
         &self,
         query: &str,
         limit: usize,
     ) -> Result<Vec<ConversationSummary>, AppError> {
+        Ok(self
+            .search_conversation_hits(query, limit, false)?
+            .into_iter()
+            .map(|hit| ConversationSummary {
+                id: hit.id,
+                title: hit.title,
+                project_id: hit.project_id,
+                updated_at: hit.updated_at,
+            })
+            .collect())
+    }
+
+    /// Busca en títulos y mensajes ignorando mayúsculas y acentos.
+    ///
+    /// Devuelve también el mensaje donde coincidió y un fragmento para que la
+    /// persona vea por qué aparece cada resultado y pueda ir a ese punto.
+    pub fn search_conversation_hits(
+        &self,
+        query: &str,
+        limit: usize,
+        include_archived: bool,
+    ) -> Result<Vec<ConversationSearchHit>, AppError> {
+        let folded_query = fold_for_search(query.trim());
+        if folded_query.is_empty() {
+            return Ok(Vec::new());
+        }
         let connection = self.connect()?;
-        let escaped = query
+        let escaped = folded_query
             .replace('!', "!!")
             .replace('%', "!%")
             .replace('_', "!_");
         let pattern = format!("%{escaped}%");
         let mut statement = connection.prepare(
-            "SELECT c.id, c.title, c.project_id, c.updated_at
-             FROM conversations c
-             WHERE c.archived_at IS NULL
-               AND c.deleted_at IS NULL
-               AND (
-                    c.title LIKE ?1 ESCAPE '!' COLLATE NOCASE
-                    OR EXISTS(
-                        SELECT 1
-                        FROM messages m
-                        JOIN message_parts mp ON mp.message_id = m.id
-                        WHERE m.conversation_id = c.id
-                          AND mp.content_text LIKE ?1 ESCAPE '!' COLLATE NOCASE
-                    )
-               )
-             ORDER BY c.updated_at DESC
+            "WITH hits AS (
+                SELECT c.id, c.title, c.project_id, c.updated_at,
+                       c.archived_at IS NOT NULL AS archived,
+                       chatygpt_fold(c.title) LIKE ?1 ESCAPE '!' AS title_hit,
+                       (
+                         SELECT m.id || char(31) || mp.content_text
+                         FROM messages m
+                         JOIN message_parts mp ON mp.message_id = m.id
+                         WHERE m.conversation_id = c.id
+                           AND mp.content_text IS NOT NULL
+                           AND chatygpt_fold(mp.content_text) LIKE ?1 ESCAPE '!'
+                         ORDER BY m.sequence_no DESC
+                         LIMIT 1
+                       ) AS message_hit
+                FROM conversations c
+                WHERE c.deleted_at IS NULL
+                  AND (?3 = 1 OR c.archived_at IS NULL)
+             )
+             SELECT id, title, project_id, updated_at, archived, message_hit
+             FROM hits
+             WHERE title_hit OR message_hit IS NOT NULL
+             ORDER BY archived, updated_at DESC
              LIMIT ?2",
         )?;
-        let conversations = statement
-            .query_map(params![pattern, limit as i64], |row| {
-                Ok(ConversationSummary {
+        let hits = statement
+            .query_map(
+                params![pattern, limit as i64, i64::from(include_archived)],
+                |row| {
+                    let message_hit: Option<String> = row.get(5)?;
+                    let (matched_message_id, snippet) = match message_hit {
+                        Some(value) => {
+                            let (id, text) = value.split_once('\u{1f}').unwrap_or((&value, ""));
+                            (Some(id.to_owned()), search_snippet(text, &folded_query))
+                        }
+                        None => (None, None),
+                    };
+                    Ok(ConversationSearchHit {
+                        id: row.get(0)?,
+                        title: row.get(1)?,
+                        project_id: row.get(2)?,
+                        updated_at: row.get(3)?,
+                        archived: row.get(4)?,
+                        matched_message_id,
+                        snippet,
+                    })
+                },
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(hits)
+    }
+
+    /// Conversaciones y proyectos archivados, y conversaciones en la papelera.
+    pub fn archive_overview(&self) -> Result<ArchiveOverview, AppError> {
+        let connection = self.connect()?;
+        let conversation_rows = |filter: &str| -> Result<Vec<ArchivedConversation>, AppError> {
+            let mut statement = connection.prepare(&format!(
+                "SELECT c.id, c.title, p.name,
+                        (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id),
+                        c.archived_at, c.deleted_at
+                 FROM conversations c
+                 LEFT JOIN projects p ON p.id = COALESCE(c.project_id, c.archived_project_id)
+                 WHERE {filter}
+                 ORDER BY COALESCE(c.deleted_at, c.archived_at) DESC"
+            ))?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok(ArchivedConversation {
+                        id: row.get(0)?,
+                        title: row.get(1)?,
+                        project_name: row.get(2)?,
+                        message_count: row.get(3)?,
+                        archived_at: row.get(4)?,
+                        deleted_at: row.get(5)?,
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows)
+        };
+        let conversations =
+            conversation_rows("c.archived_at IS NOT NULL AND c.deleted_at IS NULL")?;
+        let trash = conversation_rows("c.deleted_at IS NOT NULL")?;
+        let mut statement = connection.prepare(
+            "SELECT p.id, p.name, p.archived_at,
+                    (SELECT COUNT(*) FROM conversations c
+                     WHERE c.archived_project_id = p.id AND c.deleted_at IS NULL)
+             FROM projects p
+             WHERE p.archived_at IS NOT NULL
+             ORDER BY p.archived_at DESC",
+        )?;
+        let projects = statement
+            .query_map([], |row| {
+                Ok(ArchivedProject {
                     id: row.get(0)?,
-                    title: row.get(1)?,
-                    project_id: row.get(2)?,
-                    updated_at: row.get(3)?,
+                    name: row.get(1)?,
+                    archived_at: row.get(2)?,
+                    conversation_count: row.get(3)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(conversations)
+        Ok(ArchiveOverview {
+            conversations,
+            trash,
+            projects,
+        })
+    }
+
+    /// Devuelve una conversación archivada o eliminada a la lista de chats.
+    pub fn restore_conversation(&self, id: &str) -> Result<ConversationSummary, AppError> {
+        let connection = self.connect()?;
+        let transaction = connection.unchecked_transaction()?;
+        let changed = transaction.execute(
+            "UPDATE conversations
+             SET archived_at = NULL, deleted_at = NULL, updated_at = datetime('now')
+             WHERE id = ?1 AND (archived_at IS NOT NULL OR deleted_at IS NOT NULL)",
+            params![id],
+        )?;
+        if changed == 0 {
+            return Err(AppError::NotFound(format!("conversación archivada {id}")));
+        }
+        transaction.execute(
+            "INSERT INTO audit_events(event_type, actor, conversation_id, payload_json)
+             VALUES ('conversation.restored', 'user', ?1, ?2)",
+            params![id, serde_json::json!({"conversation_id": id}).to_string()],
+        )?;
+        transaction.commit()?;
+        self.conversation_summary(id)
+    }
+
+    /// Borra definitivamente una conversación de la papelera.
+    ///
+    /// Solo lo que ya estaba en la papelera, y con confirmación. Los adjuntos
+    /// que otras conversaciones siguen usando se conservan; devuelve las rutas
+    /// de las copias gestionadas que ya nadie referencia para que quien llama
+    /// las retire del disco.
+    pub fn purge_conversation(&self, id: &str, confirmed: bool) -> Result<Vec<String>, AppError> {
+        if !confirmed {
+            return Err(AppError::Validation(
+                "borrar definitivamente una conversación requiere confirmación explícita"
+                    .to_owned(),
+            ));
+        }
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let in_trash: bool = transaction
+            .query_row(
+                "SELECT deleted_at IS NOT NULL FROM conversations WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .unwrap_or(false);
+        if !in_trash {
+            return Err(AppError::Conflict(
+                "solo se puede borrar definitivamente lo que está en la papelera".to_owned(),
+            ));
+        }
+        // Un adjunto registrado por esta conversación pero usado en otra no se
+        // borra con ella: pasa a no tener conversación propietaria.
+        transaction.execute(
+            "UPDATE attachments SET conversation_id = NULL
+             WHERE conversation_id = ?1
+               AND (
+                 EXISTS(SELECT 1 FROM conversation_attachments ca
+                        WHERE ca.attachment_id = attachments.id AND ca.conversation_id != ?1)
+                 OR EXISTS(SELECT 1 FROM message_attachments ma
+                           JOIN messages m ON m.id = ma.message_id
+                           WHERE ma.attachment_id = attachments.id AND m.conversation_id != ?1)
+                 OR EXISTS(SELECT 1 FROM custom_gpt_files file
+                           WHERE file.attachment_id = attachments.id)
+               )",
+            params![id],
+        )?;
+        let removed_paths = {
+            let mut statement = transaction.prepare(
+                "SELECT local_path FROM attachments
+                 WHERE conversation_id = ?1 AND local_path IS NOT NULL",
+            )?;
+            let rows = statement
+                .query_map(params![id], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            rows
+        };
+        let title: String = transaction.query_row(
+            "SELECT title FROM conversations WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )?;
+        transaction.execute(
+            "DELETE FROM message_attachments
+             WHERE message_id IN (SELECT id FROM messages WHERE conversation_id = ?1)",
+            params![id],
+        )?;
+        transaction.execute("DELETE FROM conversations WHERE id = ?1", params![id])?;
+        transaction.execute(
+            "INSERT INTO audit_events(event_type, actor, payload_json)
+             VALUES ('conversation.purged', 'user', ?1)",
+            params![
+                serde_json::json!({"conversation_id": id, "title_length": title.chars().count()})
+                    .to_string()
+            ],
+        )?;
+        let orphaned_paths = removed_paths
+            .into_iter()
+            .filter(|path| {
+                transaction
+                    .query_row(
+                        "SELECT NOT EXISTS(SELECT 1 FROM attachments WHERE local_path = ?1)",
+                        params![path],
+                        |row| row.get::<_, bool>(0),
+                    )
+                    .unwrap_or(false)
+            })
+            .collect();
+        transaction.commit()?;
+        Ok(orphaned_paths)
     }
 
     pub(super) fn conversation_summary(&self, id: &str) -> Result<ConversationSummary, AppError> {

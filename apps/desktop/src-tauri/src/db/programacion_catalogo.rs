@@ -117,7 +117,8 @@ impl Database {
                     version.version_no,
                     json_extract(st.payload_json, '$.prompt'),
                     st.schedule_expression, st.timezone, st.enabled,
-                    st.confirmed_at, st.next_run_at, st.created_at, st.updated_at
+                    st.confirmed_at, st.next_run_at, st.created_at, st.updated_at,
+                    st.retired_at
              FROM scheduled_tasks st
              LEFT JOIN conversations c
                ON c.id = json_extract(st.payload_json, '$.conversation_id')
@@ -132,7 +133,7 @@ impl Database {
                     json_extract(st.payload_json, '$.target_kind') = 'workflow'
                     AND w.id IS NOT NULL AND w.archived_at IS NULL
                )
-             ORDER BY st.created_at DESC",
+             ORDER BY st.retired_at IS NOT NULL, st.created_at DESC",
         )?;
         let mut tasks = statement
             .query_map([], |row| {
@@ -153,6 +154,7 @@ impl Database {
                     next_run_at: row.get(13)?,
                     created_at: row.get(14)?,
                     updated_at: row.get(15)?,
+                    retired_at: row.get(16)?,
                     runs: Vec::new(),
                 })
             })?

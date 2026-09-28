@@ -403,11 +403,16 @@ impl Database {
                         consecutive_poll_errors, result_json, error_json, updated_at,
                         progress_json,
                         json_extract(request_json, '$.inference_kind'),
-                        json_extract(request_json, '$.content.metadata.source_type')
+                        json_extract(request_json, '$.content.metadata.source_type'),
+                        cancel_requested_at IS NOT NULL,
+                        json_extract(request_json, '$.content.metadata.unverified_capabilities')
                  FROM broker_tasks WHERE id = ?1",
                 params![id],
                 |row| {
-                    let result_json: Option<String> = row.get(6)?;
+                    // Hasta el 28-sep-2026 esto leía la columna 6, la del error:
+                    // el resultado de toda tarea llegaba a la interfaz como su
+                    // error, y un turno correcto se veía sin resultado.
+                    let result_json: Option<String> = row.get(5)?;
                     let error_json: Option<String> = row.get(6)?;
                     let progress_json: String = row.get(8)?;
                     let progress_value: Value =
@@ -455,6 +460,11 @@ impl Database {
                         },
                         pending_tool_calls: Vec::new(),
                         updated_at: row.get(7)?,
+                        cancel_requested: row.get(11)?,
+                        unverified_capabilities: row
+                            .get::<_, Option<String>>(12)?
+                            .and_then(|value| serde_json::from_str::<Vec<String>>(&value).ok())
+                            .unwrap_or_default(),
                     })
                 },
             )

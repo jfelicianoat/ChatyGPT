@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
   attachmentFailureGuidance,
@@ -57,8 +57,10 @@ import {
   type AuthorizedFolderView,
   type BrokerDiagnostic,
   type ContextSnapshotView,
+  type ConversationSearchHit,
   type ConversationSummary,
   type ConversationSummaryOverview,
+  type EffectiveExecutionPolicy,
   type ConversationExecutionPreferences,
   type ComposerErrorGuidance,
   type ConversationView,
@@ -115,14 +117,25 @@ import {
   type ImageDescriptionPreference
 } from "./ingestionPreferences";
 import { isEditableKeyboardTarget, keyboardShortcutAction } from "./keyboard";
-import { AthenaArea } from "./AthenaArea";
 import { AyudaTeclado } from "./paneles/AyudaTeclado";
 import { Dialogo } from "./paneles/Dialogo";
 import { VistaPreviaGpt } from "./paneles/VistaPreviaGpt";
 import { ResumenConversacion } from "./paneles/ResumenConversacion";
 import { ConocimientoProyecto } from "./paneles/ConocimientoProyecto";
-import { WorkflowStudio } from "./WorkflowStudio";
+import { ArchivoPanel } from "./paneles/ArchivoPanel";
+import { CopiaSeguridad } from "./paneles/CopiaSeguridad";
 import { MessageArtifacts } from "./MessageArtifacts";
+import {
+  draftText,
+  loadDrafts,
+  operationFor,
+  saveDrafts,
+  withDraftText,
+  withRestoredDraft,
+  withoutDraft,
+  type DraftStore
+} from "./borradores";
+import { isImeComposition } from "./keyboard";
 import { dialogCopy, type DialogState } from "./dialogs";
 import { describeError } from "./errors";
 import { useMemoria } from "./memoria/useMemoria";
@@ -162,6 +175,26 @@ import {
   type PerformanceMetric
 } from "./performance";
 
+// H26: las áreas más pesadas se cargan cuando se abren. El paquete inicial
+// deja de arrastrar el editor de flujos y el área de Athena.
+const WorkflowStudio = lazy(() =>
+  import("./WorkflowStudio").then((module) => ({ default: module.WorkflowStudio }))
+);
+const AthenaArea = lazy(() =>
+  import("./AthenaArea").then((module) => ({ default: module.AthenaArea }))
+);
+
+const WORKSPACE_TITLES: Record<WorkspaceDestination, string> = {
+  chats: "Inicio",
+  projects: "Proyectos",
+  gpts: "GPTs personales",
+  workflows: "Flujos",
+  athena: "Athena",
+  automations: "Automatizaciones",
+  settings: "Ajustes",
+  archive: "Archivo"
+};
+
 type ScreenCapturePreview = CapturedScreenFrame & {
   conversationId: string;
   previewUrl: string;
@@ -173,6 +206,45 @@ type ScreenCapturePreview = CapturedScreenFrame & {
 const APP_VERSION = __APP_VERSION__;
 const INITIAL_VISIBLE_MESSAGES = 80;
 const EARLIER_MESSAGE_PAGE_SIZE = 50;
+
+const strategyLabel = (strategy: string) =>
+  strategy === "auto"
+    ? "Automática"
+    : strategy === "mixture_of_agents"
+      ? "Análisis en equipo"
+      : "Respuesta directa";
+
+const classificationShortLabel = (classification: string) =>
+  classification === "internal"
+    ? "Uso personal"
+    : classification === "public"
+      ? "Público"
+      : classification === "confidential"
+        ? "Confidencial"
+        : "Solo modelos locales";
+
+const classificationLongLabel = (classification: string) =>
+  classification === "internal"
+    ? "Uso personal"
+    : classification === "public"
+      ? "Contenido público"
+      : classification === "confidential"
+        ? "Confidencial"
+        : "Solo modelos locales · máxima restricción";
+
+/** Explica de dónde sale la privacidad que se aplicará (H01). */
+const policySourceLabel = (policy: EffectiveExecutionPolicy) => {
+  switch (policy.sources.dataClassification) {
+    case "gpt":
+      return `La exige el GPT «${policy.customGptName ?? "personal"}», más restrictivo que el chat.`;
+    case "context":
+      return "La hereda del historial reciente, que ya contiene información protegida.";
+    case "memory":
+      return "La imponen los recuerdos sensibles activos.";
+    default:
+      return "Es la opción elegida en este chat.";
+  }
+};
 
 export function App() {
   const messageListRef = useRef<HTMLDivElement>(null);
@@ -290,8 +362,22 @@ export function App() {
   const [projectKnowledgeFilter, setProjectKnowledgeFilter] =
     useState<ProjectKnowledgeFilter>("all");
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
-  const [searchResults, setSearchResults] = useState<ConversationSummary[]>([]);
+  const [searchResults, setSearchResults] = useState<ConversationSearchHit[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
+  const [searchIncludesArchived, setSearchIncludesArchived] = useState(false);
+  /** Cada búsqueda lleva un número: solo se aplica la respuesta de la última (H22). */
+  const searchSequenceRef = useRef(0);
+  /** Mensaje al que llevar la vista tras abrir un resultado de búsqueda (H22). */
+  const pendingMessageFocusRef = useRef<string | null>(null);
+  /**
+   * La última conversación que la persona eligió (H11).
+   *
+   * Una carga que termina tarde, o la aceptación de un envío hecho en otra
+   * conversación, solo puede pintar su resultado si sigue siendo esta. Así
+   * ninguna respuesta lenta cambia la pantalla después de la última decisión.
+   */
+  const selectedConversationRef = useRef<string | null>(null);
+  const conversationLoadSequenceRef = useRef(0);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [workspaceDestination, setWorkspaceDestination] =
     useState<WorkspaceDestination>("chats");
@@ -299,11 +385,24 @@ export function App() {
     conversationId: null as string | null,
     limit: INITIAL_VISIBLE_MESSAGES
   });
-  const [contextInspectorOpen, setContextInspectorOpen] = useState(true);
+  // En ventanas estrechas el panel de contexto empieza cerrado: abierto dejaba
+  // la conversación en una columna de pocas palabras (980×680, 28-sep-2026).
+  const [contextInspectorOpen, setContextInspectorOpen] = useState(
+    () => typeof window === "undefined" || window.innerWidth >= 1200
+  );
   const [activeTurn, setActiveTurn] = useState<Loadable<LocalTaskSnapshot> | null>(null);
   const [activeTurnConversationId, setActiveTurnConversationId] = useState<string | null>(null);
   const turnHandoffReloadingRef = useRef(false);
   const [draft, setDraft] = useState("");
+  /** Borradores por conversación, persistidos en este equipo (H10). */
+  const draftsRef = useRef<DraftStore>(loadDrafts());
+  /** Conversación a la que pertenece el texto que hay ahora en el compositor. */
+  const draftOwnerRef = useRef<string | null>(null);
+  /** Aviso cuando un mensaje se envió pero la vista no pudo actualizarse (H12). */
+  const [turnRefreshNotice, setTurnRefreshNotice] = useState<string | null>(null);
+  const [executionPolicy, setExecutionPolicy] =
+    useState<Loadable<EffectiveExecutionPolicy> | null>(null);
+  const [earlierMessagesBusy, setEarlierMessagesBusy] = useState(false);
   const [attachments, setAttachments] = useState<AttachmentView[]>([]);
   const [projectFiles, setProjectFiles] = useState<AttachmentView[]>([]);
   const [draftAttachmentIds, setDraftAttachmentIds] = useState<string[]>([]);
@@ -371,16 +470,37 @@ export function App() {
     messageWindow.conversationId === openConversationId
       ? messageWindow.limit
       : INITIAL_VISIBLE_MESSAGES;
+  // H17: la paginación la hace Rust. Lo cargado se pinta entero; lo anterior
+  // se pide aparte con «Mostrar mensajes anteriores».
   const progressiveMessages =
     conversation?.state === "ready"
-      ? progressiveConversationWindow(conversation.value.messages, effectiveMessageLimit)
+      ? progressiveConversationWindow(
+          conversation.value.messages,
+          Math.max(effectiveMessageLimit, conversation.value.messages.length)
+        )
       : { visibleItems: [], hiddenCount: 0 };
+  const hasEarlierMessages =
+    conversation?.state === "ready" && Boolean(conversation.value.hasEarlierMessages);
   const selectedCustomGpt =
     conversation?.state === "ready" &&
     customGpts.state === "ready" &&
     conversation.value.customGptId
       ? customGpts.value.find((item) => item.id === conversation.value.customGptId)
       : undefined;
+  /** Valores que se aplicarán de verdad: la política efectiva, o los del chat mientras carga. */
+  const appliedPreferences =
+    executionPolicy?.state === "ready"
+      ? executionPolicy.value
+      : conversation?.state === "ready"
+        ? conversation.value.executionPreferences
+        : {
+            dataClassification: "internal" as const,
+            strategy: "single",
+            maxCostUsd: 0,
+            priority: 100
+          };
+  const routingFixedByGpt =
+    executionPolicy?.state === "ready" && executionPolicy.value.sources.routing === "gpt";
   const selectedGptAllowsRunCode =
     !selectedCustomGpt || selectedCustomGpt.toolPermissions.runCode === "confirm";
   const selectedGptAllowsRename =
@@ -424,6 +544,38 @@ export function App() {
       limit: INITIAL_VISIBLE_MESSAGES
     });
   }, [openConversationId, messageWindow.conversationId]);
+
+  // H10: al cambiar de conversación, el texto del compositor se guarda con la
+  // que lo tenía y se recupera el de la que se abre. Se hace antes de pintar
+  // para que nunca se vea, ni un instante, el borrador de otra conversación.
+  useLayoutEffect(() => {
+    if (!openConversationId || draftOwnerRef.current === openConversationId) return;
+    draftOwnerRef.current = openConversationId;
+    setDraft(draftText(draftsRef.current, openConversationId));
+  }, [openConversationId]);
+
+  useEffect(() => {
+    const owner = draftOwnerRef.current;
+    if (!owner) return;
+    const next = withDraftText(draftsRef.current, owner, draft);
+    if (next !== draftsRef.current) {
+      draftsRef.current = next;
+      saveDrafts(next);
+    }
+  }, [draft]);
+
+  // Si la ventana se estrecha por debajo de 1200 px, el panel de contexto se
+  // cierra para devolver el ancho a la conversación; se puede volver a abrir.
+  useEffect(() => {
+    let wide = window.innerWidth >= 1200;
+    const onResize = () => {
+      const nowWide = window.innerWidth >= 1200;
+      if (wide && !nowWide) setContextInspectorOpen(false);
+      wide = nowWide;
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
 
   useEffect(
     () => () => {
@@ -671,15 +823,34 @@ export function App() {
     performanceBufferRef.current.push(metric, durationMs);
   };
 
+  /** Mensajes a pedir al recargar: lo ya cargado, para no perder el punto de lectura. */
+  const loadedMessageCount = (conversationId: string) =>
+    conversation?.state === "ready" && conversation.value.id === conversationId
+      ? Math.max(INITIAL_VISIBLE_MESSAGES, conversation.value.messages.length)
+      : INITIAL_VISIBLE_MESSAGES;
+
+  /**
+   * Carga una conversación y la pinta solo si sigue siendo la elegida (H11).
+   *
+   * Devuelve `false` cuando la respuesta llegó tarde y se descartó: no es un
+   * error, es que la persona ya está en otra parte.
+   */
   const loadConversation = async (
     conversationId: string,
     selectConversationAttachments = false
-  ) => {
+  ): Promise<boolean> => {
+    const sequence = ++conversationLoadSequenceRef.current;
     const [view, conversationAttachments, conversationProjectFiles] = await Promise.all([
-      platform.getConversation(conversationId),
+      platform.getConversation(conversationId, loadedMessageCount(conversationId)),
       platform.listAttachments(conversationId),
       platform.listProjectFiles(conversationId)
     ]);
+    if (
+      selectedConversationRef.current !== conversationId ||
+      sequence !== conversationLoadSequenceRef.current
+    ) {
+      return false;
+    }
     setConversation({ state: "ready", value: view });
     setAttachments(conversationAttachments);
     setProjectFiles(conversationProjectFiles);
@@ -702,6 +873,7 @@ export function App() {
       setActiveTurn(null);
       setActiveTurnConversationId(null);
     }
+    return true;
   };
 
   useEffect(() => {
@@ -792,6 +964,7 @@ export function App() {
           setApiCredentials({ state: "error", message: describeError(error) });
         }
         if (items[0]) {
+          selectedConversationRef.current = items[0].id;
           await loadConversation(items[0].id, true);
         }
         // La aplicación es usable a partir de aquí: hay navegación y, si existe,
@@ -890,6 +1063,7 @@ export function App() {
 
   useEffect(() => {
     const query = searchQuery.trim();
+    const sequence = ++searchSequenceRef.current;
     if (!query) {
       setSearchResults([]);
       return;
@@ -898,15 +1072,19 @@ export function App() {
       // Se cronometra la consulta, no la espera deliberada de 250 ms que evita
       // preguntar a SQLite en cada tecla.
       const startedAt = performance.now();
-      platform.searchConversations(query)
+      platform.searchConversations(query, searchIncludesArchived)
         .then((results) => {
+          // Una consulta anterior que termina tarde no pisa la vigente (H22).
+          if (sequence !== searchSequenceRef.current) return;
           recordSample("conversation_search", performance.now() - startedAt);
           setSearchResults(results);
         })
-        .catch((error) => setNavigationError(describeError(error)));
+        .catch((error) => {
+          if (sequence === searchSequenceRef.current) setNavigationError(describeError(error));
+        });
     }, 250);
     return () => window.clearTimeout(timeout);
-  }, [searchQuery]);
+  }, [searchQuery, searchIncludesArchived]);
 
   useEffect(() => {
     if (conversation?.state !== "ready") return;
@@ -946,10 +1124,16 @@ export function App() {
         platform.listProjectFiles(conversationId)
       ])
         .then(([nextAttachments, nextProjectFiles]) => {
+          // Una respuesta de la conversación anterior no se pinta en la actual.
+          if (selectedConversationRef.current !== conversationId) return;
           setAttachments(nextAttachments);
           setProjectFiles(nextProjectFiles);
         })
-        .catch((error) => setAttachmentError(describeError(error)));
+        .catch((error) => {
+          if (selectedConversationRef.current === conversationId) {
+            setAttachmentError(describeError(error));
+          }
+        });
     }, 1_000);
     return () => window.clearInterval(interval);
   }, [
@@ -1087,6 +1271,77 @@ export function App() {
           .join("|")
       : ""
   ]);
+
+  // H01/H04: la privacidad, el coste y el destino que se aplicarán de verdad
+  // al próximo mensaje se calculan en Rust con la misma regla que la petición.
+  const policySignal =
+    conversation?.state === "ready"
+      ? [
+          conversation.value.id,
+          conversation.value.customGptId ?? "",
+          JSON.stringify(conversation.value.executionPreferences),
+          conversation.value.messages.length,
+          memory.state === "ready" ? memory.value.items.length : 0
+        ].join("|")
+      : "";
+  useEffect(() => {
+    if (conversation?.state !== "ready") {
+      setExecutionPolicy(null);
+      return;
+    }
+    const conversationId = conversation.value.id;
+    let current = true;
+    setExecutionPolicy((previous) => previous ?? { state: "loading" });
+    platform.getEffectiveExecutionPolicy(conversationId)
+      .then((value) => {
+        if (!current || selectedConversationRef.current !== conversationId) return;
+        // Una respuesta sin la forma del contrato no se enseña como política:
+        // mostrar valores inventados sería peor que no mostrar nada.
+        if (!value || typeof value !== "object" || !("sources" in value) || !value.destination) {
+          setExecutionPolicy({
+            state: "error",
+            message: "No se pudo calcular la política efectiva."
+          });
+          return;
+        }
+        setExecutionPolicy({ state: "ready", value });
+      })
+      .catch((error) => {
+        if (current) setExecutionPolicy({ state: "error", message: describeError(error) });
+      });
+    return () => {
+      current = false;
+    };
+  }, [policySignal]);
+
+  // H22: al abrir un resultado de búsqueda se lleva la vista al mensaje que
+  // coincidió, cargando páginas anteriores si hace falta.
+  useEffect(() => {
+    const target = pendingMessageFocusRef.current;
+    if (!target || conversation?.state !== "ready") return;
+    const loaded = conversation.value.messages.some((message) => message.id === target);
+    if (loaded) {
+      pendingMessageFocusRef.current = null;
+      followConversationScrollRef.current = false;
+      window.requestAnimationFrame(() => {
+        const element = document.getElementById(`mensaje-${target}`);
+        element?.scrollIntoView?.({ block: "center" });
+        element?.classList.add("search-hit");
+        window.setTimeout(() => element?.classList.remove("search-hit"), 2_500);
+      });
+      return;
+    }
+    if (conversation.value.hasEarlierMessages && !earlierMessagesBusy) {
+      void revealEarlierMessages();
+    } else if (!conversation.value.hasEarlierMessages) {
+      pendingMessageFocusRef.current = null;
+    }
+  }, [conversation, earlierMessagesBusy]);
+
+  const openSearchHit = async (hit: ConversationSearchHit) => {
+    pendingMessageFocusRef.current = hit.matchedMessageId ?? null;
+    await openConversation(hit.id);
+  };
 
   const visibleConversationList = useMemo(
     () =>
@@ -1574,7 +1829,8 @@ export function App() {
         smokeTask.value.remoteTaskId,
         artifactId
       );
-      window.alert(`Guardado en:\n${path}`);
+      // Sin ventanas de alerta: el aviso queda visible y no bloquea (H23).
+      setExportNotice(`Fichero conservado en este equipo: ${path}`);
     } catch (error) {
       setTaskArtifacts({ state: "error", message: describeError(error) });
     }
@@ -1585,7 +1841,9 @@ export function App() {
     // Borrar las mediciones es irreversible y deja las métricas sin veredicto.
     if (
       !window.confirm(
-        "¿Vaciar las mediciones de rendimiento? Las cuatro métricas volverán a quedar sin medir."
+        `¿Vaciar las mediciones de rendimiento? Las ${
+          performanceReport.state === "ready" ? performanceReport.value.metrics.length : 5
+        } métricas volverán a quedar sin medir.`
       )
     ) {
       return;
@@ -1605,8 +1863,10 @@ export function App() {
   };
 
   const openConversation = async (conversationId: string) => {
+    selectedConversationRef.current = conversationId;
     setWorkspaceDestination("chats");
     followConversationScrollRef.current = true;
+    setTurnRefreshNotice(null);
     setConversation({ state: "loading" });
     setAttachments([]);
     setProjectFiles([]);
@@ -1615,12 +1875,15 @@ export function App() {
     setNavigationError(null);
     const startedAt = performance.now();
     try {
-      await loadConversation(conversationId, true);
-      // Solo se mide la apertura completada: una que falla describe el error,
-      // no el rendimiento.
-      recordSample("conversation_open", performance.now() - startedAt);
+      if (await loadConversation(conversationId, true)) {
+        // Solo se mide la apertura completada: una que falla describe el
+        // error, y una descartada por otra elección no mide nada.
+        recordSample("conversation_open", performance.now() - startedAt);
+      }
     } catch (error) {
-      setConversation({ state: "error", message: describeError(error) });
+      if (selectedConversationRef.current === conversationId) {
+        setConversation({ state: "error", message: describeError(error) });
+      }
     }
   };
 
@@ -1676,6 +1939,7 @@ export function App() {
   };
 
   const openWorkspaceDestination = (destination: WorkspaceDestination) => {
+    selectedConversationRef.current = null;
     setWorkspaceDestination(destination);
     setConversation(null);
     setNavigationError(null);
@@ -1751,8 +2015,12 @@ export function App() {
     }
   };
 
-  const revealEarlierMessages = () => {
-    if (conversation?.state !== "ready" || progressiveMessages.hiddenCount === 0) return;
+  /** Pide a Rust la página anterior y la antepone sin mover la lectura (H17). */
+  const revealEarlierMessages = async () => {
+    if (conversation?.state !== "ready" || !conversation.value.hasEarlierMessages) return;
+    const conversationId = conversation.value.id;
+    const first = conversation.value.messages[0];
+    if (!first) return;
     const messageList = messageListRef.current;
     if (messageList) {
       prependScrollRef.current = {
@@ -1761,13 +2029,42 @@ export function App() {
       };
     }
     followConversationScrollRef.current = false;
-    setMessageWindow({
-      conversationId: conversation.value.id,
-      limit: Math.min(
-        conversation.value.messages.length,
-        effectiveMessageLimit + EARLIER_MESSAGE_PAGE_SIZE
-      )
-    });
+    setEarlierMessagesBusy(true);
+    try {
+      const page = await platform.getConversationMessagesBefore(
+        conversationId,
+        first.sequenceNo,
+        EARLIER_MESSAGE_PAGE_SIZE
+      );
+      if (selectedConversationRef.current !== conversationId) return;
+      setConversation((current) =>
+        current?.state === "ready" && current.value.id === conversationId
+          ? {
+              state: "ready",
+              value: {
+                ...current.value,
+                messages: [
+                  ...page.messages.filter(
+                    (message) => !current.value.messages.some((item) => item.id === message.id)
+                  ),
+                  ...current.value.messages
+                ],
+                hasEarlierMessages: page.hasEarlierMessages
+              }
+            }
+          : current
+      );
+      setMessageWindow((current) => ({
+        conversationId,
+        limit: current.limit + page.messages.length
+      }));
+      return page;
+    } catch (error) {
+      setNavigationError(describeError(error));
+      return undefined;
+    } finally {
+      setEarlierMessagesBusy(false);
+    }
   };
 
   const sendTurn = async (sandboxOverride?: boolean, skipSandboxSuggestion = false) => {
@@ -1826,7 +2123,12 @@ export function App() {
     }
     setSandboxSuggestionPending(false);
     followConversationScrollRef.current = true;
+    // El identificador acompaña al texto exacto: si hay que repetir este mismo
+    // envío, Rust devuelve la tarea ya creada en lugar de duplicarla (H12).
+    const operation = operationFor(draftsRef.current, conversationId, text);
+    draftsRef.current = operation.store;
     setDraft("");
+    setTurnRefreshNotice(null);
     setActiveTurn({ state: "loading" });
     setActiveTurnConversationId(conversationId);
     const afterPaint = () => {
@@ -1837,26 +2139,70 @@ export function App() {
     } else {
       window.setTimeout(afterPaint, 0);
     }
+    let task: LocalTaskSnapshot;
     try {
       const attachmentIds = [...draftAttachmentIds];
-      const task = await platform.sendChatTurn(
+      task = await platform.sendChatTurn(
         conversationId,
         text,
         attachmentIds,
         toolsEnabled,
         useSandbox,
         semanticMemoryEnabled && semanticMemoryReady,
-        researchMode
+        researchMode,
+        operation.operationId
       );
-      setSandboxEnabled(false);
-      setResearchMode(false);
-      setActiveTurn({ state: "ready", value: task });
-      await loadConversation(conversationId);
+    } catch (error) {
+      // El envío no se aceptó: el texto vuelve a SU conversación, aunque la
+      // persona esté ya en otra, y conserva su operación por si se repite.
+      draftsRef.current = withRestoredDraft(
+        draftsRef.current,
+        conversationId,
+        text,
+        operation.operationId
+      );
+      saveDrafts(draftsRef.current);
+      if (selectedConversationRef.current === conversationId) {
+        setActiveTurn({ state: "error", message: describeError(error) });
+        setDraft(text);
+        setSandboxEnabled(useSandbox);
+      }
+      return;
+    }
+    // Aceptado y guardado de forma durable: a partir de aquí nada puede
+    // devolver el texto como «no enviado» (H12).
+    draftsRef.current = withoutDraft(draftsRef.current, conversationId);
+    saveDrafts(draftsRef.current);
+    setSandboxEnabled(false);
+    setResearchMode(false);
+    setActiveTurn({ state: "ready", value: task });
+    try {
+      // Solo se recarga si la persona sigue aquí: la aceptación tardía de un
+      // envío no puede sacarla de la conversación que abrió después (H11).
+      if (selectedConversationRef.current === conversationId) {
+        await loadConversation(conversationId);
+      }
       await reloadNavigation();
     } catch (error) {
-      setActiveTurn({ state: "error", message: describeError(error) });
-      setDraft(text);
-      setSandboxEnabled(useSandbox);
+      if (selectedConversationRef.current === conversationId) {
+        setTurnRefreshNotice(
+          `El mensaje se envió y está guardado, pero no se pudo actualizar la vista: ${describeError(error)}`
+        );
+      }
+    }
+  };
+
+  /** Reintenta solo la lectura, nunca el envío (H12). */
+  const refreshAfterAcceptedTurn = async () => {
+    if (conversation?.state !== "ready") return;
+    try {
+      await loadConversation(conversation.value.id);
+      await reloadNavigation();
+      setTurnRefreshNotice(null);
+    } catch (error) {
+      setTurnRefreshNotice(
+        `El mensaje se envió y está guardado, pero no se pudo actualizar la vista: ${describeError(error)}`
+      );
     }
   };
 
@@ -1889,11 +2235,14 @@ export function App() {
 
   const cancelActiveTurn = async () => {
     if (currentTurn?.state !== "ready") return;
+    const conversationId = activeTurnConversationId;
     try {
+      // Funciona también sin identidad remota: la intención se guarda y el
+      // envío no llegará a salir, o se cancelará en el Broker al reconciliar.
       const task = await platform.cancelLocalTask(currentTurn.value.id);
       setActiveTurn({ state: "ready", value: task });
-      if (conversation?.state === "ready") {
-        await loadConversation(conversation.value.id);
+      if (conversationId && selectedConversationRef.current === conversationId) {
+        await loadConversation(conversationId);
       }
     } catch (error) {
       setActiveTurn({ state: "error", message: describeError(error) });
@@ -2401,6 +2750,16 @@ export function App() {
             <button onClick={() => setSearchQuery("")} aria-label="Limpiar búsqueda">×</button>
           )}
         </label>
+        {searchQuery.trim() && (
+          <label className="search-scope">
+            <input
+              type="checkbox"
+              checked={searchIncludesArchived}
+              onChange={(event) => setSearchIncludesArchived(event.target.checked)}
+            />
+            Incluir archivadas
+          </label>
+        )}
 
         <nav aria-label="Navegación principal">
           <p className="nav-label">Espacio</p>
@@ -2412,6 +2771,7 @@ export function App() {
             ["athena", "Athena"],
             ["automations", "Automatizaciones"],
             ["settings", "Ajustes"],
+            ["archive", "Archivo"],
           ] as const).map(([destination, label], index) => (
             <button
               key={destination}
@@ -2489,24 +2849,33 @@ export function App() {
                 ? "No hay conversaciones que coincidan."
                 : "No hay conversaciones en esta sección."}
             </div>
-          ) : visibleConversationList.map((item) => (
-            <button
-              key={item.id}
-              className={`conversation-link ${
-                conversation?.state === "ready" && conversation.value.id === item.id
-                  ? "active"
-                  : ""
-              }`}
-              onClick={() => openConversation(item.id)}
-              aria-current={
-                conversation?.state === "ready" && conversation.value.id === item.id
-                  ? "page"
-                  : undefined
-              }
-            >
-              {item.title}
-            </button>
-          ))}
+          ) : visibleConversationList.map((item) => {
+            const hit = searchQuery.trim()
+              ? searchResults.find((result) => result.id === item.id)
+              : undefined;
+            return (
+              <button
+                key={item.id}
+                className={`conversation-link ${
+                  conversation?.state === "ready" && conversation.value.id === item.id
+                    ? "active"
+                    : ""
+                }${hit ? " search-result" : ""}`}
+                onClick={() => (hit ? void openSearchHit(hit) : void openConversation(item.id))}
+                aria-current={
+                  conversation?.state === "ready" && conversation.value.id === item.id
+                    ? "page"
+                    : undefined
+                }
+              >
+                <span>
+                  {item.title}
+                  {hit?.archived && <em className="search-archived"> · archivada</em>}
+                </span>
+                {hit?.snippet && <small className="search-snippet">{hit.snippet}</small>}
+              </button>
+            );
+          })}
         </nav>
 
         {selectedProject && (
@@ -2565,7 +2934,9 @@ export function App() {
         <header className="topbar">
           <div>
             <span className="eyebrow">
-              {conversation?.state === "ready" ? "Conversación local" : "Fase 1 · Núcleo"}
+              {conversation?.state === "ready"
+                ? "Conversación local"
+                : WORKSPACE_TITLES[workspaceDestination]}
             </span>
             <h1>
               {conversation?.state === "ready"
@@ -2665,6 +3036,21 @@ export function App() {
         <main id="main-content" tabIndex={-1}
           className={`content ${conversation?.state === "ready" ? "conversation-content" : "home-content"}`}>
           {exportNotice && <p className="export-notice">{exportNotice}</p>}
+          {bootstrap.state === "ready" && bootstrap.value.restoreNotice && (
+            <p className="restore-notice" role="status">{bootstrap.value.restoreNotice}</p>
+          )}
+          {broker?.state === "ready" && broker.value.credential === "rejected" && (
+            <div className="credential-banner" role="alert">
+              <span>
+                Broker AI rechaza la credencial guardada (el Broker cambia su token en cada
+                arranque). Tus conversaciones siguen aquí; para enviar mensajes introduce el token
+                actual.
+              </span>
+              <button className="secondary" onClick={openBrokerCredentialSettings}>
+                Ir a la credencial
+              </button>
+            </div>
+          )}
           {bootstrap.state === "ready" &&
             !recoveryNoticeDismissed &&
             (bootstrap.value.recoveredTasks > 0 || bootstrap.value.recoveredAttachments > 0) && (
@@ -2734,16 +3120,31 @@ export function App() {
                     )}
                   </div>
                 )}
-                {progressiveMessages.hiddenCount > 0 && (
+                {hasEarlierMessages && (
                   <div className="earlier-messages">
-                    <button className="secondary" onClick={revealEarlierMessages}>
-                      Mostrar {Math.min(EARLIER_MESSAGE_PAGE_SIZE, progressiveMessages.hiddenCount)} mensajes anteriores
+                    <button
+                      className="secondary"
+                      onClick={() => void revealEarlierMessages()}
+                      disabled={earlierMessagesBusy}
+                    >
+                      {earlierMessagesBusy
+                        ? "Cargando mensajes anteriores…"
+                        : `Mostrar ${EARLIER_MESSAGE_PAGE_SIZE} mensajes anteriores`}
                     </button>
-                    <small>{progressiveMessages.hiddenCount} mensajes anteriores todavía ocultos</small>
+                    {conversation.value.totalMessageCount !== undefined && (
+                      <small>
+                        {conversation.value.totalMessageCount - conversation.value.messages.length}{" "}
+                        mensajes anteriores sin cargar
+                      </small>
+                    )}
                   </div>
                 )}
                 {progressiveMessages.visibleItems.map((message) => (
-                  <article key={message.id} className={`message ${message.role}`}>
+                  <article
+                    key={message.id}
+                    id={`mensaje-${message.id}`}
+                    className={`message ${message.role}`}
+                  >
                     <span className="message-role">
                       {message.role === "user" ? "Tú" : "ChatyGPT"}
                     </span>
@@ -2763,6 +3164,28 @@ export function App() {
                             aria-label={currentProgress.label}
                           />
                         )}
+                        {currentTurn?.state === "ready" && currentTurn.value.cancelRequested && (
+                          <small role="status">
+                            Cancelación solicitada: se confirmará en cuanto Broker AI responda. La
+                            pregunta no se volverá a enviar.
+                          </small>
+                        )}
+                        {currentTurn?.state === "ready" &&
+                          (currentTurn.value.unverifiedCapabilities?.length ?? 0) > 0 && (
+                            <small role="status">
+                              No se pudo comprobar antes de enviar que Broker AI ofrezca{" "}
+                              {currentTurn.value.unverifiedCapabilities!
+                                .map((capability) =>
+                                  capability === "sandbox"
+                                    ? "Código aislado"
+                                    : capability === "research"
+                                      ? "las herramientas de investigación"
+                                      : "las dependencias documentales"
+                                )
+                                .join(" y ")}
+                              . El Broker lo validará y puede rechazar la petición.
+                            </small>
+                          )}
                         {currentTurn?.state === "ready" &&
                           (currentTurn.value.progress.phase === "waiting_for_memory" ||
                             currentTurn.value.remoteStatus === "waiting_for_memory") && (
@@ -2786,6 +3209,17 @@ export function App() {
                       ) : (
                         <div className="message-text">{message.text}</div>
                       )
+                    ) : message.status === "cancelled" ? (
+                      // Cancelar es una decisión de la persona, no un fallo del
+                      // Broker: se dice así, sin culpar a nadie ni invitar a revisar.
+                      <div className="task-cancelled" role="status">
+                        <strong>Respuesta cancelada</strong>
+                        <span>
+                          {message.error?.code === "CANCELLED_LOCALLY"
+                            ? "La pregunta se canceló antes de enviarse a Broker AI; no se ejecutará."
+                            : "La cancelaste antes de que terminara. Puedes volver a preguntar cuando quieras."}
+                        </span>
+                      </div>
                     ) : message.error ? (
                       (() => {
                         const failure = taskFailureSummary(message.error);
@@ -3330,11 +3764,13 @@ export function App() {
                   <span>o arrástralos a esta ventana</span>
                 </div>
                 {availableProjectFiles.length > 0 && (
-                  <section className="project-file-library" aria-label="Archivos del proyecto">
-                    <div>
-                      <strong>Archivos del proyecto</strong>
+                  // Plegada por defecto: con varios archivos, la lista empujaba la
+                  // conversación hasta dejarla en unas pocas líneas visibles.
+                  <details className="project-file-library" aria-label="Archivos del proyecto">
+                    <summary>
+                      <strong>Archivos del proyecto ({availableProjectFiles.length})</strong>
                       <small>Reutiliza contexto sin volver a subir el archivo.</small>
-                    </div>
+                    </summary>
                     <div className="project-file-list">
                       {availableProjectFiles.map((file) => (
                         <article className="project-file-item" key={file.id}>
@@ -3355,7 +3791,7 @@ export function App() {
                         </article>
                       ))}
                     </div>
-                  </section>
+                  </details>
                 )}
                 {attachments.length > 0 && (
                   <div className="attachment-list" aria-label="Archivos de la conversación">
@@ -3473,6 +3909,8 @@ export function App() {
                     setComposerError(null);
                   }}
                   onKeyDown={(event) => {
+                    // Con un IME, Enter confirma la composición: no envía (H24).
+                    if (isImeComposition(event.nativeEvent)) return;
                     if (event.key === "Enter" && !event.shiftKey && canSend) {
                       event.preventDefault();
                       void sendTurn();
@@ -3547,33 +3985,42 @@ export function App() {
                     </div>
                   </div>
                 )}
+                {executionPolicy?.state === "ready" && executionPolicy.value.notes.length > 0 && (
+                  // Lo que el chat no decide se ve sin desplegar nada: quien va a
+                  // enviar tiene que saber antes qué privacidad y gasto se aplican.
+                  <div className="effective-policy" role="note" aria-label="Qué se aplicará al próximo mensaje">
+                    <strong>Qué se aplicará al próximo mensaje</strong>
+                    <ul>
+                      {executionPolicy.value.notes.map((note) => (
+                        <li key={note}>{note}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
                 <details className="execution-settings">
                   <summary>
                     <span>Opciones de ejecución</span>
-                    <small>
-                      {conversation.value.executionPreferences.strategy === "auto"
-                        ? "Automática"
-                        : conversation.value.executionPreferences.strategy === "mixture_of_agents"
-                          ? "Análisis en equipo"
-                          : "Respuesta directa"}
+                    <small title="Lo que se aplicará al próximo mensaje">
+                      {strategyLabel(appliedPreferences.strategy)}
                       {" · "}
-                      {conversation.value.executionPreferences.dataClassification === "internal"
-                        ? "Uso personal"
-                        : conversation.value.executionPreferences.dataClassification === "public"
-                          ? "Público"
-                          : conversation.value.executionPreferences.dataClassification === "confidential"
-                            ? "Confidencial"
-                            : "Solo local"}
+                      {classificationShortLabel(appliedPreferences.dataClassification)}
                       {" · "}
-                      hasta {conversation.value.executionPreferences.maxCostUsd.toFixed(2)} USD
+                      hasta {appliedPreferences.maxCostUsd.toFixed(2)} USD
                       {" · "}
-                      {conversation.value.executionPreferences.priority <= 25
+                      {/* El chat usa 25/100/250 y los GPT 50/100/200: la etiqueta
+                          sirve para ambas escalas. */}
+                      {appliedPreferences.priority <= 50
                         ? "Prioridad alta"
-                        : conversation.value.executionPreferences.priority >= 250
+                        : appliedPreferences.priority >= 200
                           ? "Prioridad baja"
                           : "Prioridad normal"}
                     </small>
                   </summary>
+                  {executionPolicy?.state === "ready" && executionPolicy.value.destination.warning && (
+                    <p className="policy-warning execution-destination-warning">
+                      {executionPolicy.value.destination.warning}
+                    </p>
+                  )}
                   <div className="execution-settings-grid">
                     <label>
                       <span>Privacidad</span>
@@ -3587,9 +4034,16 @@ export function App() {
                         <option value="internal">Uso personal · local o cloud</option>
                         <option value="public">Contenido público · local o cloud</option>
                         <option value="confidential">Confidencial · solo modelos locales</option>
-                        <option value="local_only">Solo en este equipo</option>
+                        <option value="local_only">Solo modelos locales · máxima restricción</option>
                       </select>
-                      <small>Decide si el contenido puede salir a proveedores cloud.</small>
+                      <small>
+                        Decide si el contenido puede salir a proveedores cloud. «Local» significa
+                        modelos locales del Broker, que corre en{" "}
+                        {executionPolicy?.state === "ready"
+                          ? executionPolicy.value.destination.host
+                          : "el equipo configurado"}
+                        .
+                      </small>
                     </label>
                     <label>
                       <span>Forma de responder</span>
@@ -3601,8 +4055,10 @@ export function App() {
                         disabled={
                           Boolean(currentTurnBlocks) ||
                           executionOptionsBusy ||
-                          broker?.state !== "ready"
+                          broker?.state !== "ready" ||
+                          routingFixedByGpt
                         }
+                        title={routingFixedByGpt ? "La fija la versión publicada del GPT" : undefined}
                       >
                         <option value="single">Respuesta directa</option>
                         <option
@@ -3633,7 +4089,8 @@ export function App() {
                         onChange={(event) => void updateExecutionPreferences({
                           priority: Number(event.target.value)
                         })}
-                        disabled={Boolean(currentTurnBlocks) || executionOptionsBusy}
+                        disabled={Boolean(currentTurnBlocks) || executionOptionsBusy || routingFixedByGpt}
+                        title={routingFixedByGpt ? "La fija la versión publicada del GPT" : undefined}
                       >
                         <option value={25}>Alta</option>
                         <option value={100}>Normal</option>
@@ -3800,10 +4257,13 @@ export function App() {
                       Código aislado · un turno
                     </label>
                     {currentTurn?.state === "ready" &&
-                      isTaskBlockingConversation(currentTurn.value) &&
-                      currentTurn.value.remoteTaskId && (
-                        <button className="secondary danger" onClick={cancelActiveTurn}>
-                          Cancelar
+                      isTaskBlockingConversation(currentTurn.value) && (
+                        <button
+                          className="secondary danger"
+                          onClick={cancelActiveTurn}
+                          disabled={Boolean(currentTurn.value.cancelRequested)}
+                        >
+                          {currentTurn.value.cancelRequested ? "Cancelación solicitada" : "Cancelar"}
                         </button>
                       )}
                     <button
@@ -3822,6 +4282,14 @@ export function App() {
                 )}
                 {currentTurn?.state === "error" && (
                   <p className="error">{currentTurn.message}</p>
+                )}
+                {turnRefreshNotice && (
+                  <div className="composer-refresh-notice" role="status">
+                    <span>{turnRefreshNotice}</span>
+                    <button className="secondary" onClick={() => void refreshAfterAcceptedTurn()}>
+                      Actualizar la vista
+                    </button>
+                  </div>
                 )}
                 {attachmentError && <p className="error">{attachmentError}</p>}
               </div>
@@ -3914,23 +4382,33 @@ export function App() {
                     </div>
                   </details>
 
-                  <section className="privacy-context">
-                    <span>Privacidad</span>
-                    <strong>
-                      {conversation.value.executionPreferences.dataClassification === "internal"
-                        ? "Uso personal"
-                        : conversation.value.executionPreferences.dataClassification === "public"
-                          ? "Contenido público"
-                          : conversation.value.executionPreferences.dataClassification === "confidential"
-                            ? "Confidencial"
-                            : "Solo en este equipo"}
-                    </strong>
+                  <section className="privacy-context" aria-label="Privacidad del próximo mensaje">
+                    <span>Privacidad del próximo mensaje</span>
+                    <strong>{classificationLongLabel(appliedPreferences.dataClassification)}</strong>
                     <small>
-                      {conversation.value.executionPreferences.dataClassification === "confidential" ||
-                      conversation.value.executionPreferences.dataClassification === "local_only"
-                        ? "Solo se usarán modelos locales."
+                      {appliedPreferences.dataClassification === "confidential" ||
+                      appliedPreferences.dataClassification === "local_only"
+                        ? "Solo modelos locales del Broker; nunca proveedores cloud ni herramientas con salida a red."
                         : "Puede usar proveedores locales o cloud según el enrutamiento."}
                     </small>
+                    {executionPolicy?.state === "ready" && (
+                      <>
+                        <small>{policySourceLabel(executionPolicy.value)}</small>
+                        <small>
+                          Destino: Broker AI en {executionPolicy.value.destination.host}
+                          {executionPolicy.value.destination.localMachine
+                            ? " (este equipo)"
+                            : executionPolicy.value.destination.encrypted
+                              ? " · conexión cifrada"
+                              : " · conexión sin cifrar"}
+                        </small>
+                        {executionPolicy.value.destination.warning && (
+                          <small className="policy-warning">
+                            {executionPolicy.value.destination.warning}
+                          </small>
+                        )}
+                      </>
+                    )}
                   </section>
 
                   <button
@@ -4006,29 +4484,46 @@ export function App() {
                 )}
               </section>
 
-              <WorkflowStudio
-                projects={projects}
-                customGpts={customGpts.state === "ready" ? customGpts.value : []}
-                onOpenBrokerCredential={openBrokerCredentialSettings}
-                onOpenAutomations={() => setWorkspaceDestination("automations")}
-              />
+              {workspaceDestination === "workflows" && (
+                <Suspense fallback={<p className="muted">Cargando el editor de flujos…</p>}>
+                  <WorkflowStudio
+                    projects={projects}
+                    customGpts={customGpts.state === "ready" ? customGpts.value : []}
+                    onOpenBrokerCredential={openBrokerCredentialSettings}
+                    onOpenAutomations={() => setWorkspaceDestination("automations")}
+                  />
+                </Suspense>
+              )}
 
-              <AthenaArea
-                carpetas={
-                  authorizedFolders.state === "ready"
-                    ? authorizedFolders.value.filter(
-                        (folder) =>
-                          !folder.revokedAt &&
-                          folder.permissions?.athena === true
-                      )
-                    : []
-                }
-                carpetasCargando={authorizedFolders.state === "loading"}
-                carpetasError={
-                  authorizedFolders.state === "error" ? authorizedFolders.message : null
-                }
-                onAutorizarCarpeta={authorizeAthenaFolder}
-              />
+              {workspaceDestination === "athena" && (
+                <Suspense fallback={<p className="muted">Cargando el área de Athena…</p>}>
+                  <AthenaArea
+                    carpetas={
+                      authorizedFolders.state === "ready"
+                        ? authorizedFolders.value.filter(
+                            (folder) =>
+                              !folder.revokedAt &&
+                              folder.permissions?.athena === true
+                          )
+                        : []
+                    }
+                    carpetasCargando={authorizedFolders.state === "loading"}
+                    carpetasError={
+                      authorizedFolders.state === "error" ? authorizedFolders.message : null
+                    }
+                    onAutorizarCarpeta={authorizeAthenaFolder}
+                  />
+                </Suspense>
+              )}
+
+              {workspaceDestination === "archive" && (
+                <ArchivoPanel
+                  onChanged={reloadNavigation}
+                  onOpenConversation={(conversationId) => void openConversation(conversationId)}
+                />
+              )}
+
+              <CopiaSeguridad />
 
               <div className="grid">
                 <article className="panel">
@@ -4115,6 +4610,30 @@ export function App() {
                             ? "solo la ve el modelo que responde"
                             : "el Broker puede sondear otro modelo local"}
                       </span>
+                      <span>
+                        Credencial: {broker.value.credential === "valid"
+                          ? "aceptada por el Broker"
+                          : broker.value.credential === "rejected"
+                            ? "rechazada: introduce el token actual"
+                            : broker.value.credential === "not_required"
+                              ? "este Broker no exige credencial"
+                              : broker.value.credential === "backend_unavailable"
+                                ? "el Broker no puede comprobarla ahora"
+                                : "no comprobada"}
+                      </span>
+                      {broker.value.destination && (
+                        <span>
+                          Destino: {broker.value.destination.host}
+                          {broker.value.destination.localMachine
+                            ? " · este equipo"
+                            : broker.value.destination.encrypted
+                              ? " · conexión cifrada"
+                              : " · conexión sin cifrar"}
+                        </span>
+                      )}
+                      {broker.value.destination?.warning && (
+                        <span className="policy-warning">{broker.value.destination.warning}</span>
+                      )}
                       <span>
                         Ejecución demostrable: {broker.value.demonstrableExecution === undefined
                           ? "no consta"

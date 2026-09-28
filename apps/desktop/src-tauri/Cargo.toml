@@ -1,6 +1,6 @@
 [package]
 name = "chatygpt"
-version = "0.2.0"
+version = "0.3.0"
 description = "Cliente de escritorio local-first para AI Broker"
 authors = ["ChatyGPT contributors"]
 edition = "2021"
@@ -19,9 +19,9 @@ serde_json = "1"
 thiserror = "2"
 url = "2"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "multipart", "rustls-tls"] }
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "0.37", features = ["bundled", "functions"] }
 uuid = { version = "1", features = ["v4", "serde"] }
-tokio = { version = "1", features = ["fs", "time"] }
+tokio = { version = "1", features = ["fs", "sync", "time"] }
 sha2 = "0.10"
 mime_guess = "2"
 chrono = "0.4"

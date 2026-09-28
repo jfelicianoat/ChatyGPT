@@ -11,6 +11,26 @@ pub struct BrokerTaskRecord {
     pub remote_task_id: Option<String>,
     pub request: Value,
     pub consecutive_poll_errors: u32,
+    /// Intentos de creación ya iniciados. Con cero, la petición no salió nunca
+    /// del equipo y una cancelación puede resolverse sin preguntar al Broker.
+    pub attempt: u32,
+    /// La persona pidió cancelar. El bucle de envío y el de sondeo lo respetan
+    /// antes de cada paso, también después de reiniciar la aplicación.
+    pub cancel_requested: bool,
+}
+
+/// Qué hay que hacer para completar una cancelación ya registrada.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CancellationRoute {
+    /// La tarea ya había terminado; no queda nada que cancelar.
+    AlreadyFinished,
+    /// La petición no llegó a transmitirse: se cierra aquí mismo.
+    LocalOnly,
+    /// Un envío pudo llegar al Broker sin que conociéramos su identidad. Se
+    /// reconcilia con la misma clave idempotente y se cancela allí.
+    PendingReconciliation,
+    /// El Broker ya la conoce con esta identidad.
+    Remote(String),
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -27,6 +47,11 @@ pub struct LocalTaskSnapshot {
     pub progress: TaskProgressView,
     pub pending_tool_calls: Vec<ToolCallView>,
     pub updated_at: String,
+    /// La persona pidió cancelar y el Broker todavía no lo ha confirmado.
+    pub cancel_requested: bool,
+    /// Capacidades que no pudieron comprobarse antes de enviar (H21): la
+    /// tarea salió confiando en que el Broker las validará él mismo.
+    pub unverified_capabilities: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -62,6 +87,8 @@ pub struct ScheduledTaskView {
     pub next_run_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    /// Retirada por la persona: ya no se ejecuta, pero conserva su historial.
+    pub retired_at: Option<String>,
     pub runs: Vec<ScheduledRunView>,
 }
 

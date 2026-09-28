@@ -264,6 +264,15 @@ export type BrokerDiagnostic = {
   /** Contrato 2.10 (8.1 y 8.5): si este Broker puede demostrar CÓMO ejecutó,
    *  no solo qué respondió. */
   demonstrableExecution?: boolean;
+  /** Veredicto de `/api/v1/auth/check` (H20). */
+  credential?: "valid" | "rejected" | "not_required" | "backend_unavailable" | "unknown" | null;
+  /** Destino real y si la conexión va cifrada (H04). */
+  destination?: {
+    host: string;
+    localMachine: boolean;
+    encrypted: boolean;
+    warning?: string | null;
+  } | null;
   latencyMs: number;
   message: string;
 };
@@ -287,6 +296,10 @@ export type TaskArtifact = {
   /** Marca el entregable. Se filtra por esto y no por `artifactType`: la lista
    *  de tipos crece con cada estrategia nueva. */
   final?: boolean | null;
+  /** Copia conservada en el equipo (H23): sigue accesible aunque el Broker
+   *  pode el artefacto remoto. */
+  localPath?: string | null;
+  savedAt?: string | null;
 };
 
 export const brokerSupportsPreset = (

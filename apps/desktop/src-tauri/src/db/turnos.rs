@@ -356,7 +356,21 @@ impl Database {
         self.task_record(local_task_id)
     }
 
+    /// Conversación completa: la usan la exportación y las pruebas.
     pub fn conversation_view(&self, id: &str) -> Result<ConversationView, AppError> {
+        self.conversation_page(id, None)
+    }
+
+    /// Conversación con, como mucho, los `message_limit` mensajes más recientes.
+    ///
+    /// Antes la interfaz pintaba 80 mensajes pero Rust leía, serializaba y
+    /// enviaba el historial entero con sus fuentes en cada apertura: el coste
+    /// crecía con la conversación aunque la pantalla no lo mostrara (H17).
+    pub fn conversation_page(
+        &self,
+        id: &str,
+        message_limit: Option<usize>,
+    ) -> Result<ConversationView, AppError> {
         let summary = self.conversation_summary(id)?;
         let connection = self.connect()?;
         let (execution_preferences_json, custom_gpt_id): (String, Option<String>) = connection
@@ -368,6 +382,105 @@ impl Database {
             )?;
         let execution_preferences = serde_json::from_str(&execution_preferences_json)
             .map_err(|error| AppError::BrokerContract(error.to_string()))?;
+        let (messages, has_earlier_messages) =
+            Self::load_message_page(&connection, id, None, message_limit)?;
+        let total_message_count: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1",
+            params![id],
+            |row| row.get(0),
+        )?;
+        let mut research_statement = connection.prepare(
+            "SELECT run.id, run.broker_task_id, run.objective, run.status,
+                    COUNT(citation.id), run.created_at, run.updated_at
+             FROM research_runs run
+             JOIN broker_tasks task ON task.id = run.broker_task_id
+             LEFT JOIN citations citation ON citation.message_id = task.response_message_id
+             WHERE run.conversation_id = ?1
+             GROUP BY run.id
+             ORDER BY run.created_at DESC, run.id DESC",
+        )?;
+        let research_rows = research_statement
+            .query_map(params![id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut research_runs = Vec::with_capacity(research_rows.len());
+        for (run_id, broker_task_id, objective, status, source_count, created_at, updated_at) in
+            research_rows
+        {
+            let mut step_statement = connection.prepare(
+                "SELECT id, COALESCE(kind, 'research'),
+                        COALESCE(title, objective), status
+                 FROM research_steps
+                 WHERE research_run_id = ?1
+                 ORDER BY ordinal",
+            )?;
+            let steps = step_statement
+                .query_map(params![run_id], |row| {
+                    Ok(ResearchStepView {
+                        id: row.get(0)?,
+                        kind: row.get(1)?,
+                        title: row.get(2)?,
+                        status: row.get(3)?,
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            research_runs.push(ResearchRunView {
+                id: run_id,
+                broker_task_id,
+                objective,
+                status,
+                steps,
+                source_count,
+                created_at,
+                updated_at,
+            });
+        }
+        Ok(ConversationView {
+            id: summary.id,
+            title: summary.title,
+            project_id: summary.project_id,
+            custom_gpt_id,
+            execution_preferences,
+            messages,
+            research_runs,
+            total_message_count,
+            has_earlier_messages,
+        })
+    }
+
+    /// Mensajes anteriores a `before_sequence`, en orden cronológico.
+    pub fn conversation_messages_before(
+        &self,
+        id: &str,
+        before_sequence: i64,
+        limit: usize,
+    ) -> Result<ConversationMessagePage, AppError> {
+        self.conversation_summary(id)?;
+        let connection = self.connect()?;
+        let (messages, has_earlier_messages) =
+            Self::load_message_page(&connection, id, Some(before_sequence), Some(limit))?;
+        Ok(ConversationMessagePage {
+            messages,
+            has_earlier_messages,
+        })
+    }
+
+    /// Una página de mensajes con sus fuentes, y si quedan anteriores.
+    fn load_message_page(
+        connection: &Connection,
+        id: &str,
+        before_sequence: Option<i64>,
+        message_limit: Option<usize>,
+    ) -> Result<(Vec<ConversationMessage>, bool), AppError> {
         let mut statement = connection.prepare(
             "SELECT m.id, m.role, m.status, m.sequence_no,
                     m.broker_task_id, bt.remote_status, bt.local_state,
@@ -397,10 +510,13 @@ impl Database {
              LEFT JOIN message_parts mp ON mp.message_id = m.id AND mp.ordinal = 0
              LEFT JOIN broker_tasks bt ON bt.id = m.broker_task_id
              WHERE m.conversation_id = ?1
-             ORDER BY m.sequence_no",
+               AND (?2 IS NULL OR m.sequence_no < ?2)
+             ORDER BY m.sequence_no DESC
+             LIMIT ?3",
         )?;
-        let messages = statement
-            .query_map(params![id], |row| {
+        let limit = message_limit.map_or(-1_i64, |value| value as i64);
+        let mut messages = statement
+            .query_map(params![id, before_sequence, limit], |row| {
                 let error_json: Option<String> = row.get(8)?;
                 let model_provider: Option<String> = row.get(10)?;
                 let model_deployment: Option<String> = row.get(11)?;
@@ -466,6 +582,9 @@ impl Database {
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
+        messages.reverse();
+        let first_loaded = messages.first().map(|message| message.sequence_no);
+        let last_loaded = messages.last().map(|message| message.sequence_no);
         let mut source_statement = connection.prepare(
             "SELECT c.message_id, c.id,
                     COALESCE(c.title, a.display_name, 'Fuente'),
@@ -475,24 +594,28 @@ impl Database {
              JOIN messages m ON m.id = c.message_id
              LEFT JOIN attachments a ON a.id = c.source_attachment_id
              WHERE m.conversation_id = ?1
+               AND m.sequence_no BETWEEN ?2 AND ?3
              ORDER BY c.message_id, c.ordinal",
         )?;
         let source_rows = source_statement
-            .query_map(params![id], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    ConversationSource {
-                        id: row.get(1)?,
-                        title: row.get(2)?,
-                        source_attachment_id: row.get(3)?,
-                        media_type: row.get(4)?,
-                        size_bytes: row.get(5)?,
-                        url: row.get(6)?,
-                        quote_text: row.get(7)?,
-                        claim_text: row.get(8)?,
-                    },
-                ))
-            })?
+            .query_map(
+                params![id, first_loaded.unwrap_or(0), last_loaded.unwrap_or(-1)],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        ConversationSource {
+                            id: row.get(1)?,
+                            title: row.get(2)?,
+                            source_attachment_id: row.get(3)?,
+                            media_type: row.get(4)?,
+                            size_bytes: row.get(5)?,
+                            url: row.get(6)?,
+                            quote_text: row.get(7)?,
+                            claim_text: row.get(8)?,
+                        },
+                    ))
+                },
+            )?
             .collect::<Result<Vec<_>, _>>()?;
         let mut sources_by_message: HashMap<String, Vec<ConversationSource>> = HashMap::new();
         for (message_id, source) in source_rows {
@@ -501,77 +624,24 @@ impl Database {
                 .or_default()
                 .push(source);
         }
-        let messages = messages
+        let messages: Vec<ConversationMessage> = messages
             .into_iter()
             .map(|mut message| {
                 message.sources = sources_by_message.remove(&message.id).unwrap_or_default();
                 message
             })
             .collect();
-        let mut research_statement = connection.prepare(
-            "SELECT run.id, run.broker_task_id, run.objective, run.status,
-                    COUNT(citation.id), run.created_at, run.updated_at
-             FROM research_runs run
-             JOIN broker_tasks task ON task.id = run.broker_task_id
-             LEFT JOIN citations citation ON citation.message_id = task.response_message_id
-             WHERE run.conversation_id = ?1
-             GROUP BY run.id
-             ORDER BY run.created_at DESC, run.id DESC",
-        )?;
-        let research_rows = research_statement
-            .query_map(params![id], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, i64>(4)?,
-                    row.get::<_, String>(5)?,
-                    row.get::<_, String>(6)?,
-                ))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        let mut research_runs = Vec::with_capacity(research_rows.len());
-        for (run_id, broker_task_id, objective, status, source_count, created_at, updated_at) in
-            research_rows
-        {
-            let mut step_statement = connection.prepare(
-                "SELECT id, COALESCE(kind, 'research'),
-                        COALESCE(title, objective), status
-                 FROM research_steps
-                 WHERE research_run_id = ?1
-                 ORDER BY ordinal",
-            )?;
-            let steps = step_statement
-                .query_map(params![run_id], |row| {
-                    Ok(ResearchStepView {
-                        id: row.get(0)?,
-                        kind: row.get(1)?,
-                        title: row.get(2)?,
-                        status: row.get(3)?,
-                    })
-                })?
-                .collect::<Result<Vec<_>, _>>()?;
-            research_runs.push(ResearchRunView {
-                id: run_id,
-                broker_task_id,
-                objective,
-                status,
-                steps,
-                source_count,
-                created_at,
-                updated_at,
-            });
-        }
-        Ok(ConversationView {
-            id: summary.id,
-            title: summary.title,
-            project_id: summary.project_id,
-            custom_gpt_id,
-            execution_preferences,
-            messages,
-            research_runs,
-        })
+        let has_earlier_messages = match first_loaded {
+            Some(first) => connection.query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM messages WHERE conversation_id = ?1 AND sequence_no < ?2
+                 )",
+                params![id, first],
+                |row| row.get(0),
+            )?,
+            None => false,
+        };
+        Ok((messages, has_earlier_messages))
     }
 
     pub fn conversation_export_metadata(

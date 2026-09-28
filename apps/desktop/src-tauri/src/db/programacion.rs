@@ -329,6 +329,7 @@ impl Database {
                  confirmed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
                  updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
              WHERE id = ?1
+               AND retired_at IS NULL
                AND COALESCE(json_extract(payload_json, '$.target_kind'), 'conversation') = 'conversation'
                AND EXISTS(
                     SELECT 1 FROM conversations
@@ -375,16 +376,24 @@ impl Database {
             .ok_or_else(|| AppError::NotFound("tarea programada editada".to_owned()))
     }
 
+    /// Retira una programación: deja de ejecutarse, pero su historial sigue
+    /// consultable. Antes se borraba la fila y la cascada se llevaba todas sus
+    /// ejecuciones, incluidas las que demostraban qué se hizo y qué falló.
     pub fn delete_scheduled_task(&self, id: &str, confirmed: bool) -> Result<(), AppError> {
         if !confirmed {
             return Err(AppError::Validation(
                 "eliminar una tarea programada requiere confirmación explícita".to_owned(),
             ));
         }
-        let connection = self.connect()?;
-        let changed = connection.execute(
-            "DELETE FROM scheduled_tasks
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let changed = transaction.execute(
+            "UPDATE scheduled_tasks
+             SET retired_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                 enabled = 0, next_run_at = NULL,
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
              WHERE id = ?1
+               AND retired_at IS NULL
                AND NOT EXISTS(
                  SELECT 1 FROM scheduled_runs
                  WHERE scheduled_task_id = ?1 AND status IN ('claimed', 'running')
@@ -396,6 +405,54 @@ impl Database {
                 "no se puede eliminar una programación que se está ejecutando".to_owned(),
             ));
         }
+        transaction.execute(
+            "INSERT INTO audit_events(event_type, actor, conversation_id, payload_json)
+             SELECT 'scheduled_task.retired', 'user',
+                    json_extract(payload_json, '$.conversation_id'),
+                    json_object('scheduled_task_id', id, 'name', name)
+             FROM scheduled_tasks WHERE id = ?1",
+            params![id],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Borra definitivamente una programación retirada y todo su historial.
+    ///
+    /// Es una decisión aparte y explícita: retirar solo detiene futuras
+    /// ejecuciones. Una programación activa no puede purgarse directamente.
+    pub fn purge_scheduled_task_history(&self, id: &str, confirmed: bool) -> Result<(), AppError> {
+        if !confirmed {
+            return Err(AppError::Validation(
+                "borrar el historial de una programación requiere confirmación explícita"
+                    .to_owned(),
+            ));
+        }
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let run_count: i64 = transaction.query_row(
+            "SELECT COUNT(*) FROM scheduled_runs WHERE scheduled_task_id = ?1",
+            params![id],
+            |row| row.get(0),
+        )?;
+        transaction.execute(
+            "INSERT INTO audit_events(event_type, actor, conversation_id, payload_json)
+             SELECT 'scheduled_task.history_purged', 'user',
+                    json_extract(payload_json, '$.conversation_id'),
+                    json_object('scheduled_task_id', id, 'name', name, 'runs', ?2)
+             FROM scheduled_tasks WHERE id = ?1 AND retired_at IS NOT NULL",
+            params![id, run_count],
+        )?;
+        let changed = transaction.execute(
+            "DELETE FROM scheduled_tasks WHERE id = ?1 AND retired_at IS NOT NULL",
+            params![id],
+        )?;
+        if changed == 0 {
+            return Err(AppError::Conflict(
+                "solo puede borrarse el historial de una programación ya retirada".to_owned(),
+            ));
+        }
+        transaction.commit()?;
         Ok(())
     }
 }

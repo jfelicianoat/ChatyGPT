@@ -6,7 +6,11 @@ mod error;
 mod export;
 mod logging;
 mod metrics;
+mod politica;
+#[cfg(test)]
+mod pruebas_red;
 mod research_tools;
+mod respaldo;
 mod scheduler_runtime;
 mod secrets;
 mod startup;
@@ -38,6 +42,8 @@ struct AppState {
     recovery_items_at_start: Vec<RecoveryItemView>,
     attachments_dir: std::path::PathBuf,
     data_dir: std::path::PathBuf,
+    /// Resultado de una restauración aplicada en este arranque, si la hubo.
+    restore_notice: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -52,6 +58,7 @@ struct BootstrapReport {
     recovered_attachments: usize,
     recovered_workflows: usize,
     recovery_items: Vec<RecoveryItemView>,
+    restore_notice: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -81,10 +88,16 @@ use comandos::*;
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
-            let data_dir = app
-                .path()
-                .app_local_data_dir()
-                .map_err(|error| AppError::DataDirectory(error.to_string()))?;
+            // `CHATYGPT_DATA_DIR` abre la aplicación sobre otro perfil de datos:
+            // sirve para probar una versión nueva con una copia de los datos
+            // reales sin migrarlos, o para diagnosticar una copia de seguridad.
+            let data_dir = match std::env::var_os("CHATYGPT_DATA_DIR") {
+                Some(custom) if !custom.is_empty() => std::path::PathBuf::from(custom),
+                _ => app
+                    .path()
+                    .app_local_data_dir()
+                    .map_err(|error| AppError::DataDirectory(error.to_string()))?,
+            };
             std::fs::create_dir_all(&data_dir)
                 .map_err(|error| AppError::DataDirectory(error.to_string()))?;
             // El registro se prepara antes que nada para que un fallo posterior
@@ -92,6 +105,9 @@ pub fn run() {
             let _ = logging::init(&data_dir);
             let boot = logging::new_correlation_id();
             let _ = startup::refresh_protected_token_if_enabled(&data_dir);
+            // Una restauración programada se aplica antes de abrir la base: con
+            // la base abierta, sus ficheros no pueden sustituirse con seguridad.
+            let restore_outcome = respaldo::apply_pending_restore(&data_dir);
             let database = Database::open(data_dir.join("chatygpt.db")).inspect_err(|error| {
                 logging::error(
                     "app.database_failed",
@@ -99,6 +115,28 @@ pub fn run() {
                     &[("error_kind", logging::error_kind(error))],
                 );
             })?;
+            let restore_notice = match restore_outcome {
+                respaldo::RestoreOutcome::Nothing => None,
+                respaldo::RestoreOutcome::Restored { previous_data } => {
+                    let revoked = database.revoke_all_authorized_folders().unwrap_or(0);
+                    logging::info(
+                        "backup.restored",
+                        Some(&boot),
+                        &[("revoked_folders", logging::count(revoked as i64))],
+                    );
+                    Some(format!(
+                        "Se restauró la copia de seguridad. Los datos anteriores se apartaron en {}. \
+                         Vuelve a autorizar las carpetas y, si hace falta, las credenciales.",
+                        previous_data.display()
+                    ))
+                }
+                respaldo::RestoreOutcome::Rejected(reason) => {
+                    logging::warn("backup.restore_rejected", Some(&boot), &[]);
+                    Some(format!(
+                        "No se restauró la copia de seguridad y tus datos siguen como estaban: {reason}"
+                    ))
+                }
+            };
             let broker = BrokerClient::bootstrap(&data_dir)?;
             // El área de Athena se prepara aunque el servicio no esté levantado:
             // su estado se consulta y se enseña, no bloquea el arranque.
@@ -146,6 +184,7 @@ pub fn run() {
                 recovery_items_at_start,
                 attachments_dir,
                 data_dir,
+                restore_notice,
             });
             Ok(())
         })
@@ -172,6 +211,10 @@ pub fn run() {
             list_athena_tracked_runs,
             fetch_athena_artifact,
             bootstrap_app,
+            pick_backup_folder,
+            create_backup,
+            inspect_backup,
+            schedule_backup_restore,
             diagnose_broker,
             get_windows_startup_status,
             set_windows_startup_enabled,
@@ -194,6 +237,8 @@ pub fn run() {
             clear_performance_samples,
             list_task_artifacts,
             save_task_artifact,
+            save_task_artifact_as,
+            reveal_task_artifact,
             list_scheduled_tasks,
             list_scheduled_runs,
             list_scheduled_task_templates,
@@ -204,18 +249,24 @@ pub fn run() {
             set_scheduled_task_enabled,
             update_scheduled_task,
             delete_scheduled_task,
+            purge_scheduled_task_history,
             retry_scheduled_run,
             run_scheduled_task_now,
             cancel_scheduled_run,
             create_conversation,
             list_conversations,
             search_conversations,
+            get_archive_overview,
+            restore_conversation,
+            restore_project,
+            purge_conversation,
             rename_conversation,
             move_conversation,
             set_conversation_custom_gpt,
             archive_conversation,
             delete_conversation,
             get_conversation,
+            get_conversation_messages_before,
             update_conversation_execution_preferences,
             get_task_context,
             reveal_context_source,
@@ -224,6 +275,7 @@ pub fn run() {
             update_conversation_summary,
             approve_conversation_summary,
             send_chat_turn,
+            get_effective_execution_policy,
             resolve_tool_calls,
             create_project,
             list_projects,

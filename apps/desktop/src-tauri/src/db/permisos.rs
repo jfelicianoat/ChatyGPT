@@ -7,19 +7,41 @@
 use super::*;
 
 impl Database {
-    /// Autoriza una carpeta para escritura tras una elección humana explícita.
+    /// Concede permisos sobre una carpeta combinándolos con los vigentes.
     ///
-    /// Reautorizar una carpeta previamente revocada la reactiva y actualiza su
-    /// motivo, sin duplicar la fila.
-    pub fn authorize_folder(
+    /// Antes cada concesión reescribía la fila a su manera: exportar a una
+    /// carpeta que un GPT podía leer le quitaba la lectura, y volver a
+    /// autorizar una carpeta revocada resucitaba permisos que la persona ya
+    /// había retirado. La regla ahora es única: lo vigente se conserva y se
+    /// amplía; lo revocado no vuelve, se empieza de cero.
+    fn grant_folder_permissions(
         &self,
         folder: &Path,
         display_name: &str,
-        purpose: &str,
+        grants: &[(&str, Value)],
+        audit_event: &str,
+        audit_payload: Value,
     ) -> Result<(), AppError> {
         let key = folder_key(folder);
-        let connection = self.connect()?;
-        connection.execute(
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let existing: Option<(String, bool)> = transaction
+            .query_row(
+                "SELECT permissions_json, revoked_at IS NULL
+                 FROM authorized_folders WHERE canonical_path = ?1",
+                params![key],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let mut permissions = existing
+            .filter(|(_, active)| *active)
+            .and_then(|(json, _)| serde_json::from_str::<Value>(&json).ok())
+            .and_then(|value| value.as_object().cloned())
+            .unwrap_or_default();
+        for (name, value) in grants {
+            permissions.insert((*name).to_owned(), value.clone());
+        }
+        transaction.execute(
             "INSERT INTO authorized_folders(
                 id, canonical_path, display_name, permissions_json
              ) VALUES (?1, ?2, ?3, ?4)
@@ -32,15 +54,38 @@ impl Database {
                 format!("folder_{}", Uuid::new_v4().simple()),
                 key,
                 display_name,
-                serde_json::json!({"write": true, "purpose": purpose}).to_string()
+                Value::Object(permissions).to_string()
             ],
         )?;
-        connection.execute(
+        transaction.execute(
             "INSERT INTO audit_events(event_type, actor, payload_json)
-             VALUES ('authorized_folder.granted', 'user', ?1)",
-            params![serde_json::json!({"purpose": purpose}).to_string()],
+             VALUES (?1, 'user', ?2)",
+            params![audit_event, audit_payload.to_string()],
         )?;
+        transaction.commit()?;
         Ok(())
+    }
+
+    /// Autoriza una carpeta para escritura tras una elección humana explícita.
+    ///
+    /// Reautorizar una carpeta previamente revocada la reactiva y actualiza su
+    /// motivo, sin duplicar la fila ni recuperar permisos ya retirados.
+    pub fn authorize_folder(
+        &self,
+        folder: &Path,
+        display_name: &str,
+        purpose: &str,
+    ) -> Result<(), AppError> {
+        self.grant_folder_permissions(
+            folder,
+            display_name,
+            &[
+                ("write", Value::Bool(true)),
+                ("purpose", Value::String(purpose.to_owned())),
+            ],
+            "authorized_folder.granted",
+            serde_json::json!({"purpose": purpose}),
+        )
     }
 
     /// Autoriza una carpeta para que un GPT personal pueda solicitar lecturas.
@@ -50,44 +95,16 @@ impl Database {
         folder: &Path,
         display_name: &str,
     ) -> Result<(), AppError> {
-        let key = folder_key(folder);
-        let connection = self.connect()?;
-        let existing: Option<String> = connection
-            .query_row(
-                "SELECT permissions_json FROM authorized_folders WHERE canonical_path = ?1",
-                params![key],
-                |row| row.get(0),
-            )
-            .optional()?;
-        let mut permissions = existing
-            .as_deref()
-            .and_then(|value| serde_json::from_str::<Value>(value).ok())
-            .and_then(|value| value.as_object().cloned())
-            .unwrap_or_default();
-        permissions.insert("read".to_owned(), Value::Bool(true));
-        permissions.insert("purpose".to_owned(), Value::String("gpt_read".to_owned()));
-        connection.execute(
-            "INSERT INTO authorized_folders(
-                id, canonical_path, display_name, permissions_json
-             ) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(canonical_path) DO UPDATE SET
-                display_name = excluded.display_name,
-                permissions_json = excluded.permissions_json,
-                granted_at = datetime('now'),
-                revoked_at = NULL",
-            params![
-                format!("folder_{}", Uuid::new_v4().simple()),
-                key,
-                display_name,
-                Value::Object(permissions).to_string()
+        self.grant_folder_permissions(
+            folder,
+            display_name,
+            &[
+                ("read", Value::Bool(true)),
+                ("purpose", Value::String("gpt_read".to_owned())),
             ],
-        )?;
-        connection.execute(
-            "INSERT INTO audit_events(event_type, actor, payload_json)
-             VALUES ('authorized_folder.read_granted', 'user', '{}')",
-            [],
-        )?;
-        Ok(())
+            "authorized_folder.read_granted",
+            serde_json::json!({}),
+        )
     }
 
     /// Autoriza modificaciones confirmadas dentro de una carpeta. Modificar
@@ -97,45 +114,17 @@ impl Database {
         folder: &Path,
         display_name: &str,
     ) -> Result<(), AppError> {
-        let key = folder_key(folder);
-        let connection = self.connect()?;
-        let existing: Option<String> = connection
-            .query_row(
-                "SELECT permissions_json FROM authorized_folders WHERE canonical_path = ?1",
-                params![key],
-                |row| row.get(0),
-            )
-            .optional()?;
-        let mut permissions = existing
-            .as_deref()
-            .and_then(|value| serde_json::from_str::<Value>(value).ok())
-            .and_then(|value| value.as_object().cloned())
-            .unwrap_or_default();
-        permissions.insert("read".to_owned(), Value::Bool(true));
-        permissions.insert("modify".to_owned(), Value::Bool(true));
-        permissions.insert("purpose".to_owned(), Value::String("gpt_modify".to_owned()));
-        connection.execute(
-            "INSERT INTO authorized_folders(
-                id, canonical_path, display_name, permissions_json
-             ) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(canonical_path) DO UPDATE SET
-                display_name = excluded.display_name,
-                permissions_json = excluded.permissions_json,
-                granted_at = datetime('now'),
-                revoked_at = NULL",
-            params![
-                format!("folder_{}", Uuid::new_v4().simple()),
-                key,
-                display_name,
-                Value::Object(permissions).to_string()
+        self.grant_folder_permissions(
+            folder,
+            display_name,
+            &[
+                ("read", Value::Bool(true)),
+                ("modify", Value::Bool(true)),
+                ("purpose", Value::String("gpt_modify".to_owned())),
             ],
-        )?;
-        connection.execute(
-            "INSERT INTO audit_events(event_type, actor, payload_json)
-             VALUES ('authorized_folder.modify_granted', 'user', '{}')",
-            [],
-        )?;
-        Ok(())
+            "authorized_folder.modify_granted",
+            serde_json::json!({}),
+        )
     }
 
     /// Autoriza una carpeta como límite de trabajo de Athena sin retirar los
@@ -145,47 +134,16 @@ impl Database {
         folder: &Path,
         display_name: &str,
     ) -> Result<(), AppError> {
-        let key = folder_key(folder);
-        let connection = self.connect()?;
-        let existing: Option<String> = connection
-            .query_row(
-                "SELECT permissions_json FROM authorized_folders WHERE canonical_path = ?1",
-                params![key],
-                |row| row.get(0),
-            )
-            .optional()?;
-        let mut permissions = existing
-            .as_deref()
-            .and_then(|value| serde_json::from_str::<Value>(value).ok())
-            .and_then(|value| value.as_object().cloned())
-            .unwrap_or_default();
-        permissions.insert("athena".to_owned(), Value::Bool(true));
-        permissions.insert(
-            "purpose".to_owned(),
-            Value::String("athena_workspace".to_owned()),
-        );
-        connection.execute(
-            "INSERT INTO authorized_folders(
-                id, canonical_path, display_name, permissions_json
-             ) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(canonical_path) DO UPDATE SET
-                display_name = excluded.display_name,
-                permissions_json = excluded.permissions_json,
-                granted_at = datetime('now'),
-                revoked_at = NULL",
-            params![
-                format!("folder_{}", Uuid::new_v4().simple()),
-                key,
-                display_name,
-                Value::Object(permissions).to_string()
+        self.grant_folder_permissions(
+            folder,
+            display_name,
+            &[
+                ("athena", Value::Bool(true)),
+                ("purpose", Value::String("athena_workspace".to_owned())),
             ],
-        )?;
-        connection.execute(
-            "INSERT INTO audit_events(event_type, actor, payload_json)
-             VALUES ('authorized_folder.athena_granted', 'user', '{}')",
-            [],
-        )?;
-        Ok(())
+            "authorized_folder.athena_granted",
+            serde_json::json!({}),
+        )
     }
 
     /// Resuelve una concesión de lectura por su identificador opaco.
@@ -448,8 +406,14 @@ impl Database {
     pub fn write_is_authorized(&self, destination: &Path) -> Result<bool, AppError> {
         let target = folder_key(destination);
         let connection = self.connect()?;
-        let mut statement = connection
-            .prepare("SELECT canonical_path FROM authorized_folders WHERE revoked_at IS NULL")?;
+        // Solo cuentan las concesiones que incluyen escritura: una carpeta que
+        // un GPT puede leer no por eso admite que se escriba en ella.
+        let mut statement = connection.prepare(
+            "SELECT canonical_path FROM authorized_folders
+             WHERE revoked_at IS NULL
+               AND (json_extract(permissions_json, '$.write') = 1
+                    OR json_extract(permissions_json, '$.modify') = 1)",
+        )?;
         let authorized = statement
             .query_map([], |row| row.get::<_, String>(0))?
             .collect::<Result<Vec<_>, _>>()?;

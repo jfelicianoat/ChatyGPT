@@ -558,7 +558,11 @@ export function TarjetaGpts({ gpts, projects, openDialog }: Props) {
           />
           <span>
             Usar un perfil propio
-            <small>Si está desactivado, este GPT respeta las opciones elegidas en cada chat.</small>
+            <small>
+              Si está desactivado, este GPT usa las opciones de cada chat. Si lo activas, fija la
+              forma de responder y la prioridad; la privacidad y el gasto solo pueden endurecer lo
+              que elija el chat, nunca ampliarlo.
+            </small>
           </span>
         </label>
         {customGptOwnExecution && (
@@ -573,7 +577,7 @@ export function TarjetaGpts({ gpts, projects, openDialog }: Props) {
                 <option value="public">Públicos · local o nube</option>
                 <option value="internal">Uso personal · local o nube</option>
                 <option value="confidential">Confidenciales · solo local</option>
-                <option value="local_only">Siempre en este equipo</option>
+                <option value="local_only">Solo modelos locales · máxima restricción</option>
               </select>
             </label>
             <label>

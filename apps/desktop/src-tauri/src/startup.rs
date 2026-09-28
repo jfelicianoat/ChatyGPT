@@ -217,11 +217,19 @@ $plain = [Security.Cryptography.ProtectedData]::Unprotect($protected, $null, [Se
 $token = [Text.Encoding]::UTF8.GetString($plain)
 [Array]::Clear($plain, 0, $plain.Length)
 $headers = @{{ 'x-admin-token' = $token }}
-while ($true) {{
+# Misma comprobación que el lanzador y la aplicación: /api/v1/auth/check es el
+# único endpoint que prueba la credencial. La espera está acotada: si el Broker
+# no aparece en unos minutos, ChatyGPT se abre igual —los datos son locales— y
+# la propia aplicación explica que está sin conexión.
+for ($attempt = 0; $attempt -lt 20; $attempt++) {{
     try {{
-        $null = Invoke-RestMethod -UseBasicParsing -Uri ($brokerUrl + '/api/v1/capabilities') -Headers $headers -TimeoutSec 10
+        $null = Invoke-RestMethod -UseBasicParsing -Uri ($brokerUrl + '/api/v1/auth/check') -Headers $headers -TimeoutSec 10
         break
     }} catch {{
+        $status = $null
+        if ($_.Exception.Response) {{ $status = $_.Exception.Response.StatusCode.value__ }}
+        # Un rechazo no mejora esperando: se abre la app para que pida el token.
+        if ($status -eq 401 -or $status -eq 403) {{ break }}
         Start-Sleep -Seconds 15
     }}
 }}
@@ -280,7 +288,12 @@ mod tests {
             Path::new(r"C:\Users\me\broker-token.dpapi"),
             "http://192.168.1.52:8765",
         );
-        assert!(script.contains("/api/v1/capabilities"));
+        // H20: la misma comprobación de credencial que el lanzador y la app,
+        // y una espera acotada que abre ChatyGPT aunque el Broker no llegue.
+        assert!(script.contains("/api/v1/auth/check"));
+        assert!(!script.contains("/api/v1/capabilities"));
+        assert!(script.contains("$attempt -lt 20"));
+        assert!(!script.contains("while ($true)"));
         assert!(script.contains("ProtectedData]::Unprotect"));
         // Sin cargar System.Security, PowerShell 5.1 no conoce ProtectedData.
         assert!(script.contains("Add-Type -AssemblyName System.Security"));

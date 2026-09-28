@@ -10,4 +10,5 @@ export type WorkspaceDestination =
   | "workflows"
   | "athena"
   | "automations"
-  | "settings";
+  | "settings"
+  | "archive";

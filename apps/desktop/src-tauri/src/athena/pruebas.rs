@@ -1069,3 +1069,16 @@ fn olvidar_un_recuerdo_que_ya_no_esta_se_distingue_de_un_fallo() {
 
     assert!(matches!(resultado, Err(AppError::NotFound(_))));
 }
+
+/// H18: un resultado externalizado enorme se corta en el presupuesto local en
+/// vez de cargarse entero en memoria.
+#[test]
+fn un_resultado_sin_fin_se_corta_en_el_presupuesto_local() {
+    let (url, escritos) = crate::pruebas_red::endless_chunked_server(64);
+    let cliente = AthenaClient::for_base_url(&url).expect("cliente");
+    let error = en_runtime(cliente.descargar_artefacto("enorme")).expect_err("debe cortarse");
+    assert!(error.to_string().contains("supera el límite"), "{error}");
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let enviados = escritos.load(std::sync::atomic::Ordering::SeqCst);
+    assert!(enviados < 40, "el servidor escribió {enviados} MB");
+}

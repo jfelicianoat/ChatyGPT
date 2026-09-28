@@ -750,3 +750,141 @@ fn approval_pauses_durably_and_rejection_does_not_stop_an_independent_branch() {
     drop(database);
     let _ = std::fs::remove_file(path);
 }
+
+/// H02 (auditoría 28-sep-2026): lo que un nodo produjo con conocimiento
+/// sensible no puede salir a cloud en el nodo siguiente, aunque ese nodo no
+/// use ningún GPT, y tampoco después de reiniciar a mitad de flujo.
+#[test]
+fn a_sensitive_output_keeps_every_later_node_local_only_across_a_restart() {
+    let simulated = SimulatedBroker::start();
+    simulated.always(
+        "POST /api/v1/tasks",
+        ScriptedResponse::accepted(accepted_task("classified-task")),
+    );
+    simulated.always(
+        "GET /api/v1/tasks/{id}",
+        ScriptedResponse::ok(task_state(
+            "classified-task",
+            "completed",
+            Some(serde_json::json!({"assistant_content": "Resumen del dato protegido"})),
+        )),
+    );
+    let path = std::env::temp_dir().join(format!(
+        "chatygpt-workflow-classified-{}.sqlite",
+        Uuid::new_v4().simple()
+    ));
+    let database = Database::open(&path).expect("database should open");
+    let client = BrokerClient::for_base_url(simulated.base_url()).expect("client should open");
+    let gpt = database
+        .create_custom_gpt_with_starters(
+            "Custodio",
+            None,
+            "Resume sin revelar nombres.",
+            &[],
+            &CustomGptToolPermissions::default(),
+            None,
+            None,
+            None,
+        )
+        .expect("custom GPT should be created");
+    let memory = database
+        .create_custom_gpt_memory_item(&gpt.id, "Diagnóstico médico privado", "fact", "sensitive")
+        .expect("sensitive knowledge should be created");
+    let mut workflow = database
+        .create_workflow("Flujo con dato protegido", None)
+        .expect("workflow should be created");
+    let input_id = workflow.definition.nodes[0].id.clone();
+    let result_id = workflow.definition.nodes[1].id.clone();
+    let mut custodian = node("custodian", "custom_gpt");
+    custodian.custom_gpt_id = Some(gpt.id.clone());
+    custodian.custom_gpt_memory_ids = memory.1.iter().map(|item| item.id.clone()).collect();
+    workflow.definition.nodes.push(custodian);
+    workflow.definition.nodes.push(node("gate", "approval"));
+    workflow.definition.nodes.push(node("rewrite", "prompt"));
+    let edge = |id: &str, source: &str, target: &str| WorkflowEdge {
+        id: id.to_owned(),
+        source: source.to_owned(),
+        target: target.to_owned(),
+    };
+    workflow.definition.edges = vec![
+        edge("e1", &input_id, "custodian"),
+        edge("e2", "custodian", "gate"),
+        edge("e3", "gate", "rewrite"),
+        edge("e4", "rewrite", &result_id),
+    ];
+    database
+        .update_workflow(
+            &workflow.summary.id,
+            &workflow.summary.name,
+            None,
+            None,
+            &workflow.definition,
+        )
+        .expect("workflow should save");
+    database
+        .publish_workflow(&workflow.summary.id)
+        .expect("workflow should publish");
+
+    let run = start(
+        database.clone(),
+        client.clone(),
+        &workflow.summary.id,
+        "Prepara un informe",
+    )
+    .expect("workflow should start");
+    let wait_for = |status: &str| {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let current = database.workflow_run(&run.id).expect("run should load");
+            if current.status == status {
+                return current;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "el flujo debía llegar a {status}"
+            );
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    };
+    let paused = wait_for("waiting_approval");
+    let custodian_run = paused
+        .node_runs
+        .iter()
+        .find(|item| item.node_id == "custodian")
+        .expect("custodian node run");
+    assert_eq!(
+        custodian_run.data_classification.as_deref(),
+        Some("local_only")
+    );
+
+    // Reinicio: otra instancia de la base retoma el flujo tras la aprobación.
+    let reopened = Database::open(&path).expect("database should reopen");
+    decide_approval(reopened.clone(), client, &run.id, "gate", true)
+        .expect("approval should resume the run");
+    let finished = wait_for("completed");
+
+    let requests = simulated.requests_to("POST", "/api/v1/tasks");
+    assert_eq!(requests.len(), 2);
+    for request in &requests {
+        assert_eq!(
+            request.body["risk"]["data_classification"], "local_only",
+            "nodo {}",
+            request.body["content"]["metadata"]["workflow_node_id"]
+        );
+    }
+    for node_id in ["gate", "rewrite", result_id.as_str()] {
+        let node_run = finished
+            .node_runs
+            .iter()
+            .find(|item| item.node_id == node_id)
+            .expect("node run");
+        assert_eq!(
+            node_run.data_classification.as_deref(),
+            Some("local_only"),
+            "nodo {node_id}"
+        );
+    }
+    drop(reopened);
+    drop(database);
+    let _ = std::fs::remove_file(path);
+}

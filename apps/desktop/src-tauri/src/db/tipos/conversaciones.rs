@@ -84,6 +84,18 @@ pub struct ConversationView {
     pub execution_preferences: ConversationExecutionPreferences,
     pub messages: Vec<ConversationMessage>,
     pub research_runs: Vec<ResearchRunView>,
+    /// Mensajes de la conversación, estén o no en esta página (H17).
+    pub total_message_count: i64,
+    /// Quedan mensajes anteriores sin cargar.
+    pub has_earlier_messages: bool,
+}
+
+/// Página de mensajes anteriores de una conversación (H17).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationMessagePage {
+    pub messages: Vec<ConversationMessage>,
+    pub has_earlier_messages: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -273,6 +285,9 @@ pub struct WorkflowNodeRunView {
     pub broker_task_id: Option<String>,
     pub error: Option<Value>,
     pub updated_at: String,
+    /// Clasificación con la que se produjo la salida (H02). `None` en nodos
+    /// que aún no han terminado o en ejecuciones anteriores a la 0.3.0.
+    pub data_classification: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -1,9 +1,11 @@
 # Estado vigente de ChatyGPT
 
-Última revisión contra el código: **13 de septiembre de 2026**.
+Última revisión contra el código: **28 de septiembre de 2026**.
 
-Versión de producto: **0.2.0**. Esquema SQLite: **24**. El cierre de la auditoría
-de esta fecha está registrado en [REMEDIATION_2026-09-13.md](REMEDIATION_2026-09-13.md).
+Versión de producto: **0.3.0**. Esquema SQLite: **25**. La resolución de la auditoría
+del 28 de septiembre está en
+[AUDIT_2026-09-28/RESOLUCION.md](AUDIT_2026-09-28/RESOLUCION.md); la anterior, en
+[REMEDIATION_2026-09-13.md](REMEDIATION_2026-09-13.md).
 
 Este documento es la referencia breve de estado. `README.md` explica el producto,
 `ARCHITECTURE.md` conserva el diseño y las decisiones, y los documentos `PHASE_*` son
@@ -63,6 +65,19 @@ nativas.
 - captura de pantalla y webcam iniciada por la persona;
 - sandbox de Broker por turno y herramientas locales siempre confirmadas;
 - área Athena con historial, estado, permisos, revisión, modelo por run y reconexión.
+
+## Garantías añadidas en 0.3.0
+
+- Una única política efectiva (privacidad más estricta, gasto menor) visible antes de
+  enviar; la clasificación viaja entre nodos de un flujo.
+- Estados de tarea monotónicos, cancelación durable sin identidad remota y cierre visible
+  de resultados que no pueden guardarse.
+- Identidad estable para turnos programados y reenvíos; sin solapamientos de ejecuciones.
+- Borradores por conversación y del editor de flujos que no se pierden ni se mezclan.
+- Archivo y papelera recuperables, copias de seguridad verificadas y restauración al
+  reiniciar, copias locales de ficheros generados.
+- Conexiones de investigación clavadas a la IP validada y respuestas con límite de tamaño.
+- `CHATYGPT_DATA_DIR` abre la aplicación sobre otro perfil de datos (pruebas y copias).
 
 ## Límites que deben seguir declarándose
 

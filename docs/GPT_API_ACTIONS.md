@@ -4,7 +4,7 @@ Una acción API permite enseñar a un GPT personal a consultar un destino públi
 
 ## Dónde encontrarla
 
-1. Abre **Inicio → GPTs personales**.
+1. Abre el área **GPTs** en la barra lateral.
 2. Crea o edita un GPT.
 3. En **Permisos de herramientas**, activa **Consultar APIs externas**.
 4. En **Acciones API configuradas**, pulsa **Añadir acción API**.

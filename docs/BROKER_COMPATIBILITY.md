@@ -21,7 +21,7 @@ autoridad final.
 | Resultado | Lee `assistant_content` y mantiene `result_markdown` para tareas anteriores |
 | Identidad 2.9 | Lee `served_by`, `models_used` y `fallback_used` si existen |
 | Ingesta | Negocia formatos y límites antes de seleccionar o subir archivos |
-| Sandbox | Solo se habilita por turno tras comprobar capacidad y confirmación |
+| Sandbox | Solo se habilita por turno y con confirmación. Si `/capabilities` no responde, el turno sale marcado como «capacidad no comprobada» (`unverified_capabilities` en los metadatos) y la interfaz lo avisa |
 | Dependencias | Usa grupos estables para lotes de embeddings cuando el Broker los anuncia |
 | Credencial | Envía `x-admin-token` desde Rust; una rotación es recuperable |
 | Exclusividad 2.10 | `auxiliary_invocations: false` en conversaciones `confidential` o `local_only` (§8.4) |

@@ -11,6 +11,7 @@ impl Database {
         self.create_workflow_run_for_version(workflow_id, None, input_text)
     }
 
+    #[cfg(test)]
     pub fn create_workflow_run_from_version(
         &self,
         workflow_id: &str,
@@ -18,6 +19,38 @@ impl Database {
         input_text: &str,
     ) -> Result<WorkflowExecutionRecord, AppError> {
         self.create_workflow_run_for_version(workflow_id, Some(workflow_version_id), input_text)
+    }
+
+    /// Crea la ejecución de una operación con identidad, o devuelve la que ya
+    /// existe. El booleano dice si es nueva y, por tanto, hay que lanzarla.
+    pub fn create_workflow_run_for_operation(
+        &self,
+        workflow_id: &str,
+        workflow_version_id: &str,
+        input_text: &str,
+        operation_key: &str,
+    ) -> Result<(WorkflowExecutionRecord, bool), AppError> {
+        let existing: Option<String> = self
+            .connect()?
+            .query_row(
+                "SELECT id FROM workflow_runs WHERE operation_key = ?1",
+                params![operation_key],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(run_id) = existing {
+            return Ok((self.workflow_execution_record(&run_id)?, false));
+        }
+        let record = self.create_workflow_run_for_version(
+            workflow_id,
+            Some(workflow_version_id),
+            input_text,
+        )?;
+        self.connect()?.execute(
+            "UPDATE workflow_runs SET operation_key = ?2 WHERE id = ?1",
+            params![record.run_id, operation_key],
+        )?;
+        Ok((record, true))
     }
 
     pub(super) fn create_workflow_run_for_version(
@@ -222,7 +255,7 @@ impl Database {
             .ok_or_else(|| AppError::NotFound(format!("ejecución de flujo {run_id}")))?;
         let mut statement = connection.prepare(
             "SELECT id, node_id, node_kind, node_label, status, input_text, output_text,
-                    broker_task_id, error_json, updated_at
+                    broker_task_id, error_json, updated_at, data_classification
              FROM workflow_node_runs WHERE run_id = ?1 ORDER BY rowid",
         )?;
         run.node_runs = statement
@@ -239,6 +272,7 @@ impl Database {
                     broker_task_id: row.get(7)?,
                     error: error_json.and_then(|value| serde_json::from_str(&value).ok()),
                     updated_at: row.get(9)?,
+                    data_classification: row.get(10)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -321,6 +355,33 @@ impl Database {
                 error.map(Value::to_string),
                 terminal
             ],
+        )?;
+        Ok(())
+    }
+
+    /// Fija la clasificación de la salida de un nodo. Solo puede endurecerse:
+    /// una segunda escritura más laxa no rebaja la que ya consta.
+    pub fn set_workflow_node_classification(
+        &self,
+        run_id: &str,
+        node_id: &str,
+        classification: &str,
+    ) -> Result<(), AppError> {
+        self.connect()?.execute(
+            "UPDATE workflow_node_runs
+             SET data_classification = CASE
+                    WHEN data_classification IS NULL THEN ?3
+                    WHEN (CASE data_classification
+                            WHEN 'public' THEN 0 WHEN 'internal' THEN 1
+                            WHEN 'confidential' THEN 2 ELSE 3 END)
+                         >= (CASE ?3
+                            WHEN 'public' THEN 0 WHEN 'internal' THEN 1
+                            WHEN 'confidential' THEN 2 ELSE 3 END)
+                    THEN data_classification
+                    ELSE ?3
+                 END
+             WHERE run_id = ?1 AND node_id = ?2",
+            params![run_id, node_id, classification],
         )?;
         Ok(())
     }

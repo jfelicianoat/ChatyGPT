@@ -138,6 +138,18 @@ pub(crate) fn delete_scheduled_task(
         .delete_scheduled_task(&scheduled_task_id, confirmed)
 }
 
+/// Borra el historial de una programación ya retirada (H15).
+#[tauri::command]
+pub(crate) fn purge_scheduled_task_history(
+    scheduled_task_id: String,
+    confirmed: bool,
+    state: State<'_, AppState>,
+) -> Result<(), AppError> {
+    state
+        .database
+        .purge_scheduled_task_history(&scheduled_task_id, confirmed)
+}
+
 #[tauri::command]
 pub(crate) async fn retry_scheduled_run(
     scheduled_run_id: String,

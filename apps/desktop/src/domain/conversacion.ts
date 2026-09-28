@@ -213,6 +213,74 @@ export type ConversationSummary = {
   updatedAt: string;
 };
 
+/** Resultado de búsqueda: la conversación y dónde coincidió (H22). */
+export type ConversationSearchHit = ConversationSummary & {
+  archived?: boolean;
+  matchedMessageId?: string | null;
+  snippet?: string | null;
+};
+
+/** Conversación archivada o en la papelera (H14). */
+export type ArchivedConversation = {
+  id: string;
+  title: string;
+  projectName?: string | null;
+  messageCount: number;
+  archivedAt?: string | null;
+  deletedAt?: string | null;
+};
+
+export type ArchivedProject = {
+  id: string;
+  name: string;
+  archivedAt: string;
+  conversationCount: number;
+};
+
+export type ArchiveOverview = {
+  conversations: ArchivedConversation[];
+  trash: ArchivedConversation[];
+  projects: ArchivedProject[];
+};
+
+/** Adónde viajan de verdad prompts y resultados (H04). */
+export type BrokerDestination = {
+  host: string;
+  localMachine: boolean;
+  encrypted: boolean;
+  warning?: string | null;
+};
+
+/** Política que se aplicará al próximo mensaje de una conversación (H01). */
+export type EffectiveExecutionPolicy = {
+  dataClassification: "public" | "internal" | "confidential" | "local_only";
+  maxCostUsd: number;
+  strategy: string;
+  preset: string;
+  priority: number;
+  longContext: string;
+  sources: {
+    dataClassification: "chat" | "gpt" | "context" | "memory";
+    maxCostUsd: "chat" | "gpt";
+    routing: "chat" | "gpt";
+  };
+  customGptName?: string | null;
+  destination: BrokerDestination;
+  notes: string[];
+};
+
+/** Copia de seguridad verificada (H16). */
+export type BackupReport = {
+  folder: string;
+  createdAt: string;
+  appVersion: string;
+  schemaVersion: number;
+  conversationCount: number;
+  attachmentCount: number;
+  totalBytes: number;
+  notIncluded: string[];
+};
+
 export type ConversationSummaryRevision = {
   id: string;
   status: "generating" | "draft" | "approved" | "failed" | "cancelled" | "superseded";

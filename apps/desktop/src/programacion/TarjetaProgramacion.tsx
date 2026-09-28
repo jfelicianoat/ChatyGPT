@@ -52,6 +52,7 @@ export function TarjetaProgramacion({
     markSchedulerNotificationRead,
     reloadWindowsStartupStatus,
     removeSchedule,
+    purgeScheduleHistory,
     removeScheduledTaskTemplate,
     retryScheduledRun,
     runScheduledTaskNow,
@@ -108,7 +109,7 @@ export function TarjetaProgramacion({
   <section className="scheduler-card">
     <div className="panel-heading">
       <div>
-        <span className="kicker">Fase 4 · Automatización local</span>
+        <span className="kicker">Automatización local</span>
         <h3>Tareas programadas</h3>
       </div>
       <div className="scheduler-heading-actions">
@@ -656,7 +657,7 @@ export function TarjetaProgramacion({
           {visibleScheduledTasks.map((task) => (
             <article
               key={task.id}
-              className={`scheduler-item ${task.enabled ? "enabled" : ""}`}
+              className={`scheduler-item ${task.enabled ? "enabled" : ""}${task.retiredAt ? " retired" : ""}`}
             >
               <div className="scheduler-item-heading">
                 <div>
@@ -664,7 +665,9 @@ export function TarjetaProgramacion({
                   <span>{task.targetKind === "workflow" ? `Flujo · ${task.workflowName} · versión ${task.workflowVersionNo}` : task.conversationTitle}</span>
                 </div>
                 <span className={`badge ${task.enabled ? "success" : ""}`}>
-                  {task.enabled
+                  {task.retiredAt
+                    ? "Retirada · conserva su historial"
+                    : task.enabled
                     ? "Activa"
                     : task.runs.length > 0
                     ? scheduledRunLabel(task.runs[0].status)
@@ -927,6 +930,16 @@ export function TarjetaProgramacion({
                 ) : (
                   <button className="secondary" onClick={() => task.conversationId && openConversation(task.conversationId)}>Abrir conversación</button>
                 )}
+                {task.retiredAt ? (
+                  <button
+                    className="danger-link"
+                    onClick={() => void purgeScheduleHistory(task)}
+                    disabled={scheduleBusyId !== null}
+                  >
+                    Borrar historial
+                  </button>
+                ) : (
+                <>
                 {(task.runs.length === 0 ||
                   task.scheduleExpression !== "once") && (
                   <button
@@ -967,8 +980,10 @@ export function TarjetaProgramacion({
                     )
                   }
                 >
-                  Eliminar
+                  Retirar
                 </button>
+                </>
+                )}
               </div>
             </article>
           ))}

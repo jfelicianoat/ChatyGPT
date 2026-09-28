@@ -145,6 +145,8 @@ pub fn recover_at_start(database: Database, broker: BrokerClient) -> Result<usiz
             .is_some_and(|results| !results.is_empty());
         if record.remote_task_id.is_some() && has_prepared_results {
             spawn_tool_resume(database.clone(), broker.clone(), record.id);
+        } else if is_index_task(&record) {
+            spawn_bounded_index_task(database.clone(), broker.clone(), record);
         } else {
             spawn_submission_and_poll(database.clone(), broker.clone(), record);
         }

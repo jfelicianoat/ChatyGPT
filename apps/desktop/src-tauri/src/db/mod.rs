@@ -57,9 +57,10 @@ const REMOTE_OPERATION_START_METRIC_MIGRATION: &str =
 const ATHENA_RUNS_MIGRATION: &str = include_str!("../../migrations/0023_athena_runs.sql");
 const SUMMARY_FRAGMENTS_MIGRATION: &str =
     include_str!("../../migrations/0024_summary_fragments.sql");
+const AUDIT_2026_09_28_MIGRATION: &str = include_str!("../../migrations/0025_audit_2026_09_28.sql");
 const RECOVER_NON_TERMINAL_TASKS: &str =
     include_str!("../../queries/recover_non_terminal_tasks.sql");
-pub const SCHEMA_VERSION: i64 = 24;
+pub const SCHEMA_VERSION: i64 = 25;
 
 #[derive(Clone)]
 pub struct Database {
@@ -70,6 +71,7 @@ mod adjuntos;
 mod adjuntos_estado;
 mod adjuntos_indice;
 mod apertura;
+mod artefactos;
 mod auditoria;
 mod contexto;
 mod conversaciones;
@@ -95,6 +97,7 @@ mod workflows;
 mod workflows_contexto;
 mod workflows_ejecucion;
 
+pub(crate) use artefactos::LocalArtifactCopy;
 pub(crate) use tipos::*;
 pub(crate) use utilidades::*;
 
