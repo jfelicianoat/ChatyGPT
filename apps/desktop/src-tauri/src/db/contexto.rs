@@ -181,6 +181,12 @@ impl Database {
             strategy,
             estimated_tokens,
             sources,
+            system1: connection.query_row(
+                "SELECT json_extract(request_json, '$.content.metadata.system1_context')
+                 FROM broker_tasks WHERE id = ?1",
+                params![task_id],
+                |row| row.get::<_, Option<String>>(0),
+            )?.and_then(|value| serde_json::from_str(&value).ok()),
         })
     }
 

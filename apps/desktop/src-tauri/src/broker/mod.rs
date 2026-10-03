@@ -1,4 +1,5 @@
 mod contracts;
+mod system1;
 #[cfg(test)]
 pub mod simulated;
 
@@ -85,6 +86,7 @@ async fn read_body_limited(
 
 #[derive(Clone)]
 pub struct BrokerClient {
+    pub(crate) context_filter: crate::system1::ContextFilterConfig,
     base_url: Url,
     http: Client,
     /// Token compartido y recargable: rotarlo no obliga a reiniciar la aplicación.
@@ -241,6 +243,7 @@ impl BrokerClient {
             http,
             admin_token: Arc::new(RwLock::new(admin_token)),
             capabilities: Arc::new(RwLock::new(None)),
+            context_filter: crate::system1::ContextFilterConfig::from_env(),
         })
     }
 
@@ -268,6 +271,7 @@ impl BrokerClient {
             http,
             admin_token: Arc::new(RwLock::new(None)),
             capabilities: Arc::new(RwLock::new(None)),
+            context_filter: crate::system1::ContextFilterConfig::default(),
         })
     }
 

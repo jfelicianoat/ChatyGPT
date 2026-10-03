@@ -112,6 +112,7 @@ pub struct ContextSnapshotView {
     pub strategy: String,
     pub estimated_tokens: i64,
     pub sources: Vec<ContextSourceView>,
+    pub system1: Option<Value>,
 }
 
 pub(crate) struct MemorySearchRecord {

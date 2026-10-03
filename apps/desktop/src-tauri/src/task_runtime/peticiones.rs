@@ -316,6 +316,48 @@ pub(super) fn chat_request_with_project_instruction(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Devuelve exactamente las fuentes que viajan en la petición y su traza.
+pub(super) async fn chat_request_with_system1(
+    broker: &BrokerClient,
+    conversation_id: &str,
+    idempotency_key: &str,
+    user_text: &str,
+    context: &[crate::db::ContextMessage],
+    attachments: &[AttachmentRecord],
+    document_chunks: &[SelectedAttachmentChunk],
+    memories: &[MemoryItemView],
+    project_instruction: Option<&ProjectInstructionContext>,
+    custom_gpt_context: Option<&CustomGptContext>,
+    inherited_data_classification: Option<&str>,
+    options: ChatExecutionOptions,
+) -> Result<(serde_json::Value, Vec<MemoryItemView>, Vec<SelectedAttachmentChunk>), AppError> {
+    let mut request = chat_request_with_project_instruction_and_classification(
+        conversation_id, idempotency_key, user_text, context, attachments,
+        document_chunks, memories, project_instruction, custom_gpt_context,
+        inherited_data_classification, options.clone(),
+    )?;
+    let mut selected_memories = memories.to_vec();
+    let mut selected_chunks = document_chunks.to_vec();
+    if let Some(trace) = crate::system1::filter_context(
+        broker, user_text, context, &request, &mut selected_memories, &mut selected_chunks,
+    ).await {
+        if trace.excluded > 0 {
+            // Clasificación antes del filtro: retirar una memoria sensible no
+            // puede rebajar la protección del turno.
+            let classification = request.pointer("/risk/data_classification").and_then(serde_json::Value::as_str);
+            let request_id = request.get("request_id").cloned();
+            request = chat_request_with_project_instruction_and_classification(
+                conversation_id, idempotency_key, user_text, context, attachments,
+                &selected_chunks, &selected_memories, project_instruction, custom_gpt_context,
+                classification, options,
+            )?;
+            if let Some(request_id) = request_id { request["request_id"] = request_id; }
+        }
+        crate::system1::attach_trace(&mut request, trace);
+    }
+    Ok((request, selected_memories, selected_chunks))
+}
+
 pub(super) fn chat_request_with_project_instruction_and_classification(
     conversation_id: &str,
     idempotency_key: &str,

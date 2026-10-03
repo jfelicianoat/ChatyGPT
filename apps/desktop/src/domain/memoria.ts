@@ -87,6 +87,15 @@ export type ContextSnapshotView = {
   strategy: string;
   estimatedTokens: number;
   sources: ContextSourceView[];
+  system1?: {
+    mode: "skipped" | "shadow" | "applied" | "fallback";
+    tokensBefore: number;
+    tokensAfter: number;
+    excluded: number;
+    proposedExcluded: number;
+    latencyMs: number;
+    fallback: boolean;
+  } | null;
 };
 
 export type LocalTaskSnapshot = {

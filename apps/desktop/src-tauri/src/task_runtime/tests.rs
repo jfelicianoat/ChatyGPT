@@ -1832,6 +1832,8 @@ fn sandbox_is_explicit_and_requires_broker_capability() {
     );
 
     let unavailable = BrokerCapabilities {
+        system1_judgments: false,
+        system1_semantic_routing: false,
         contract_version: "2.6".to_owned(),
         derived_data_boundary: true,
         work_lanes: vec!["inference".to_owned(), "ingestion".to_owned()],

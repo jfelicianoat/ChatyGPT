@@ -631,7 +631,8 @@ pub async fn start_chat_turn_with_identity(
     let idempotency_key = operation_key
         .map(str::to_owned)
         .unwrap_or_else(|| format!("chatygpt:turn:{}", Uuid::new_v4()));
-    let mut request = chat_request_with_project_instruction_and_classification(
+    let (mut request, memories, document_chunks) = chat_request_with_system1(
+        &broker,
         conversation_id,
         &idempotency_key,
         user_text,
@@ -647,7 +648,7 @@ pub async fn start_chat_turn_with_identity(
             sandbox_enabled,
             execution_preferences,
         },
-    )?;
+    ).await?;
     if let Some(plan) = research_plan.as_ref() {
         request = apply_deep_research_plan(request, plan)?;
     }
@@ -691,3 +692,6 @@ mod tests;
 
 #[cfg(test)]
 mod tests_auditoria;
+
+#[cfg(test)]
+mod tests_system1;

@@ -1496,7 +1496,9 @@ pub(super) fn advance_semantic_chat(
     };
     match task.remote_status.as_str() {
         "completed" => {
-            let result = (|| {
+            let embedding_task_id = embedding_task_id.to_owned();
+            tauri::async_runtime::spawn(async move {
+            let result = async {
                 let context_budget =
                     custom_gpt_context_budget(workflow.custom_gpt_context.as_ref());
                 let selected = if database.semantic_workflow_uses_memory(&workflow.id)? {
@@ -1532,7 +1534,8 @@ pub(super) fn advance_semantic_chat(
                 let idempotency_key = format!("chatygpt:semantic-chat:{}", workflow.id);
                 let inherited_data_classification =
                     workflow.execution_preferences.data_classification.clone();
-                let mut request = chat_request_with_project_instruction_and_classification(
+                let (mut request, memories, document_chunks) = chat_request_with_system1(
+                    &broker,
                     &workflow.conversation_id,
                     &idempotency_key,
                     &workflow.user_text,
@@ -1546,9 +1549,14 @@ pub(super) fn advance_semantic_chat(
                     ChatExecutionOptions {
                         tools_enabled: workflow.tools_enabled,
                         sandbox_enabled: workflow.sandbox_enabled,
-                        execution_preferences: workflow.execution_preferences,
+                        execution_preferences: workflow.execution_preferences.clone(),
                     },
-                )?;
+                ).await?;
+                // La instantánea solo menciona recuerdos enviados, incluido el
+                // recorte del presupuesto que precede a System 1.
+                let selected = selected.into_iter().filter(|item| {
+                    memories.iter().any(|memory| memory.id == item.memory.id)
+                }).collect::<Vec<_>>();
                 // La investigación se aplica sobre el contexto ya recuperado:
                 // los recuerdos y fragmentos seleccionados por similitud forman
                 // parte del objetivo que se investiga, no se descartan.
@@ -1565,17 +1573,18 @@ pub(super) fn advance_semantic_chat(
                     &selected,
                     &document_chunks,
                 )
-            })();
+            }.await;
             match result {
                 Ok(record) => spawn_submission_and_poll(database, broker, record),
                 Err(error) => {
                     let _ = database.finish_semantic_chat_without_submission(
-                        embedding_task_id,
+                        &embedding_task_id,
                         false,
                         &error.to_string(),
                     );
                 }
             }
+            });
         }
         "cancelled" => {
             let _ = database.finish_semantic_chat_without_submission(

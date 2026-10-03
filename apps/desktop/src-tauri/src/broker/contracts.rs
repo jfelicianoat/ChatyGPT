@@ -274,6 +274,11 @@ pub struct ExecutionSummary {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct BrokerCapabilities {
+    /// Contrato 2.11: ausencia en versiones anteriores equivale a false.
+    #[serde(default)]
+    pub system1_judgments: bool,
+    #[serde(default)]
+    pub system1_semantic_routing: bool,
     #[serde(default)]
     pub contract_version: String,
     #[serde(default)]

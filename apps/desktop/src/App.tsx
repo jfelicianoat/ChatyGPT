@@ -3392,6 +3392,19 @@ export function App() {
                                     </span>
                                   </header>
                                   <div className="context-source-list">
+                                    {contextPanel.data.value.system1 && (
+                                      <p>
+                                        {contextPanel.data.value.system1.mode === "applied"
+                                          ? `Contexto priorizado: ${contextPanel.data.value.system1.excluded} fuentes opcionales retiradas.`
+                                          : contextPanel.data.value.system1.mode === "shadow"
+                                            ? `Evaluación en modo sombra: se conservaron todas las fuentes (${contextPanel.data.value.system1.proposedExcluded} descartes propuestos).`
+                                            : contextPanel.data.value.system1.fallback
+                                              ? "Se conservó el contexto habitual porque la evaluación no fue concluyente."
+                                              : "Se conservó el contexto habitual: no necesitaba priorización."}
+                                        {" "}Estimación del texto enviado: {contextPanel.data.value.system1.tokensBefore.toLocaleString("es-ES")}
+                                        {" → "}{contextPanel.data.value.system1.tokensAfter.toLocaleString("es-ES")} tokens.
+                                      </p>
+                                    )}
                                     {contextPanel.data.value.sources.map((source, index) => (
                                       <article key={`${source.kind}-${index}`}>
                                         <div className="context-source-heading">
