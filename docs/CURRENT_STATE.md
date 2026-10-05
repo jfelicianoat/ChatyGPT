@@ -1,8 +1,10 @@
 # Estado vigente de ChatyGPT
 
-Última revisión contra el código: **28 de septiembre de 2026**.
+Última revisión general contra el código: **28 de septiembre de 2026**.
+Actualización System 1 y contrato del broker: **3 de octubre de 2026**.
 
-Versión de producto: **0.3.0**. Esquema SQLite: **25**. La resolución de la auditoría
+Versión de producto: **0.4.0** (visible en la barra lateral). Esquema SQLite: **26**
+(`0026`: traza System 1 en sombra). La resolución de la auditoría
 del 28 de septiembre está en
 [AUDIT_2026-09-28/RESOLUCION.md](AUDIT_2026-09-28/RESOLUCION.md); la anterior, en
 [REMEDIATION_2026-09-13.md](REMEDIATION_2026-09-13.md).
@@ -44,10 +46,14 @@ nativas.
 
 ## Compatibilidad externa
 
-- **AI Broker:** el cliente implementa el contrato aditivo 2.10, incluidos artefactos,
+- **AI Broker:** el cliente implementa los contratos aditivos 2.10 y 2.11, incluidos artefactos,
   exclusividad y evidencia de ejecución, y mantiene compatibilidad de lectura con tareas
   anteriores. Véase
   [BROKER_COMPATIBILITY.md](BROKER_COMPATIBILITY.md).
+  La selección de contexto opcional mediante System 1 está desactivada por defecto;
+  usa una rúbrica de tres niveles, conserva cada candidato cuyo juicio se rechaza,
+  juzga en paralelo y evalúa el modo sombra fuera del turno. Véase
+  [SYSTEM1_CONTEXT.md](SYSTEM1_CONTEXT.md).
 - **Athena:** wire protocol 1. La aplicación comprueba `/v1/health`, consume runs y eventos,
   resuelve aprobaciones y puede consultar `/v1/profiles`, `/v1/models` y memoria cuando el
   despliegue los ofrece. Un catálogo de modelos ausente significa que el despliegue usa un

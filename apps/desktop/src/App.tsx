@@ -2925,7 +2925,7 @@ export function App() {
         >
           <span className={`status-dot ${bootstrap.state === "ready" ? "ok" : ""}`} />
           {bootstrap.state === "ready"
-            ? `Datos locales · esquema ${bootstrap.value.schemaVersion}`
+            ? `ChatyGPT ${bootstrap.value.appVersion} · Datos locales · esquema ${bootstrap.value.schemaVersion}`
             : "Preparando datos locales"}
         </div>
       </aside>

@@ -134,6 +134,11 @@ struct SimulatedState {
     /// transcurrido un tiempo. Sin esto, una prueba dependería de qué llega
     /// antes y sería intermitente.
     transitions: HashMap<String, Vec<(String, ScriptedResponse)>>,
+    /// Respuestas elegidas por el contenido del cuerpo, antes que el guion.
+    ///
+    /// Peticiones concurrentes llegan en un orden arbitrario: responder por
+    /// contenido mantiene deterministas las pruebas de juicios en paralelo.
+    by_content: HashMap<String, Vec<(String, ScriptedResponse)>>,
     requests: Vec<RecordedRequest>,
 }
 
@@ -206,6 +211,18 @@ impl SimulatedBroker {
             .expect("el estado del simulador debe estar disponible")
             .fallback
             .insert(route.to_owned(), response);
+        self
+    }
+
+    /// Responde `response` en `route` cuando el cuerpo contiene `needle`.
+    pub fn respond_when(&self, route: &str, needle: &str, response: ScriptedResponse) -> &Self {
+        self.state
+            .lock()
+            .expect("el estado del simulador debe estar disponible")
+            .by_content
+            .entry(route.to_owned())
+            .or_default()
+            .push((needle.to_owned(), response));
         self
     }
 
@@ -342,10 +359,15 @@ fn serve_connection(
             raw_body: String::from_utf8_lossy(&body).into_owned(),
             headers,
         });
-        let response = state
-            .scripted
-            .get_mut(&key)
-            .and_then(VecDeque::pop_front)
+        let raw_body = String::from_utf8_lossy(&body);
+        let by_content = state.by_content.get(&key).and_then(|rules| {
+            rules
+                .iter()
+                .find(|(needle, _)| raw_body.contains(needle.as_str()))
+                .map(|(_, response)| response.clone())
+        });
+        let response = by_content
+            .or_else(|| state.scripted.get_mut(&key).and_then(VecDeque::pop_front))
             .or_else(|| state.fallback.get(&key).cloned())
             .unwrap_or_else(|| ScriptedResponse {
                 status: 404,

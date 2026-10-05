@@ -648,7 +648,8 @@ pub async fn start_chat_turn_with_identity(
             sandbox_enabled,
             execution_preferences,
         },
-    ).await?;
+    )
+    .await?;
     if let Some(plan) = research_plan.as_ref() {
         request = apply_deep_research_plan(request, plan)?;
     }
@@ -670,6 +671,18 @@ pub async fn start_chat_turn_with_identity(
         attachment_ids,
     )?;
     let snapshot = database.task_snapshot(&local_task_id)?;
+    if crate::system1::runs_in_shadow(&broker) {
+        crate::system1::spawn_shadow_selection(
+            database.clone(),
+            broker.clone(),
+            local_task_id.clone(),
+            user_text.to_owned(),
+            context,
+            request,
+            memories,
+            document_chunks,
+        );
+    }
     spawn_submission_and_poll(database, broker, record);
     Ok(snapshot)
 }

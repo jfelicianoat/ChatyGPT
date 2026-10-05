@@ -1,7 +1,9 @@
 mod contracts;
-mod system1;
 #[cfg(test)]
 pub mod simulated;
+mod system1;
+
+pub(crate) use system1::CONTEXT_RUBRIC;
 
 use std::sync::{Arc, RwLock};
 use std::time::Instant;

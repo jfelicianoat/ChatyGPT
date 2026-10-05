@@ -13,7 +13,10 @@ La base durable, los GPTs personales, la investigación y el cliente Athena incl
 
 - shell Tauri 2 + React + TypeScript;
 - SQLite local con migración inicial y recuperación de tareas activas;
-- adaptador tipado compatible con AI Broker 2.10 y lectura de contratos anteriores;
+- adaptador tipado compatible con AI Broker 2.11 y lectura de contratos anteriores;
+- priorización opcional de contexto mediante System 1, con instrucciones protegidas,
+  modo sombra y fallback; configuración y pruebas en
+  [`docs/SYSTEM1_CONTEXT.md`](docs/SYSTEM1_CONTEXT.md);
 - descubrimiento automático al arrancar de salud, carriles, frontera de datos,
   sandbox, ingesta y soporte de documentos largos;
 - recorrido durable opcional: persistir, enviar, sondear, cancelar y recuperar;

@@ -181,13 +181,33 @@ impl Database {
             strategy,
             estimated_tokens,
             sources,
-            system1: connection.query_row(
-                "SELECT json_extract(request_json, '$.content.metadata.system1_context')
+            system1: connection
+                .query_row(
+                    // La sombra se guarda aparte; la selección aplicada viaja
+                    // en la propia petición enviada.
+                    "SELECT COALESCE(system1_trace_json,
+                        json_extract(request_json, '$.content.metadata.system1_context'))
                  FROM broker_tasks WHERE id = ?1",
-                params![task_id],
-                |row| row.get::<_, Option<String>>(0),
-            )?.and_then(|value| serde_json::from_str(&value).ok()),
+                    params![task_id],
+                    |row| row.get::<_, Option<String>>(0),
+                )?
+                .and_then(|value| serde_json::from_str(&value).ok()),
         })
+    }
+
+    /// Guarda la traza System 1 evaluada en sombra, sin tocar `request_json`.
+    pub(crate) fn record_system1_trace(
+        &self,
+        task_id: &str,
+        trace: &Value,
+    ) -> Result<(), AppError> {
+        let trace_json = serde_json::to_string(trace)
+            .map_err(|error| AppError::BrokerContract(error.to_string()))?;
+        self.connect()?.execute(
+            "UPDATE broker_tasks SET system1_trace_json = ?2 WHERE id = ?1",
+            params![task_id, trace_json],
+        )?;
+        Ok(())
     }
 
     pub fn context_source_file(

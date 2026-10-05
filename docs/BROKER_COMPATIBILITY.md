@@ -1,6 +1,6 @@
 # Compatibilidad de ChatyGPT con AI Broker
 
-Revisión: **13 de septiembre de 2026** (contrato 2.10).
+Revisión: **3 de octubre de 2026** (contratos 2.10 y 2.11).
 
 Este documento describe al cliente ChatyGPT. No es la especificación de AI Broker ni
 autoriza cambios en ese proyecto.
@@ -9,7 +9,7 @@ autoriza cambios en ese proyecto.
 
 ChatyGPT valida de forma estricta los campos que necesita y tolera campos adicionales. El
 cuerpo de petición sigue el baseline 2.8; el lector admite las extensiones aditivas 2.9
-y 2.10.
+y 2.10 y 2.11.
 No se compara la versión como una cadena para conceder capacidades: se usan las banderas y
 campos anunciados por `/api/v1/capabilities` y la creación real de la tarea sigue siendo la
 autoridad final.
@@ -27,10 +27,34 @@ autoridad final.
 | Exclusividad 2.10 | `auxiliary_invocations: false` en conversaciones `confidential` o `local_only` (§8.4) |
 | Evidencia 2.10 | Al completarse una tarea registra qué invocaciones eran suyas y qué poda se aplicó (§8.1 y §8.5) |
 | Artefactos 2.10 | Lista y descarga los ficheros que produce una tarea, con `final: true` como entregable (§8.3) |
+| System 1 2.11 | Juicios síncronos de contexto opcional con `accepted: true`, perfil `default` explícito y rechazo por candidato; desactivado por defecto |
 
 ChatyGPT no envía `exclude_from_model_learning`: las conversaciones reales sí forman parte
 del tráfico normal del producto. Esa bandera pertenece a clientes de evaluación como
 Model_Drift.
+
+## Contrato 2.11 y ampliación del 3 de octubre
+
+El filtro opcional de contexto usa `system1_judgments` y
+`POST /api/v1/system1/judge`; no crea una tarea ni solicita sondeo. El caso propio
+`chatygpt_context_relevance` envía instrucciones y `threshold_profile: "default"`.
+Omitir ese perfil en el contrato actualizado devuelve `UNKNOWN_USE_CASE`.
+
+`score` es un índice ordinal de una rúbrica de tres niveles, separado de
+`confidence`. Un rechazo por baja confianza, margen o tamaño conserva ese
+candidato y no provoca otro intento del cliente; los errores de configuración
+del broker (`UNKNOWN_USE_CASE`, `MISSING_INSTRUCTIONS`…) o de transporte
+conservan el contexto anterior completo. El umbral de confianza es el del
+operador: ChatyGPT no lo duplica. `cloud_allowed: false` y la clasificación previa al filtrado mantienen
+la frontera de datos.
+
+Se toleran `system1_evaluation`, `target` y las notas adicionales de `attempts`
+como ampliaciones de evaluación. ChatyGPT no fija `target` y nunca toma una nota
+en bruto como decisión aceptada. `SELF_REPORTED_SCORE`, `INPUT_TOO_LARGE` y
+códigos desconocidos con `accepted: false` conservan su candidato.
+
+Configuración, arquitectura y conversaciones de prueba:
+[SYSTEM1_CONTEXT.md](SYSTEM1_CONTEXT.md).
 
 ## Contrato 2.10 (septiembre de 2026)
 

@@ -1498,92 +1498,113 @@ pub(super) fn advance_semantic_chat(
         "completed" => {
             let embedding_task_id = embedding_task_id.to_owned();
             tauri::async_runtime::spawn(async move {
-            let result = async {
-                let context_budget =
-                    custom_gpt_context_budget(workflow.custom_gpt_context.as_ref());
-                let selected = if database.semantic_workflow_uses_memory(&workflow.id)? {
-                    database.semantic_memory_matches_with_limit(
+                let result = async {
+                    let context_budget =
+                        custom_gpt_context_budget(workflow.custom_gpt_context.as_ref());
+                    let selected = if database.semantic_workflow_uses_memory(&workflow.id)? {
+                        database.semantic_memory_matches_with_limit(
+                            &workflow.id,
+                            context_budget.memory_items.min(10),
+                        )?
+                    } else {
+                        Vec::new()
+                    };
+                    let mut used_memory_characters = 0_usize;
+                    let memories = selected
+                        .iter()
+                        .map(|item| item.memory.clone())
+                        .filter(|memory| {
+                            used_memory_characters += memory.content.chars().count();
+                            used_memory_characters <= context_budget.memory_characters
+                        })
+                        .collect::<Vec<_>>();
+                    let attachments = database.ready_attachments_for_turn(
+                        &workflow.conversation_id,
+                        &workflow.attachment_ids,
+                    )?;
+                    let document_chunks = database.select_attachment_chunks_hybrid(
+                        &workflow.conversation_id,
+                        &workflow.attachment_ids,
+                        &workflow.user_text,
+                        context_budget.document_chunks,
+                        context_budget.document_characters,
                         &workflow.id,
-                        context_budget.memory_items.min(10),
-                    )?
-                } else {
-                    Vec::new()
-                };
-                let mut used_memory_characters = 0_usize;
-                let memories = selected
-                    .iter()
-                    .map(|item| item.memory.clone())
-                    .filter(|memory| {
-                        used_memory_characters += memory.content.chars().count();
-                        used_memory_characters <= context_budget.memory_characters
-                    })
-                    .collect::<Vec<_>>();
-                let attachments = database.ready_attachments_for_turn(
-                    &workflow.conversation_id,
-                    &workflow.attachment_ids,
-                )?;
-                let document_chunks = database.select_attachment_chunks_hybrid(
-                    &workflow.conversation_id,
-                    &workflow.attachment_ids,
-                    &workflow.user_text,
-                    context_budget.document_chunks,
-                    context_budget.document_characters,
-                    &workflow.id,
-                )?;
-                let chat_task_id = format!("local_{}", Uuid::new_v4().simple());
-                let idempotency_key = format!("chatygpt:semantic-chat:{}", workflow.id);
-                let inherited_data_classification =
-                    workflow.execution_preferences.data_classification.clone();
-                let (mut request, memories, document_chunks) = chat_request_with_system1(
-                    &broker,
-                    &workflow.conversation_id,
-                    &idempotency_key,
-                    &workflow.user_text,
-                    &workflow.context,
-                    &attachments,
-                    &document_chunks,
-                    &memories,
-                    workflow.project_instruction.as_ref(),
-                    workflow.custom_gpt_context.as_ref(),
-                    Some(&inherited_data_classification),
-                    ChatExecutionOptions {
-                        tools_enabled: workflow.tools_enabled,
-                        sandbox_enabled: workflow.sandbox_enabled,
-                        execution_preferences: workflow.execution_preferences.clone(),
-                    },
-                ).await?;
-                // La instantánea solo menciona recuerdos enviados, incluido el
-                // recorte del presupuesto que precede a System 1.
-                let selected = selected.into_iter().filter(|item| {
-                    memories.iter().any(|memory| memory.id == item.memory.id)
-                }).collect::<Vec<_>>();
-                // La investigación se aplica sobre el contexto ya recuperado:
-                // los recuerdos y fragmentos seleccionados por similitud forman
-                // parte del objetivo que se investiga, no se descartan.
-                if let Some(plan) = workflow.research_plan.as_ref() {
-                    let plan: ResearchPlan = serde_json::from_value(plan.clone())
-                        .map_err(|error| AppError::BrokerContract(error.to_string()))?;
-                    request = apply_deep_research_plan(request, &plan)?;
+                    )?;
+                    let chat_task_id = format!("local_{}", Uuid::new_v4().simple());
+                    let idempotency_key = format!("chatygpt:semantic-chat:{}", workflow.id);
+                    let inherited_data_classification =
+                        workflow.execution_preferences.data_classification.clone();
+                    let (mut request, memories, document_chunks) = chat_request_with_system1(
+                        &broker,
+                        &workflow.conversation_id,
+                        &idempotency_key,
+                        &workflow.user_text,
+                        &workflow.context,
+                        &attachments,
+                        &document_chunks,
+                        &memories,
+                        workflow.project_instruction.as_ref(),
+                        workflow.custom_gpt_context.as_ref(),
+                        Some(&inherited_data_classification),
+                        ChatExecutionOptions {
+                            tools_enabled: workflow.tools_enabled,
+                            sandbox_enabled: workflow.sandbox_enabled,
+                            execution_preferences: workflow.execution_preferences.clone(),
+                        },
+                    )
+                    .await?;
+                    // La instantánea solo menciona recuerdos enviados, incluido el
+                    // recorte del presupuesto que precede a System 1.
+                    let selected = selected
+                        .into_iter()
+                        .filter(|item| memories.iter().any(|memory| memory.id == item.memory.id))
+                        .collect::<Vec<_>>();
+                    // La investigación se aplica sobre el contexto ya recuperado:
+                    // los recuerdos y fragmentos seleccionados por similitud forman
+                    // parte del objetivo que se investiga, no se descartan.
+                    if let Some(plan) = workflow.research_plan.as_ref() {
+                        let plan: ResearchPlan = serde_json::from_value(plan.clone())
+                            .map_err(|error| AppError::BrokerContract(error.to_string()))?;
+                        request = apply_deep_research_plan(request, &plan)?;
+                    }
+                    let record = database.prepare_semantic_chat_submission(
+                        &workflow.id,
+                        &chat_task_id,
+                        &idempotency_key,
+                        &request,
+                        &selected,
+                        &document_chunks,
+                    )?;
+                    let fresh = record.id == chat_task_id;
+                    Ok::<_, AppError>((record, fresh, request, memories, document_chunks))
                 }
-                database.prepare_semantic_chat_submission(
-                    &workflow.id,
-                    &chat_task_id,
-                    &idempotency_key,
-                    &request,
-                    &selected,
-                    &document_chunks,
-                )
-            }.await;
-            match result {
-                Ok(record) => spawn_submission_and_poll(database, broker, record),
-                Err(error) => {
-                    let _ = database.finish_semantic_chat_without_submission(
-                        &embedding_task_id,
-                        false,
-                        &error.to_string(),
-                    );
+                .await;
+                match result {
+                    Ok((record, fresh, request, memories, document_chunks)) => {
+                        // Solo la tarea recién preparada: si otra operación ya
+                        // la había creado, su traza no se sobrescribe.
+                        if fresh && crate::system1::runs_in_shadow(&broker) {
+                            crate::system1::spawn_shadow_selection(
+                                database.clone(),
+                                broker.clone(),
+                                record.id.clone(),
+                                workflow.user_text.clone(),
+                                workflow.context.clone(),
+                                request,
+                                memories,
+                                document_chunks,
+                            );
+                        }
+                        spawn_submission_and_poll(database, broker, record)
+                    }
+                    Err(error) => {
+                        let _ = database.finish_semantic_chat_without_submission(
+                            &embedding_task_id,
+                            false,
+                            &error.to_string(),
+                        );
+                    }
                 }
-            }
             });
         }
         "cancelled" => {

@@ -1,0 +1,304 @@
+{
+  "conversations": [
+    {
+      "candidates": [
+        {
+          "excerpt": "Athena",
+          "id": "relevante"
+        },
+        {
+          "excerpt": "Otro proyecto: trading",
+          "id": "trading"
+        }
+      ],
+      "currentRequest": "Haz lo mismo con Athena",
+      "finalContextSources": [
+        "relevante",
+        "restricción"
+      ],
+      "judgeCalls": 2,
+      "judgments": [
+        {
+          "confidence": 0.99,
+          "confidenceIsCalibrated": false,
+          "id": "relevante",
+          "included": true,
+          "kind": "memory",
+          "provider": "ollama_system1",
+          "providerFallback": false,
+          "rejected": null,
+          "relevance": 1.0
+        },
+        {
+          "confidence": 0.99,
+          "confidenceIsCalibrated": false,
+          "id": "trading",
+          "included": false,
+          "kind": "memory",
+          "provider": "ollama_system1",
+          "providerFallback": false,
+          "rejected": null,
+          "relevance": 0.0
+        }
+      ],
+      "mandatoryHistory": "Diseño común: conserva MCP, timeout y fallback. Aplica el diseño a cada aplicación.",
+      "mode": "applied",
+      "reason": "scored",
+      "responseFeatureOffSimulated": {
+        "model": "qwen2.5:7b",
+        "provider": "ollama",
+        "result_markdown": "Aplicaré Athena con el diseño acordado, conservando la privacidad y sin publicar.",
+        "usage": {
+          "total_tokens": 128
+        }
+      },
+      "responseSimulated": {
+        "model": "qwen2.5:7b",
+        "provider": "ollama",
+        "result_markdown": "Aplicaré Athena con el diseño acordado, conservando la privacidad y sin publicar.",
+        "usage": {
+          "total_tokens": 128
+        }
+      },
+      "scenario": "Athena implícita",
+      "tokensAfterEstimated": 686,
+      "tokensBeforeEstimated": 1036
+    },
+    {
+      "candidates": [
+        {
+          "excerpt": "Ollama local",
+          "id": "relevante"
+        },
+        {
+          "excerpt": "Otro proyecto: trading",
+          "id": "trading"
+        }
+      ],
+      "currentRequest": "Usa la segunda opción",
+      "finalContextSources": [
+        "relevante",
+        "restricción"
+      ],
+      "judgeCalls": 2,
+      "judgments": [
+        {
+          "confidence": 0.99,
+          "confidenceIsCalibrated": false,
+          "id": "relevante",
+          "included": true,
+          "kind": "memory",
+          "provider": "ollama_system1",
+          "providerFallback": false,
+          "rejected": null,
+          "relevance": 1.0
+        },
+        {
+          "confidence": 0.99,
+          "confidenceIsCalibrated": false,
+          "id": "trading",
+          "included": false,
+          "kind": "memory",
+          "provider": "ollama_system1",
+          "providerFallback": false,
+          "rejected": null,
+          "relevance": 0.0
+        }
+      ],
+      "mandatoryHistory": "1. LAYA remoto; 2. Ollama local. La segunda opción conserva los datos localmente.",
+      "mode": "applied",
+      "reason": "scored",
+      "responseFeatureOffSimulated": {
+        "model": "qwen2.5:7b",
+        "provider": "ollama",
+        "result_markdown": "Aplicaré Ollama local con el diseño acordado, conservando la privacidad y sin publicar.",
+        "usage": {
+          "total_tokens": 128
+        }
+      },
+      "responseSimulated": {
+        "model": "qwen2.5:7b",
+        "provider": "ollama",
+        "result_markdown": "Aplicaré Ollama local con el diseño acordado, conservando la privacidad y sin publicar.",
+        "usage": {
+          "total_tokens": 128
+        }
+      },
+      "scenario": "Segunda opción",
+      "tokensAfterEstimated": 687,
+      "tokensBeforeEstimated": 1037
+    },
+    {
+      "candidates": [
+        {
+          "excerpt": "Athena",
+          "id": "relevante"
+        },
+        {
+          "excerpt": "Otro proyecto: trading",
+          "id": "trading"
+        }
+      ],
+      "currentRequest": "Configura Athena siguiendo la propuesta anterior",
+      "finalContextSources": [
+        "relevante",
+        "restricción"
+      ],
+      "judgeCalls": 2,
+      "judgments": [
+        {
+          "confidence": 0.99,
+          "confidenceIsCalibrated": false,
+          "id": "relevante",
+          "included": true,
+          "kind": "memory",
+          "provider": "ollama_system1",
+          "providerFallback": false,
+          "rejected": null,
+          "relevance": 1.0
+        },
+        {
+          "confidence": 0.99,
+          "confidenceIsCalibrated": false,
+          "id": "trading",
+          "included": false,
+          "kind": "memory",
+          "provider": "ollama_system1",
+          "providerFallback": false,
+          "rejected": null,
+          "relevance": 0.0
+        }
+      ],
+      "mandatoryHistory": "Propuesta aprobada: Broker como único acceso a modelos.",
+      "mode": "applied",
+      "reason": "scored",
+      "responseFeatureOffSimulated": {
+        "model": "qwen2.5:7b",
+        "provider": "ollama",
+        "result_markdown": "Aplicaré Athena con el diseño acordado, conservando la privacidad y sin publicar.",
+        "usage": {
+          "total_tokens": 128
+        }
+      },
+      "responseSimulated": {
+        "model": "qwen2.5:7b",
+        "provider": "ollama",
+        "result_markdown": "Aplicaré Athena con el diseño acordado, conservando la privacidad y sin publicar.",
+        "usage": {
+          "total_tokens": 128
+        }
+      },
+      "scenario": "Athena explícita",
+      "tokensAfterEstimated": 686,
+      "tokensBeforeEstimated": 1035
+    },
+    {
+      "candidates": [
+        {
+          "excerpt": "Athena",
+          "id": "relevante"
+        },
+        {
+          "excerpt": "Otro proyecto: trading",
+          "id": "trading"
+        }
+      ],
+      "currentRequest": "Explica Athena",
+      "finalContextSources": [
+        "relevante",
+        "trading",
+        "restricción"
+      ],
+      "judgeCalls": 0,
+      "judgments": [],
+      "mandatoryHistory": "Athena ejecuta objetivos.",
+      "mode": "skipped",
+      "reason": "fits_budget",
+      "responseFeatureOffSimulated": {
+        "model": "qwen2.5:7b",
+        "provider": "ollama",
+        "result_markdown": "Aplicaré Athena con el diseño acordado, conservando la privacidad y sin publicar.",
+        "usage": {
+          "total_tokens": 128
+        }
+      },
+      "responseSimulated": {
+        "model": "qwen2.5:7b",
+        "provider": "ollama",
+        "result_markdown": "Aplicaré Athena con el diseño acordado, conservando la privacidad y sin publicar.",
+        "usage": {
+          "total_tokens": 128
+        }
+      },
+      "scenario": "Historial corto",
+      "tokensAfterEstimated": 1019,
+      "tokensBeforeEstimated": 1019
+    },
+    {
+      "candidates": [
+        {
+          "excerpt": "Broker",
+          "id": "relevante"
+        },
+        {
+          "excerpt": "Otro proyecto: trading",
+          "id": "trading"
+        }
+      ],
+      "currentRequest": "Aplica eso al Broker",
+      "finalContextSources": [
+        "relevante",
+        "restricción"
+      ],
+      "judgeCalls": 2,
+      "judgments": [
+        {
+          "confidence": null,
+          "confidenceIsCalibrated": false,
+          "id": "relevante",
+          "included": true,
+          "kind": "memory",
+          "provider": "ollama_system1",
+          "providerFallback": true,
+          "rejected": "low_confidence",
+          "relevance": null
+        },
+        {
+          "confidence": 0.99,
+          "confidenceIsCalibrated": false,
+          "id": "trading",
+          "included": false,
+          "kind": "memory",
+          "provider": "ollama_system1",
+          "providerFallback": false,
+          "rejected": null,
+          "relevance": 0.0
+        }
+      ],
+      "mandatoryHistory": "No publiques. Conserva el diseño aprobado y la restricción de privacidad.",
+      "mode": "applied",
+      "reason": "scored",
+      "responseFeatureOffSimulated": {
+        "model": "qwen2.5:7b",
+        "provider": "ollama",
+        "result_markdown": "Aplicaré Broker con el diseño acordado, conservando la privacidad y sin publicar.",
+        "usage": {
+          "total_tokens": 128
+        }
+      },
+      "responseSimulated": {
+        "model": "qwen2.5:7b",
+        "provider": "ollama",
+        "result_markdown": "Aplicaré Broker con el diseño acordado, conservando la privacidad y sin publicar.",
+        "usage": {
+          "total_tokens": 128
+        }
+      },
+      "scenario": "Confianza baja",
+      "tokensAfterEstimated": 683,
+      "tokensBeforeEstimated": 1033
+    }
+  ],
+  "simulated": true,
+  "tokenEstimator": "ceil(prompt Unicode characters / 4)"
+}

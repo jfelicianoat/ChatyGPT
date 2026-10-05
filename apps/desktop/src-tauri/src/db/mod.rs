@@ -58,9 +58,11 @@ const ATHENA_RUNS_MIGRATION: &str = include_str!("../../migrations/0023_athena_r
 const SUMMARY_FRAGMENTS_MIGRATION: &str =
     include_str!("../../migrations/0024_summary_fragments.sql");
 const AUDIT_2026_09_28_MIGRATION: &str = include_str!("../../migrations/0025_audit_2026_09_28.sql");
+const SYSTEM1_SHADOW_TRACE_MIGRATION: &str =
+    include_str!("../../migrations/0026_system1_shadow_trace.sql");
 const RECOVER_NON_TERMINAL_TASKS: &str =
     include_str!("../../queries/recover_non_terminal_tasks.sql");
-pub const SCHEMA_VERSION: i64 = 25;
+pub const SCHEMA_VERSION: i64 = 26;
 
 #[derive(Clone)]
 pub struct Database {

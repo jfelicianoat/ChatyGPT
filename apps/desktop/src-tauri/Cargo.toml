@@ -1,6 +1,6 @@
 [package]
 name = "chatygpt"
-version = "0.3.0"
+version = "0.4.0"
 description = "Cliente de escritorio local-first para AI Broker"
 authors = ["ChatyGPT contributors"]
 edition = "2021"
