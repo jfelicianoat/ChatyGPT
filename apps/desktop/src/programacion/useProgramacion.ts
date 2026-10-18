@@ -39,6 +39,7 @@ import {
   validateScheduleDraft
 } from "../schedulerView";
 import { scheduledTimeValueInZone } from "../scheduledTime";
+import { confirmAction } from "../confirmacion";
 
 /**
  * @param bootstrapListo si el arranque de la aplicacion ya termino; hasta
@@ -371,7 +372,7 @@ export function useProgramacion(bootstrapListo: boolean) {
   const removeScheduledTaskTemplate = async (
     template: ScheduledTaskTemplateView
   ) => {
-    if (!window.confirm(`¿Eliminar la plantilla “${template.name}”?`)) return;
+    if (!await confirmAction(`¿Eliminar la plantilla “${template.name}”?`)) return;
     setScheduleBusyId(template.id);
     setScheduleError(null);
     setScheduleNotice(null);
@@ -449,7 +450,7 @@ export function useProgramacion(bootstrapListo: boolean) {
     run: ScheduledTaskView["runs"][number]
   ) => {
     if (
-      !window.confirm(
+      !await confirmAction(
         `¿Reintentar “${task.name}”? Se conservará el intento fallido en el historial.`
       )
     ) return;
@@ -485,7 +486,7 @@ export function useProgramacion(bootstrapListo: boolean) {
     const recurringNote = task.nextRunAt
       ? " La próxima fecha programada no cambiará."
       : " Esta ejecución no reactivará una programación finalizada o pausada.";
-    if (!window.confirm(`¿Ejecutar ahora “${task.name}”?${recurringNote}`)) return;
+    if (!await confirmAction(`¿Ejecutar ahora “${task.name}”?${recurringNote}`)) return;
     const busyId = `run-now:${task.id}`;
     setScheduleBusyId(busyId);
     setScheduleError(null);
@@ -523,7 +524,7 @@ export function useProgramacion(bootstrapListo: boolean) {
       ? ""
       : " La próxima repetición seguirá programada.";
     if (
-      !window.confirm(
+      !await confirmAction(
         `¿Cancelar la ejecución activa de “${task.name}”?${recurringNote}`
       )
     ) return;
@@ -620,7 +621,7 @@ export function useProgramacion(bootstrapListo: boolean) {
     const enabled = !windowsStartup.value.enabled;
     if (
       enabled &&
-      !window.confirm(
+      !await confirmAction(
         "¿Activar el inicio automático con Windows? El token actual del Broker se guardará cifrado para esta cuenta de Windows y ChatyGPT esperará a que el Broker esté disponible antes de abrirse."
       )
     ) return;
@@ -654,7 +655,7 @@ export function useProgramacion(bootstrapListo: boolean) {
     // mismo caso, para que la comprobación del backend responda a una decisión.
     if (
       !task.enabled &&
-      !window.confirm(
+      !await confirmAction(
         `¿Reactivar «${task.name}»? Volverá a ejecutarse sola en la fecha prevista.`
       )
     ) {
@@ -678,7 +679,7 @@ export function useProgramacion(bootstrapListo: boolean) {
   const removeSchedule = async (task: ScheduledTaskView) => {
     // H15: eliminar ya no borra el historial. Se dice así antes de decidir.
     if (
-      !window.confirm(
+      !await confirmAction(
         `¿Retirar la programación “${task.name}”? Dejará de ejecutarse; su historial seguirá consultable y podrás borrarlo después.`
       )
     ) {
@@ -702,8 +703,9 @@ export function useProgramacion(bootstrapListo: boolean) {
   /** Borra el historial de una programación ya retirada: decisión aparte (H15). */
   const purgeScheduleHistory = async (task: ScheduledTaskView) => {
     if (
-      !window.confirm(
-        `¿Borrar para siempre el historial de “${task.name}”? Se eliminan sus ${task.runs.length > 0 ? "ejecuciones registradas" : "datos"} y no se puede deshacer.`
+      !await confirmAction(
+        `¿Borrar para siempre el historial de “${task.name}”? Se eliminan sus ${task.runs.length > 0 ? "ejecuciones registradas" : "datos"} y no se puede deshacer.`,
+        { action: "Borrar para siempre", destructive: true }
       )
     ) {
       return;

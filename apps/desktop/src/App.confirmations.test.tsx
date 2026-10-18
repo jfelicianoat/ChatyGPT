@@ -897,49 +897,56 @@ describe("acciones sensibles en la interfaz", () => {
     cleanup();
   });
 
+  // INC-07 (auditoría 14-oct): la pregunta es el modal propio, no el
+  // `confirm()` nativo de WebView2; ninguna de estas acciones debe abrirlo.
+  const answer = async (choice: "Cancelar" | "Confirmar") => {
+    const question = await screen.findByRole("alertdialog");
+    await userEvent.click(within(question).getByRole("button", { name: choice }));
+  };
+
   it("no retira la credencial si la persona cancela la confirmación", async () => {
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const nativeConfirm = vi.spyOn(window, "confirm");
     await mountHome();
 
     await userEvent.click(screen.getByRole("button", { name: "Retirar" }));
+    await answer("Cancelar");
 
-    expect(confirm).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(nativeConfirm).not.toHaveBeenCalled();
     expect(platformMethod("clearBrokerCredential")).not.toHaveBeenCalled();
   });
 
   it("retira la credencial solo después de aceptar", async () => {
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
     await mountHome();
 
     await userEvent.click(screen.getByRole("button", { name: "Retirar" }));
+    // Mientras la pregunta está abierta no se ha llamado a nada.
+    await screen.findByRole("alertdialog");
+    expect(platformMethod("clearBrokerCredential")).not.toHaveBeenCalled();
+    await answer("Confirmar");
 
-    expect(confirm).toHaveBeenCalledOnce();
     await waitFor(() =>
       expect(platformMethod("clearBrokerCredential")).toHaveBeenCalledOnce()
-    );
-    // La confirmación precede a la llamada, no al revés.
-    expect(confirm.mock.invocationCallOrder[0]).toBeLessThan(
-      platformMethod("clearBrokerCredential").mock.invocationCallOrder[0]
     );
   });
 
   it("no revoca una carpeta autorizada si la persona cancela", async () => {
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
     await mountHome();
 
     await userEvent.click(screen.getByRole("button", { name: "Revocar" }));
+    await answer("Cancelar");
 
-    expect(confirm).toHaveBeenCalledOnce();
     expect(platformMethod("revokeAuthorizedFolder")).not.toHaveBeenCalled();
   });
 
-  it("no vacía las mediciones de rendimiento si la persona cancela", async () => {
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+  it("no vacía las mediciones de rendimiento si la persona cancela (también con Escape)", async () => {
     await mountHome();
 
     await userEvent.click(screen.getByRole("button", { name: "Vaciar mediciones" }));
+    await screen.findByRole("alertdialog");
+    await userEvent.keyboard("{Escape}");
 
-    expect(confirm).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("alertdialog")).toBeNull();
     expect(platformMethod("clearPerformanceSamples")).not.toHaveBeenCalled();
-  });
+});
 });

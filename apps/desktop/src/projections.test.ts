@@ -243,6 +243,13 @@ describe("agenda de automatizaciones", () => {
     expect(days[1].key).toBe("2026-08-07");
   });
 
+  it("rotula el día con solo la inicial en mayúscula (auditoría 14-oct)", () => {
+    const [day] = schedulerCalendarDays([
+      occurrence("1", new Date(Date.UTC(2026, 9, 15, 10, 0)).toISOString())
+    ]);
+    expect(day.label).toBe("Jueves, 15 de octubre");
+  });
+
   it("separa las atrasadas en su propia cesta y no en su fecha", () => {
     const days = schedulerCalendarDays([
       occurrence("vencida", new Date(2026, 7, 1, 9, 0).toISOString(), { overdue: true }),

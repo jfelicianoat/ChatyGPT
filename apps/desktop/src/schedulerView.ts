@@ -34,6 +34,18 @@ export function defaultScheduledLocalTime(now = new Date()): string {
   return scheduledLocalTimeValue(new Date(now.getTime() + 60 * 60 * 1000));
 }
 
+/**
+ * La fecha propuesta, renovada si ya quedó en el pasado (auditoría 14-oct, INC-10).
+ *
+ * El formulario vive en un hook que dura toda la sesión: la propuesta calculada
+ * al arrancar nacía vencida si la app llevaba horas abierta. Una fecha futura
+ * que la persona ya eligió se respeta tal cual.
+ */
+export function freshScheduledLocalTime(value: string, now = new Date()): string {
+  // Mismo formato y misma zona: el orden de las cadenas es el de las fechas.
+  return value > scheduledLocalTimeValue(now) ? value : defaultScheduledLocalTime(now);
+}
+
 /** Nombre legible del estado de una ejecución. */
 export function scheduledRunLabel(
   status: ScheduledTaskView["runs"][number]["status"]
@@ -217,14 +229,16 @@ export function schedulerCalendarDays(
     const key = item.overdue
       ? "overdue"
       : zonedKey ?? item.startsAt;
+    // Solo la inicial en mayúscula: «Jueves, 15 de octubre», no «De Octubre».
+    const longDate = date.toLocaleDateString("es-ES", {
+      weekday: "long",
+      day: "numeric",
+      month: "long",
+      timeZone: item.timezone
+    });
     const label = item.overdue
       ? "Pendientes atrasadas"
-      : date.toLocaleDateString("es-ES", {
-        weekday: "long",
-        day: "numeric",
-        month: "long",
-        timeZone: item.timezone
-      });
+      : longDate.charAt(0).toUpperCase() + longDate.slice(1);
     const day = days.get(key) ?? { key, label, items: [] };
     day.items.push(item);
     days.set(key, day);

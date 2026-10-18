@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import sqlite3
+import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from contextlib import closing
 from pathlib import Path
@@ -515,7 +520,11 @@ class BuildConfigurationTests(unittest.TestCase):
             'set "STAGED_EXE=apps\\desktop\\src-tauri\\target-next\\release\\chatygpt.exe"',
             launcher,
         )
-        self.assertIn('copy /y "%STAGED_EXE%" "%RELEASE_EXE%"', launcher)
+        # INC-01 (auditoría 14-oct): una copia dejaba el exe preparado en su sitio y
+        # volvía a pisar cada compilación nueva; la actualización se consume al aplicarla.
+        self.assertIn('move /y "%STAGED_EXE%" "%RELEASE_EXE%"', launcher)
+        self.assertNotIn('copy /y "%STAGED_EXE%"', launcher)
+        self.assertIn('del /q "%RELEASE_EXE%.inputs.sha256"', launcher)
 
         arranque = (ROOT / "scripts" / "Start-ChatyGPT.ps1").read_text(encoding="utf-8")
         self.assertIn("target\\release\\chatygpt.exe", arranque)
@@ -542,6 +551,42 @@ class BuildConfigurationTests(unittest.TestCase):
             '-Record >nul',
             (ROOT / "Arrancar ChatyGPT.bat").read_text(encoding="utf-8"),
         )
+
+    @unittest.skipUnless(sys.platform == "win32", "el detector es un script de PowerShell")
+    def test_build_detector_never_accepts_an_executable_older_than_its_sources(self) -> None:
+        """INC-01: la huella se registró sobre un exe 0.3.0 con las fuentes ya en 0.4.0."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "scripts").mkdir()
+            shutil.copy(ROOT / "scripts" / "Needs-ChatyGPTBuild.ps1", root / "scripts")
+            source = root / "apps" / "desktop" / "src" / "main.tsx"
+            source.parent.mkdir(parents=True)
+            source.write_text("export {};", encoding="utf-8")
+            exe = root / "chatygpt.exe"
+            exe.write_bytes(b"MZ")
+            old = time.time() - 3600
+            os.utime(exe, (old, old))
+
+            def detector(*extra: str) -> subprocess.CompletedProcess[str]:
+                return subprocess.run(
+                    ["powershell.exe", "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                     "-File", str(root / "scripts" / "Needs-ChatyGPTBuild.ps1"),
+                     "-Executable", "chatygpt.exe", *extra],
+                    capture_output=True, text=True, timeout=120,
+                )
+
+            self.assertNotEqual(detector("-Record").returncode, 0)
+            self.assertFalse((root / "chatygpt.exe.inputs.sha256").exists())
+            self.assertEqual(detector().stdout.strip(), "1")
+
+            # Un build real deja el exe más nuevo que sus fuentes: entonces sí vale.
+            os.utime(exe, None)
+            self.assertEqual(detector("-Record").returncode, 0)
+            self.assertEqual(detector().stdout.strip(), "0")
+
+            # Y una huella correcta no tapa un exe que vuelve a quedar atrás.
+            os.utime(exe, (old, old))
+            self.assertEqual(detector().stdout.strip(), "1")
 
     def test_the_broker_credential_is_checked_against_an_endpoint_that_demands_it(self) -> None:
         """La comprobacion tiene que pedirle la credencial al broker, no saludarle.

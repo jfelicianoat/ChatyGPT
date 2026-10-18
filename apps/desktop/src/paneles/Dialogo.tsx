@@ -50,6 +50,7 @@ export function Dialogo({
                 }}
                 maxLength={dialogCopy(dialog).maxLength}
                 rows={9}
+                aria-describedby="dialog-limit"
                 placeholder={dialogCopy(dialog).placeholder ?? "Ejemplo: responde en español, cita siempre las fuentes y separa claramente hechos de hipótesis."}
               />
             ) : (
@@ -62,9 +63,18 @@ export function Dialogo({
                   if (event.key === "Escape") setDialog(null);
                 }}
                 maxLength={dialogCopy(dialog).maxLength ?? 120}
+                aria-describedby="dialog-limit"
               />
             )}
           </label>
+        )}
+        {/* Al pegar un texto más largo el campo lo recorta sin avisar: el
+            contador dice dónde está el límite (auditoría 14-oct, INC-12). Fuera
+            de la etiqueta para no cambiar el nombre accesible del campo. */}
+        {dialogCopy(dialog).fieldLabel && (
+          <small id="dialog-limit" className="dialog-limit">
+            {dialogValue.length} / {dialogCopy(dialog).maxLength ?? 120} caracteres
+          </small>
         )}
         <div className="modal-actions">
           <button className="secondary" onClick={() => setDialog(null)} disabled={dialogBusy}>

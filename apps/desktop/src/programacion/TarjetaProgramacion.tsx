@@ -105,6 +105,7 @@ export function TarjetaProgramacion({
     windowsStartup
   } = programacion;
 
+
   return (
   <section className="scheduler-card">
     <div className="panel-heading">

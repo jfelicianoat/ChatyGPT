@@ -14,7 +14,9 @@ set "STAGED_EXE=apps\desktop\src-tauri\target-next\release\chatygpt.exe"
 
 if exist "%STAGED_EXE%" (
     echo Aplicando la ultima actualizacion de ChatyGPT...
-    copy /y "%STAGED_EXE%" "%RELEASE_EXE%" >nul
+    rem Se mueve, no se copia: una copia que se quedaba en target-next volvia
+    rem a pisar cada compilacion nueva en el siguiente arranque (INC-01).
+    move /y "%STAGED_EXE%" "%RELEASE_EXE%" >nul
     if errorlevel 1 (
         echo [ERROR] ChatyGPT sigue abierto y no se puede actualizar.
         echo Cierra todas sus ventanas y vuelve a ejecutar este BAT.
@@ -64,6 +66,10 @@ if "%NEED_BUILD%"=="1" (
         call pnpm.cmd install
         if errorlevel 1 goto :failed
     )
+
+    rem Sin huella hasta que el nuevo build exista: si la compilacion falla,
+    rem el siguiente arranque vuelve a intentarlo en vez de dar por bueno el viejo.
+    if exist "%RELEASE_EXE%.inputs.sha256" del /q "%RELEASE_EXE%.inputs.sha256"
 
     call pnpm.cmd rebuild esbuild
     if errorlevel 1 goto :failed

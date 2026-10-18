@@ -57,4 +57,35 @@ describe("contraste de superficies en el tema oscuro", () => {
     // el que reabre el panel de contexto una vez cerrado (28-sep-2026).
     expect(css).toContain(".conversation-toolbar button:not(.danger-text):not(.context-inspector-toggle)");
   });
+
+  // Auditoría QA del 14-oct (INC-11): medidas con un auditor de contraste sobre
+  // la app real; cada una estaba entre 1,04:1 y 2,6:1 en el tema oscuro.
+  it.each([
+    ".activity-card",
+    ".scheduler-history",
+    ".scheduler-calendar-occurrence time",
+    ".custom-gpt-permission-summary span",
+    ".scheduler-safety",
+    ".custom-gpt-safety"
+  ])("la auditoría del 14-oct deja regla oscura para %s", (selector) => {
+    expect(finalContrastBlock).toContain(selector);
+  });
+
+  it("el modal tiene superficie oscura propia y no hereda texto claro sobre crema", () => {
+    expect(css).toMatch(/:root\[data-theme="dark"\] \.modal \{[^}]*background: var\(--dark-surface-raised\)/);
+  });
+});
+
+describe("maquetación (auditoría 14-oct)", () => {
+  it("la barra lateral queda fija a la ventana (INC-04)", () => {
+    expect(css).toMatch(/\.sidebar \{ position: sticky; top: 0; height: 100vh; overflow-y: auto;/);
+  });
+
+  it("la ficha de un GPT no reparte el ancho con su fila de botones (INC-05)", () => {
+    expect(css).toMatch(/\.custom-gpt-item \{ display: grid; grid-template-columns: minmax\(0, 1fr\);/);
+  });
+
+  it("los días del calendario no capitalizan cada palabra", () => {
+    expect(css).not.toMatch(/\.scheduler-calendar-day h4 \{[^}]*text-transform: capitalize/);
+  });
 });

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   canSaveScheduleTemplate,
   defaultScheduledLocalTime,
+  freshScheduledLocalTime,
   validateScheduleDraft,
   loadSchedulerReadNotifications,
   MAX_READ_NOTIFICATIONS,
@@ -208,5 +209,15 @@ describe("avisos leídos", () => {
     expect(loadSchedulerReadNotifications().size).toBe(0);
     expect(schedulerReadNotificationsExist()).toBe(false);
     expect(() => persistSchedulerReadNotifications(new Set(["run-1"]))).not.toThrow();
+  });
+});
+
+describe("fecha propuesta de una programación (INC-10)", () => {
+  it("renueva una propuesta que quedó en el pasado y respeta una futura", () => {
+    const arranque = new Date(2026, 9, 14, 22, 37);
+    const ahora = new Date(2026, 9, 15, 5, 20);
+    const congelada = defaultScheduledLocalTime(arranque);
+    expect(freshScheduledLocalTime(congelada, ahora)).toBe(defaultScheduledLocalTime(ahora));
+    expect(freshScheduledLocalTime("2026-10-20T09:00", ahora)).toBe("2026-10-20T09:00");
   });
 });

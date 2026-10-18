@@ -4,6 +4,7 @@ mod broker;
 mod db;
 mod error;
 mod export;
+mod instancia;
 mod logging;
 mod metrics;
 mod politica;
@@ -45,6 +46,8 @@ struct AppState {
     data_dir: std::path::PathBuf,
     /// Resultado de una restauración aplicada en este arranque, si la hubo.
     restore_notice: Option<String>,
+    /// Candado del perfil de datos: se libera al terminar el proceso.
+    _candado_perfil: Option<std::fs::File>,
 }
 
 #[derive(Debug, Serialize)]
@@ -105,6 +108,25 @@ pub fn run() {
             // de migración o de recuperación deje rastro observable.
             let _ = logging::init(&data_dir);
             let boot = logging::new_correlation_id();
+            // Antes de tocar la base ni reanudar nada: una segunda ventana sobre
+            // el mismo perfil reanudaría las mismas tareas a la vez (INC-15).
+            let candado_perfil = match instancia::adquirir(&data_dir) {
+                Ok(Some(candado)) => Some(candado),
+                Ok(None) => {
+                    logging::warn("app.instance_already_running", Some(&boot), &[]);
+                    instancia::avisar_instancia_abierta();
+                    std::process::exit(0);
+                }
+                // Sin poder crear el candado no se impide abrir la aplicación.
+                Err(error) => {
+                    logging::warn(
+                        "app.instance_lock_unavailable",
+                        Some(&boot),
+                        &[("error_kind", logging::code(&format!("{:?}", error.kind())))],
+                    );
+                    None
+                }
+            };
             let _ = startup::refresh_protected_token_if_enabled(&data_dir);
             // Una restauración programada se aplica antes de abrir la base: con
             // la base abierta, sus ficheros no pueden sustituirse con seguridad.
@@ -186,6 +208,7 @@ pub fn run() {
                 attachments_dir,
                 data_dir,
                 restore_notice,
+                _candado_perfil: candado_perfil,
             });
             Ok(())
         })

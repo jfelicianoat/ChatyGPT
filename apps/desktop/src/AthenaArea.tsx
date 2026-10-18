@@ -54,6 +54,7 @@ import {
   textoArgumento,
   tiempoRestante
 } from "./athenaView";
+import { confirmAction } from "./confirmacion";
 
 /**
  * Cuántos elementos de un resultado se enseñan antes de recortar.
@@ -91,6 +92,10 @@ export function AthenaArea({
   const [ocupado, setOcupado] = useState(false);
   const [autorizandoCarpeta, setAutorizandoCarpeta] = useState(false);
   const sondeo = useRef<number | null>(null);
+  // Cambia al conectar o volver a comprobar: remonta perfiles, modelos e
+  // historial para que repitan su consulta y no sigan enseñando el error de
+  // cuando el servicio no respondía (auditoría 14-oct, INC-08).
+  const [conexion, setConexion] = useState(0);
 
   const informar = useCallback((error: unknown) => {
     setAviso(error instanceof Error ? error.message : String(error));
@@ -104,6 +109,13 @@ export function AthenaArea({
     }
   }, [informar]);
 
+  const volverAComprobar = async () => {
+    setAviso(null);
+    await refrescarEstado();
+    await refrescarRecuperacion();
+    setConexion((valor) => valor + 1);
+  };
+
   const guardarCredencial = async () => {
     if (!credencial.trim()) {
       setAviso("Escribe el token que muestra el servicio de Athena.");
@@ -114,7 +126,7 @@ export function AthenaArea({
     try {
       await platform.setAthenaCredential(credencial);
       setCredencial("");
-      await refrescarEstado();
+      await volverAComprobar();
     } catch (error) {
       informar(error);
     } finally {
@@ -275,7 +287,7 @@ export function AthenaArea({
    * ninguna.
    */
   const olvidarRecuerdo = async (memoryId: string) => {
-    const seguro = window.confirm(
+    const seguro = await confirmAction(
       "¿Retirar este recuerdo? Athena dejará de usarlo, y quedará constancia de que lo creyó."
     );
     if (!seguro) {
@@ -352,7 +364,7 @@ export function AthenaArea({
           <button
             type="button"
             className="athena-refresh"
-            onClick={() => void refrescarEstado()}
+            onClick={() => void volverAComprobar()}
           >
             Volver a comprobar
           </button>
@@ -462,6 +474,7 @@ export function AthenaArea({
         </div>
 
         <AthenaPerfilSelector
+          key={`perfil-${conexion}`}
           valor={perfil}
           onCambiar={setPerfil}
           onListar={listarPerfiles}
@@ -469,6 +482,7 @@ export function AthenaArea({
         />
 
         <AthenaModeloSelector
+          key={`modelo-${conexion}`}
           valor={modelo}
           onCambiar={setModelo}
           onListar={listarModelos}
@@ -901,6 +915,7 @@ export function AthenaArea({
       ) : null}
 
       <AthenaHistorial
+        key={`historial-${conexion}`}
         onListar={listarRuns}
         onAbrir={abrirHistoria}
       />

@@ -474,7 +474,8 @@ pub fn failed_task_state(task_id: &str, message: &str) -> Value {
         "execution_strategy": "single",
         "execution_preset": "fast",
         "selection_mode": "auto",
-        "progress": {"phase": "failed", "invocations_completed": 0, "invocations_total": 1},
+        // Forma literal del Broker 2.11: el fallo terminal no trae contadores.
+        "progress": {"phase": "failed"},
         "result": null,
         "error": {"code": "PROVIDER_UNAVAILABLE", "message": message, "retryable": true}
     })

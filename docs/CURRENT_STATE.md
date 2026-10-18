@@ -3,9 +3,10 @@
 Última revisión general contra el código: **28 de septiembre de 2026**.
 Actualización System 1 y contrato del broker: **3 de octubre de 2026**.
 
-Versión de producto: **0.4.0** (visible en la barra lateral). Esquema SQLite: **26**
-(`0026`: traza System 1 en sombra). La resolución de la auditoría
-del 28 de septiembre está en
+Versión de producto: **0.4.1** (visible en la barra lateral). Esquema SQLite: **26**
+(`0026`: traza System 1 en sombra). La resolución de la auditoría QA del 14 de octubre
+está en [AUDIT_2026-10-14/RESOLUCION.md](AUDIT_2026-10-14/RESOLUCION.md); la del
+28 de septiembre, en
 [AUDIT_2026-09-28/RESOLUCION.md](AUDIT_2026-09-28/RESOLUCION.md); la anterior, en
 [REMEDIATION_2026-09-13.md](REMEDIATION_2026-09-13.md).
 

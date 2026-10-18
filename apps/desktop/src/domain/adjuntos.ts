@@ -265,7 +265,7 @@ export type BrokerDiagnostic = {
    *  no solo qué respondió. */
   demonstrableExecution?: boolean;
   /** Veredicto de `/api/v1/auth/check` (H20). */
-  credential?: "valid" | "rejected" | "not_required" | "backend_unavailable" | "unknown" | null;
+  credential?: "valid" | "rejected" | "missing" | "not_required" | "backend_unavailable" | "unknown" | null;
   /** Destino real y si la conexión va cifrada (H04). */
   destination?: {
     host: string;

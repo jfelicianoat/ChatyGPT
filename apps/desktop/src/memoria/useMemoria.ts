@@ -16,6 +16,7 @@ import {
 } from "../domain";
 import { describeError } from "../errors";
 import { platform } from "../platform";
+import { confirmAction } from "../confirmacion";
 
 /** Borrador de la ficha que se esta editando en linea. */
 export type MemoryEditDraft = {
@@ -145,7 +146,7 @@ export function useMemoria({ refreshAuditEvents }: Opciones) {
   };
 
   const removeMemoryItem = async (memoryId: string) => {
-    if (!window.confirm("¿Eliminar este recuerdo de forma permanente?")) return;
+    if (!await confirmAction("¿Eliminar este recuerdo de forma permanente?", { action: "Eliminar", destructive: true })) return;
     setMemoryBusy(true);
     try {
       setMemory({ state: "ready", value: await platform.deleteMemoryItem(memoryId) });

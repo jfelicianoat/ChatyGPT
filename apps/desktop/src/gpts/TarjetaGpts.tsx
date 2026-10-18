@@ -126,7 +126,7 @@ export function TarjetaGpts({ gpts, projects, openDialog }: Props) {
   <section className="custom-gpt-card">
     <div className="panel-heading">
       <div>
-        <span className="kicker">Fase 3 · Asistentes personales</span>
+        <span className="kicker">Asistentes personales</span>
         <h3>Mis GPTs</h3>
       </div>
       <div className="custom-gpt-panel-actions">

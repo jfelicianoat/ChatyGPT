@@ -3,6 +3,7 @@ import { useState } from "react";
 import type { BackupReport } from "../domain";
 import { describeError } from "../errors";
 import { platform } from "../platform";
+import { confirmAction } from "../confirmacion";
 
 type Stage =
   | { kind: "idle" }
@@ -64,7 +65,7 @@ export function CopiaSeguridad() {
 
   const restore = async (report: BackupReport) => {
     if (
-      !window.confirm(
+      !await confirmAction(
         `¿Restaurar la copia del ${new Date(report.createdAt).toLocaleString("es-ES")}?\n\n` +
           "Se aplicará la próxima vez que abras ChatyGPT. Tus datos actuales no se borran: se " +
           "apartan en una carpeta dentro del directorio de datos."

@@ -99,7 +99,11 @@ impl TaskState {
             .and_then(Value::as_object)
             .ok_or_else(|| "progress debe ser un objeto".to_owned())?;
         required_non_empty_string(progress, "phase")?;
-        if kind == "inference" {
+        // Un fallo terminal del Broker 2.11 llega con `progress: {"phase": "failed"}`
+        // y sin contadores: exigirlos convertía el desenlace en un error de
+        // contrato y la tarea se quedaba sondeando para siempre (INC-14).
+        let terminal = matches!(status, "completed" | "failed" | "cancelled");
+        if kind == "inference" && !terminal {
             required_non_negative_integer(progress, "invocations_completed")?;
             required_non_negative_integer(progress, "invocations_total")?;
         }
@@ -688,6 +692,41 @@ mod tests {
         let error = TaskState::from_contract_value(crossed, "task-one")
             .expect_err("una respuesta de otra tarea no debe mezclarse");
         assert!(error.contains("task_id"));
+    }
+
+    /// Respuesta literal del Broker 2.11 (auditoría 14-oct, INC-14): rechazarla
+    /// dejaba el turno «Generando» para siempre.
+    #[test]
+    fn runtime_contract_accepts_terminal_failure_without_progress_counters() {
+        let state = TaskState::from_contract_value(
+            serde_json::json!({
+                "task_id": "task_c6a938d802484c3b9a4d1d49fb5f7927",
+                "kind": "inference",
+                "status": "failed",
+                "request_id": "chatygpt_turn_3bfd19d2672b4146a788d78af3201686",
+                "created_at": "2026-10-15T05:20:15.455020Z",
+                "updated_at": "2026-10-15T05:21:35.749060Z",
+                "execution_strategy": "single",
+                "execution_preset": "fast",
+                "selection_mode": "auto",
+                "progress": {"phase": "failed"},
+                "result": null,
+                "error": {
+                    "code": "INVALID_PROVIDER_RESPONSE",
+                    "message": "Ollama no devolvió message.content",
+                    "retryable": false,
+                    "stage": "generating",
+                    "role": "single",
+                    "provider": "ollama",
+                    "deployment": "local",
+                    "model": "ornith-1.5:35b"
+                },
+                "execution_summary": null
+            }),
+            "task_c6a938d802484c3b9a4d1d49fb5f7927",
+        )
+        .expect("un fallo terminal sin contadores es contractual");
+        assert!(state.status.is_terminal());
     }
 
     #[test]

@@ -49,7 +49,7 @@ export function TarjetaMemoria({ memoria, projects }: Props) {
   <section className="memory-card">
     <div className="panel-heading">
       <div>
-        <span className="kicker">Fase 2 · Contexto personal</span>
+        <span className="kicker">Contexto personal</span>
         <h3>Memoria</h3>
       </div>
       {memory.state === "ready" && (

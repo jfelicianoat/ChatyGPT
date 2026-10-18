@@ -707,4 +707,7 @@ mod tests;
 mod tests_auditoria;
 
 #[cfg(test)]
+mod tests_auditoria_1014;
+
+#[cfg(test)]
 mod tests_system1;

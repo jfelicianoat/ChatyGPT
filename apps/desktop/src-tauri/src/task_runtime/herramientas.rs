@@ -1266,6 +1266,8 @@ pub(super) fn spawn_submission_and_poll(
 
 /// Fragmentos de documento que pueden estar indexándose a la vez (H19).
 const INDEX_CONCURRENCY: usize = 4;
+/// Lecturas seguidas que no cumplen el contrato antes de dar la tarea por perdida.
+const CONTRACT_ERROR_LIMIT: u32 = 3;
 
 /// Cola de indexación de una base de datos.
 ///
@@ -1453,6 +1455,30 @@ async fn poll_task(database: Database, broker: BrokerClient, local_id: String) {
                             ],
                         );
                         let _ = database.mark_orphaned(&local_id, &error.to_string());
+                        return;
+                    }
+                    // Una respuesta que no cumple el contrato no mejora sondeando: tras
+                    // varios intentos se cierra con el motivo a la vista en vez de
+                    // dejar el turno «Generando» para siempre (INC-14).
+                    if matches!(error, AppError::BrokerContract(_))
+                        && record.consecutive_poll_errors + 1 >= CONTRACT_ERROR_LIMIT
+                    {
+                        logging::error(
+                            "task.orphaned",
+                            Some(&local_id),
+                            &[
+                                ("phase", logging::code("poll")),
+                                ("error_kind", logging::error_kind(&error)),
+                            ],
+                        );
+                        let _ = database.mark_orphaned(
+                            &local_id,
+                            &format!(
+                                "ChatyGPT no entiende la respuesta de Broker AI sobre esta \
+                                 tarea ({error}). Vuelve a enviar la pregunta o actualiza \
+                                 ChatyGPT."
+                            ),
+                        );
                         return;
                     }
                     logging::warn(

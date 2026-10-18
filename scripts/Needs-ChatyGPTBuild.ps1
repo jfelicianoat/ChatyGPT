@@ -36,6 +36,10 @@ $buildInputs = @(
 )
 
 $entries = [System.Collections.Generic.List[string]]::new()
+# Fecha de la fuente más reciente. La huella sola no basta: el 3-oct se registró
+# sobre un ejecutable que no se había reconstruido (auditoría 14-oct, INC-01) y
+# el lanzador dio por bueno un binario 0.3.0 con las fuentes ya en 0.4.0.
+$newestInput = [datetime]::MinValue
 foreach ($relativeInput in $buildInputs) {
     $inputPath = Join-Path $projectRoot $relativeInput
     if (-not (Test-Path -LiteralPath $inputPath)) {
@@ -52,6 +56,7 @@ foreach ($relativeInput in $buildInputs) {
         $relative = $file.FullName.Substring($projectRoot.Length).TrimStart('\', '/')
         $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash
         $entries.Add("$relative`t$($file.Length)`t$hash")
+        if ($file.LastWriteTimeUtc -gt $newestInput) { $newestInput = $file.LastWriteTimeUtc }
     }
 }
 $manifest = ($entries | Sort-Object) -join "`n"
@@ -67,6 +72,9 @@ if ($Record) {
     if (-not (Test-Path -LiteralPath $executablePath -PathType Leaf)) {
         throw "No se puede registrar un build que no existe: $executablePath"
     }
+    if ((Get-Item -LiteralPath $executablePath).LastWriteTimeUtc -lt $newestInput) {
+        throw "El ejecutable es anterior a las fuentes: la compilacion no lo reemplazo y no se registra."
+    }
     Set-Content -LiteralPath $stampPath -Value $fingerprint -Encoding ascii -NoNewline
     Write-Output $fingerprint
     exit 0
@@ -79,4 +87,5 @@ if (-not (Test-Path -LiteralPath $executablePath -PathType Leaf) -or
 }
 
 $recorded = (Get-Content -LiteralPath $stampPath -Raw).Trim()
-Write-Output $(if ($recorded -ceq $fingerprint) { "0" } else { "1" })
+$executableIsCurrent = (Get-Item -LiteralPath $executablePath).LastWriteTimeUtc -ge $newestInput
+Write-Output $(if ($recorded -ceq $fingerprint -and $executableIsCurrent) { "0" } else { "1" })

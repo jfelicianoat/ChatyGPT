@@ -1,5 +1,6 @@
 /** Auditoria, memoria, contexto de un turno, credenciales y carpetas. */
 import type { ToolCallView } from "./conversacion";
+import type { BrokerDiagnostic } from "./adjuntos";
 
 export type AuditEventView = {
   id: number;
@@ -139,6 +140,11 @@ const TASK_PHASE_LABELS: Record<string, string> = {
   completed: "Completado"
 };
 
+/** Estado de una tarea en palabras: el código del Broker («generating») es
+ *  inglés de protocolo, no texto para la persona (auditoría 14-oct). */
+export const taskStatusLabel = (status: string): string =>
+  TASK_PHASE_LABELS[status] ?? "En curso";
+
 export const taskProgressSummary = (task: LocalTaskSnapshot): {
   label: string;
   completed?: number;
@@ -232,6 +238,31 @@ export const brokerCredentialLabel = (status: BrokerCredentialStatus): string =>
       return "Heredada del entorno";
     default:
       return "Sin credencial";
+  }
+};
+
+/**
+ * Aviso tras guardar la credencial, con el veredicto del Broker (INC-03).
+ *
+ * Guardarla siempre funciona; lo que la persona necesita saber es si sirve.
+ */
+export const credentialSavedNotice = (
+  diagnostic: Pick<BrokerDiagnostic, "reachable" | "credential"> | null
+): string => {
+  const saved = "Credencial guardada y cifrada para tu cuenta de Windows";
+  if (!diagnostic || !diagnostic.reachable) {
+    return `${saved}, pero no se pudo comprobar: Broker AI no responde ahora.`;
+  }
+  switch (diagnostic.credential) {
+    case "valid":
+      return `${saved}. Broker AI la acepta.`;
+    case "not_required":
+      return `${saved}. Este Broker no exige credencial.`;
+    case "rejected":
+    case "missing":
+      return `${saved}, pero Broker AI la rechaza: revisa que sea el token actual.`;
+    default:
+      return `${saved}, pero Broker AI no pudo comprobarla ahora.`;
   }
 };
 

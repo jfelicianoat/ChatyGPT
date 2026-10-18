@@ -22,6 +22,7 @@ import {
   loadWorkflowDraft,
   saveWorkflowDraft
 } from "./workflowDrafts";
+import { confirmAction } from "./confirmacion";
 
 type WorkflowStudioProps = {
   projects: ProjectSummary[];
@@ -381,7 +382,7 @@ export function WorkflowStudio({ projects, customGpts, onOpenBrokerCredential, o
   /** Descarta los cambios locales y vuelve a la versión guardada. */
   const discardLocalChanges = async () => {
     if (!selected) return;
-    if (!window.confirm(`¿Descartar los cambios sin guardar de «${selected.name}»?`)) return;
+    if (!await confirmAction(`¿Descartar los cambios sin guardar de «${selected.name}»?`)) return;
     discardWorkflowDraft(selected.id);
     setRecoveredDraftAt(null);
     try {
@@ -431,7 +432,7 @@ export function WorkflowStudio({ projects, customGpts, onOpenBrokerCredential, o
     try {
       const dueAt = new Date(scheduleAt);
       if (!Number.isFinite(dueAt.getTime())) throw new Error("Selecciona una fecha y hora válidas.");
-      if (!window.confirm(
+      if (!await confirmAction(
         `¿Programar “${selected.name}”?\n\nEntrada: ${runInput}\nPrimera ejecución: ${dueAt.toLocaleString()}\nRepetición: ${scheduleExpression === "once" ? "una vez" : scheduleExpression === "daily" ? "cada día" : "cada semana"}`
       )) return;
       await platform.createScheduledWorkflow(

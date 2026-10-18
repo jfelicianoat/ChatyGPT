@@ -30,6 +30,7 @@ import {
   type ImageDescriptionPreference
 } from "../ingestionPreferences";
 import { platform } from "../platform";
+import { confirmAction } from "../confirmacion";
 
 type Opciones = {
   /** Diagnostico del broker: dice que extensiones admite el adjunto. */
@@ -164,8 +165,9 @@ export function useGpts({
     // Restaurar reemplaza la configuración vigente del GPT. Las versiones
     // anteriores se conservan, pero la decisión sigue siendo de la persona.
     if (
-      !window.confirm(
-        "¿Restaurar esta versión? Reemplazará la configuración actual del GPT; las versiones anteriores se conservan."
+      !await confirmAction(
+        "¿Restaurar esta versión? Reemplazará la configuración actual del GPT; las versiones anteriores se conservan.",
+        { action: "Restaurar versión" }
       )
     ) {
       return;
@@ -481,7 +483,7 @@ export function useGpts({
 
   const removeCustomGptFile = async (attachmentId: string) => {
     if (!customGptKnowledge) return;
-    if (!window.confirm("¿Retirar este archivo del conocimiento de este GPT?")) return;
+    if (!await confirmAction("¿Retirar este archivo del conocimiento de este GPT?")) return;
     const customGptId = customGptKnowledge.customGptId;
     setCustomGptKnowledgeBusy(true);
     try {
@@ -576,7 +578,7 @@ export function useGpts({
 
   const removeCustomGptKnowledgeItem = async (memoryId: string) => {
     if (!customGptKnowledge) return;
-    if (!window.confirm("¿Eliminar este conocimiento solo de este GPT personal?")) return;
+    if (!await confirmAction("¿Eliminar este conocimiento solo de este GPT personal?")) return;
     const customGptId = customGptKnowledge.customGptId;
     setCustomGptKnowledgeBusy(true);
     try {
@@ -675,7 +677,7 @@ export function useGpts({
     const credentialSummary = (action.authMode ?? "none") === "none"
       ? "No se usará ninguna credencial."
       : `Se usará la credencial protegida «${action.credentialRef}». Su valor no se mostrará ni se enviará al modelo.`;
-    if (!window.confirm(
+    if (!await confirmAction(
       `¿Conectar ahora con ${preview.destination}?\n\n${dataSummary}\n${credentialSummary}\nMétodo: ${preview.method}\n\nEsta prueba abre la API una sola vez y no contacta con Broker AI.`
     )) return;
     setCustomGptApiTests((current) => ({ ...current, [actionIndex]: { loading: true } }));
@@ -715,7 +717,7 @@ export function useGpts({
 
   const removeApiCredential = async (actionIndex: number) => {
     const name = customGptApiActions[actionIndex].credentialRef?.trim();
-    if (!name || !window.confirm(`¿Retirar la credencial protegida «${name}» de este equipo? Las acciones que la usen dejarán de funcionar hasta que vuelvas a guardarla.`)) return;
+    if (!name || !await confirmAction(`¿Retirar la credencial protegida «${name}» de este equipo? Las acciones que la usen dejarán de funcionar hasta que vuelvas a guardarla.`)) return;
     setApiCredentialBusy(actionIndex);
     try {
       setApiCredentials({ state: "ready", value: await platform.clearApiCredential(name) });

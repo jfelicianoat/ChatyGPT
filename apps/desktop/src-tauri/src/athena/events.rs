@@ -182,7 +182,7 @@ impl FlujoEventos {
                 None,
                 &[("run", logging::id(&self.run_id))],
             );
-            AppError::AthenaTransport(error.to_string())
+            AppError::AthenaTransport(crate::error::describe_network_failure(&error))
         })?;
 
         match respuesta.status() {
@@ -204,11 +204,9 @@ impl FlujoEventos {
 
         let mut respuesta = respuesta;
         let mut pendiente = Vec::new();
-        while let Some(trozo) = respuesta
-            .chunk()
-            .await
-            .map_err(|error| AppError::AthenaTransport(error.to_string()))?
-        {
+        while let Some(trozo) = respuesta.chunk().await.map_err(|error| {
+            AppError::AthenaTransport(crate::error::describe_network_failure(&error))
+        })? {
             pendiente.extend_from_slice(&trozo);
             if pendiente.len() > MAX_SSE_BUFFER_BYTES {
                 return Err(AppError::AthenaContract(

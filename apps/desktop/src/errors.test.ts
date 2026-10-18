@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { describeError } from "./errors";
+import { describeError, withoutExtendedPathPrefix } from "./errors";
 
 describe("mensajes de error visibles", () => {
   it("usa el mensaje del error, no su representación técnica", () => {
@@ -27,5 +27,17 @@ describe("mensajes de error visibles", () => {
     expect(describeError(null)).toBe("null");
     expect(describeError(undefined)).toBe("undefined");
     expect(describeError({ code: "X" })).toBe("[object Object]");
+  });
+});
+
+describe("rutas visibles (INC-13)", () => {
+  it("quita el prefijo de rutas largas sin tocar el resto", () => {
+    expect(withoutExtendedPathPrefix(String.raw`Exportación verificada: \\?\D:\docs\a.md`)).toBe(
+      String.raw`Exportación verificada: D:\docs\a.md`
+    );
+    expect(withoutExtendedPathPrefix(String.raw`\\?\UNC\nas\datos\a.md`)).toBe(
+      String.raw`\\nas\datos\a.md`
+    );
+    expect(withoutExtendedPathPrefix(String.raw`C:\normal\a.md`)).toBe(String.raw`C:\normal\a.md`);
   });
 });

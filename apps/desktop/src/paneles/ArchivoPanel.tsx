@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import type { ArchiveOverview, ArchivedConversation } from "../domain";
 import { describeError } from "../errors";
 import { platform } from "../platform";
+import { confirmAction } from "../confirmacion";
 
 type Props = {
   /** Se llama tras restaurar o borrar para que la navegación se refresque. */
@@ -61,10 +62,11 @@ export function ArchivoPanel({ onChanged, onOpenConversation }: Props) {
   const restoreConversation = (item: ArchivedConversation) =>
     act(item.id, () => platform.restoreConversation(item.id), `«${item.title}» vuelve a tus chats.`);
 
-  const purgeConversation = (item: ArchivedConversation) => {
+  const purgeConversation = async (item: ArchivedConversation) => {
     if (
-      !window.confirm(
-        `¿Borrar para siempre «${item.title}»? Se eliminan sus ${item.messageCount} mensajes y las copias de adjuntos que ninguna otra conversación usa. No se puede deshacer.`
+      !await confirmAction(
+        `¿Borrar para siempre «${item.title}»? Se eliminan sus ${item.messageCount} mensajes y las copias de adjuntos que ninguna otra conversación usa. No se puede deshacer.`,
+        { action: "Borrar para siempre", destructive: true }
       )
     ) {
       return;
@@ -99,7 +101,7 @@ export function ArchivoPanel({ onChanged, onOpenConversation }: Props) {
           <button
             className="secondary danger"
             disabled={busyId !== null}
-            onClick={() => purgeConversation(item)}
+            onClick={() => void purgeConversation(item)}
           >
             Borrar para siempre
           </button>

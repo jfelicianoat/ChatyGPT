@@ -7,6 +7,7 @@ import {
   attachmentStatusLabel,
   authorizedFolderPurpose,
   brokerCredentialLabel,
+  credentialSavedNotice,
   brokerAttachmentExtensions,
   brokerSupportsPreset,
   canSendMessage,
@@ -980,6 +981,19 @@ describe("credencial del Broker", () => {
         message: ""
       })
     ).toBe("Sin credencial");
+  });
+
+  it("al guardar dice si el Broker acepta la credencial, no solo que se guardó (INC-03)", () => {
+    expect(credentialSavedNotice({ reachable: true, credential: "valid" })).toContain(
+      "Broker AI la acepta"
+    );
+    expect(credentialSavedNotice({ reachable: true, credential: "rejected" })).toContain(
+      "la rechaza"
+    );
+    expect(credentialSavedNotice({ reachable: false, credential: null })).toContain(
+      "no se pudo comprobar"
+    );
+    expect(credentialSavedNotice(null)).toContain("no se pudo comprobar");
   });
 });
 

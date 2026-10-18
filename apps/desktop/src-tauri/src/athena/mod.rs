@@ -137,13 +137,13 @@ pub enum RevisionObjetivo {
 ///
 /// El mensaje de `reqwest` puede incluir la URL completa y, con ella, el puerto
 /// y el token si viajara en la ruta. En el registro solo queda la operación.
-fn fallo_transporte(operacion: &str, error: impl std::fmt::Display) -> AppError {
+fn fallo_transporte(operacion: &str, error: reqwest::Error) -> AppError {
     logging::warn(
         "athena.transport_failed",
         None,
         &[("operation", logging::code(operacion))],
     );
-    AppError::AthenaTransport(error.to_string())
+    AppError::AthenaTransport(crate::error::describe_network_failure(&error))
 }
 
 /// Presupuesto de una respuesta JSON de Athena (H18).

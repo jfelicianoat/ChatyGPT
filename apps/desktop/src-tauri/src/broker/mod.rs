@@ -44,13 +44,13 @@ fn header_token(value: &str) -> Result<HeaderValue, AppError> {
 ///
 /// El mensaje de `reqwest` puede incluir la URL completa; en el registro solo
 /// queda la operación afectada.
-fn transport_failure(operation: &str, error: impl std::fmt::Display) -> AppError {
+fn transport_failure(operation: &str, error: reqwest::Error) -> AppError {
     logging::warn(
         "broker.transport_failed",
         None,
         &[("operation", logging::code(operation))],
     );
-    AppError::BrokerTransport(error.to_string())
+    AppError::BrokerTransport(crate::error::describe_network_failure(&error))
 }
 
 async fn read_body_limited(
@@ -584,7 +584,17 @@ impl BrokerClient {
                 response
                     .take((MAX_JSON_BYTES + 1) as u64)
                     .read_to_end(&mut bytes)
-                    .map_err(|error| transport_failure("upload_file", error))?;
+                    .map_err(|_| {
+                        logging::warn(
+                            "broker.transport_failed",
+                            None,
+                            &[("operation", logging::code("upload_file"))],
+                        );
+                        AppError::BrokerTransport(
+                            "se cortó la respuesta al subir el archivo; vuelve a intentarlo"
+                                .to_owned(),
+                        )
+                    })?;
             }
             if bytes.len() > MAX_JSON_BYTES {
                 return Err(AppError::BrokerContract(
@@ -694,12 +704,22 @@ impl BrokerClient {
         let mut diagnostic = self.probe().await;
         diagnostic.destination = Some(crate::politica::broker_destination(&self.base_url()));
         if diagnostic.reachable {
-            let credential = self.check_credential().await;
+            let mut credential = self.check_credential().await;
+            // Sin token, un 401 no es una credencial «rechazada»: no hay ninguna (INC-02).
+            if credential == "rejected" && self.current_token().is_none() {
+                credential = "missing".to_owned();
+            }
             match credential.as_str() {
+                "missing" => {
+                    diagnostic.ready = false;
+                    diagnostic.message = "Falta la credencial de Broker AI: introduce su token \
+                        en Ajustes para poder enviar mensajes."
+                        .to_owned();
+                }
                 "rejected" => {
                     diagnostic.ready = false;
-                    diagnostic.message = "Broker AI rechaza la credencial guardada: el Broker \
-                        cambia su token en cada arranque. Introduce el token actual en Ajustes."
+                    diagnostic.message = "Broker AI rechaza la credencial guardada: puede que \
+                        su token haya cambiado. Introduce el token actual en Ajustes."
                         .to_owned();
                 }
                 "backend_unavailable" => {
@@ -1631,6 +1651,20 @@ mod tests {
         );
         simulated.always("GET /api/v1/auth/check", ScriptedResponse::status(403));
         let client = BrokerClient::for_base_url(simulated.base_url()).expect("cliente");
+
+        // INC-02: sin token guardado no se habla de una credencial «rechazada».
+        let diagnostic = block_on(client.diagnose());
+        assert!(!diagnostic.ready);
+        assert_eq!(diagnostic.credential.as_deref(), Some("missing"));
+        assert!(
+            diagnostic.message.contains("Falta la credencial"),
+            "{}",
+            diagnostic.message
+        );
+
+        client
+            .replace_admin_token(Some("token-caducado"))
+            .expect("token");
         let diagnostic = block_on(client.diagnose());
         assert!(diagnostic.reachable);
         assert!(!diagnostic.ready);
@@ -1640,6 +1674,7 @@ mod tests {
             "{}",
             diagnostic.message
         );
+        assert!(!diagnostic.message.contains("cada arranque"));
         let destination = diagnostic.destination.expect("destino");
         assert!(destination.local_machine);
 

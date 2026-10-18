@@ -46,6 +46,8 @@ import {
   taskProgressSummary,
   authorizedFolderPurpose,
   brokerCredentialLabel,
+  credentialSavedNotice,
+  taskStatusLabel,
   customGptIconGlyph,
   customGptIconOptions,
   customGptVersionSummary,
@@ -137,7 +139,7 @@ import {
 } from "./borradores";
 import { isImeComposition } from "./keyboard";
 import { dialogCopy, type DialogState } from "./dialogs";
-import { describeError } from "./errors";
+import { describeError, withoutExtendedPathPrefix } from "./errors";
 import { useMemoria } from "./memoria/useMemoria";
 import { TarjetaMemoria } from "./memoria/TarjetaMemoria";
 import { useGpts } from "./gpts/useGpts";
@@ -154,6 +156,7 @@ import {
   canSaveScheduleTemplate,
   pendingScheduledRunNotifications,
   defaultScheduledLocalTime,
+  freshScheduledLocalTime,
   resolvedSchedulerTimezone,
   validateScheduleDraft,
   schedulerCalendarConflictCount,
@@ -174,6 +177,7 @@ import {
   PerformanceSampleBuffer,
   type PerformanceMetric
 } from "./performance";
+import { ConfirmacionHost, confirmAction } from "./confirmacion";
 
 // H26: las áreas más pesadas se cargan cuando se abren. El paquete inicial
 // deja de arrastrar el editor de flujos y el área de Athena.
@@ -193,6 +197,19 @@ const WORKSPACE_TITLES: Record<WorkspaceDestination, string> = {
   automations: "Automatizaciones",
   settings: "Ajustes",
   archive: "Archivo"
+};
+
+/** Qué se hace en cada área: la frase de cabecera era la misma en todas y no
+ *  decía dónde estaba la persona (auditoría 14-oct, INC-06). */
+const WORKSPACE_SUBTITLES: Record<WorkspaceDestination, string> = {
+  chats: "Tu IA, organizada y durable.",
+  projects: "Agrupa conversaciones y su conocimiento.",
+  gpts: "Asistentes con tus instrucciones, versionados.",
+  workflows: "Encadena pasos y publícalos.",
+  athena: "Trabajo autónomo supervisado.",
+  automations: "Tareas que se ejecutan solas a su hora.",
+  settings: "Conexiones, permisos y datos de este equipo.",
+  archive: "Conversaciones archivadas y papelera."
 };
 
 type ScreenCapturePreview = CapturedScreenFrame & {
@@ -440,6 +457,22 @@ export function App() {
   const [navigationError, setNavigationError] = useState<string | null>(null);
   const [exportBusy, setExportBusy] = useState<"markdown" | "obsidian" | null>(null);
   const [exportNotice, setExportNotice] = useState<string | null>(null);
+  // El aviso de una exportación es pasajero: se retira solo y al cambiar de
+  // sección, en vez de quedarse pegado sobre lo que se abra después (INC-13).
+  useEffect(() => {
+    if (!exportNotice) return;
+    const timer = window.setTimeout(() => setExportNotice(null), 15_000);
+    return () => window.clearTimeout(timer);
+  }, [exportNotice]);
+  useEffect(() => setExportNotice(null), [workspaceDestination]);
+  // El planificador no se desmonta al cambiar de área: la propuesta de fecha se
+  // renueva al entrar si ya quedó en el pasado (auditoría 14-oct, INC-10).
+  const { scheduleEditingId, setScheduleAt } = programacion;
+  useEffect(() => {
+    if (workspaceDestination === "automations" && !scheduleEditingId) {
+      setScheduleAt((value) => freshScheduledLocalTime(value));
+    }
+  }, [workspaceDestination, scheduleEditingId, setScheduleAt]);
   const [recoveryNoticeDismissed, setRecoveryNoticeDismissed] = useState(false);
   const [contextPanel, setContextPanel] = useState<{
     taskId: string;
@@ -758,7 +791,16 @@ export function App() {
       const status = await platform.setBrokerCredential(credentialDraft);
       setBrokerCredential({ state: "ready", value: status });
       setCredentialDraft("");
-      setCredentialNotice("Credencial guardada y cifrada para tu cuenta de Windows.");
+      // Se comprueba en el acto, como hace el lanzador: un token inventado no
+      // debe descubrirse después, al enviar el primer mensaje (INC-03).
+      let diagnostic: BrokerDiagnostic | null = null;
+      try {
+        diagnostic = await platform.diagnoseBroker();
+        setBroker({ state: "ready", value: diagnostic });
+      } catch {
+        diagnostic = null;
+      }
+      setCredentialNotice(credentialSavedNotice(diagnostic));
     } catch (error) {
       setCredentialNotice(describeError(error));
     } finally {
@@ -771,7 +813,7 @@ export function App() {
     // afirmaba por su cuenta, de modo que la comprobación no protegía nada:
     // quien decide es la persona, y aquí es donde se le pregunta.
     if (
-      !window.confirm(
+      !await confirmAction(
         "¿Retirar la credencial de Broker AI de este equipo? Tendrás que volver a introducirla para enviar mensajes."
       )
     ) {
@@ -794,7 +836,7 @@ export function App() {
     // Misma razón que al retirar la credencial: revocar una carpeta autorizada
     // es una decisión de la persona, no un trámite que el frontend dé por hecho.
     if (
-      !window.confirm(
+      !await confirmAction(
         "¿Revocar todos los permisos de esta carpeta? Las próximas exportaciones, lecturas o modificaciones volverán a pedir autorización."
       )
     ) {
@@ -1840,7 +1882,7 @@ export function App() {
   const clearPerformanceSamples = async () => {
     // Borrar las mediciones es irreversible y deja las métricas sin veredicto.
     if (
-      !window.confirm(
+      !await confirmAction(
         `¿Vaciar las mediciones de rendimiento? Las ${
           performanceReport.state === "ready" ? performanceReport.value.metrics.length : 5
         } métricas volverán a quedar sin medir.`
@@ -2331,7 +2373,7 @@ export function App() {
         const message = describeError(error);
         if (
           !message.includes("confirma para reemplazarlo") ||
-          !window.confirm(
+          !await confirmAction(
             "La nota o alguno de sus adjuntos tiene cambios hechos fuera de ChatyGPT. ¿Quieres reemplazarlos con la versión local?"
           )
         ) {
@@ -2475,7 +2517,7 @@ export function App() {
     attachmentId: string,
     displayName: string
   ) => {
-    if (!window.confirm(
+    if (!await confirmAction(
       `¿Retirar "${displayName}" de la biblioteca del proyecto?\n\n`
       + "Seguirá disponible en los chats que ya lo utilizan."
     )) {
@@ -2795,15 +2837,6 @@ export function App() {
                 >
                   ＋
                 </button>
-                <button
-                  className="secondary"
-                  disabled={folderBusy === "new-modify-folder"}
-                  onClick={() => void authorizeGptModifyFolder()}
-                >
-                  {folderBusy === "new-modify-folder"
-                    ? "Abriendo selector…"
-                    : "Autorizar carpeta para modificar"}
-                </button>
               </div>
               <button
                 className={`project-link ${selectedProjectId === null ? "active" : ""}`}
@@ -2941,7 +2974,7 @@ export function App() {
             <h1>
               {conversation?.state === "ready"
                 ? conversation.value.title
-                : "Tu IA, organizada y durable."}
+                : WORKSPACE_SUBTITLES[workspaceDestination]}
             </h1>
           </div>
           {conversation?.state === "ready" ? (
@@ -3035,16 +3068,19 @@ export function App() {
 
         <main id="main-content" tabIndex={-1}
           className={`content ${conversation?.state === "ready" ? "conversation-content" : "home-content"}`}>
-          {exportNotice && <p className="export-notice">{exportNotice}</p>}
+          {exportNotice && (
+            <p className="export-notice" role="status">{withoutExtendedPathPrefix(exportNotice)}</p>
+          )}
           {bootstrap.state === "ready" && bootstrap.value.restoreNotice && (
             <p className="restore-notice" role="status">{bootstrap.value.restoreNotice}</p>
           )}
-          {broker?.state === "ready" && broker.value.credential === "rejected" && (
+          {broker?.state === "ready" &&
+            (broker.value.credential === "rejected" || broker.value.credential === "missing") && (
             <div className="credential-banner" role="alert">
               <span>
-                Broker AI rechaza la credencial guardada (el Broker cambia su token en cada
-                arranque). Tus conversaciones siguen aquí; para enviar mensajes introduce el token
-                actual.
+                {broker.value.credential === "missing"
+                  ? "Falta la credencial de Broker AI. Tus conversaciones siguen aquí; para enviar mensajes introduce su token."
+                  : "Broker AI rechaza la credencial guardada (puede que su token haya cambiado). Tus conversaciones siguen aquí; para enviar mensajes introduce el token actual."}
               </span>
               <button className="secondary" onClick={openBrokerCredentialSettings}>
                 Ir a la credencial
@@ -3063,7 +3099,7 @@ export function App() {
                   <p>Puedes seguir trabajando: el progreso continúa desde el último estado guardado.</p>
                   {bootstrap.value.recoveryItems.slice(0, 3).map((item, index) => (
                     <div className="recovery-item" key={`${item.updatedAt}-${index}`}>
-                      <span>{item.conversationTitle ?? item.label} · {item.status}</span>
+                      <span>{item.conversationTitle ?? item.label} · {taskStatusLabel(item.status)}</span>
                       {item.conversationId && (
                         <button className="secondary" onClick={() => openConversation(item.conversationId!)}>
                           Abrir conversación
@@ -4628,6 +4664,8 @@ export function App() {
                           ? "aceptada por el Broker"
                           : broker.value.credential === "rejected"
                             ? "rechazada: introduce el token actual"
+                            : broker.value.credential === "missing"
+                              ? "sin credencial: introdúcela en Ajustes"
                             : broker.value.credential === "not_required"
                               ? "este Broker no exige credencial"
                               : broker.value.credential === "backend_unavailable"
@@ -4872,15 +4910,28 @@ export function App() {
                     requiere una confirmación adicional en el chat y usa modelos locales.
                   </p>
                 </div>
-                <button
-                  className="secondary"
-                  disabled={folderBusy === "new-read-folder"}
-                  onClick={() => void authorizeGptReadFolder()}
-                >
-                  {folderBusy === "new-read-folder"
-                    ? "Abriendo selector…"
-                    : "Autorizar carpeta para lectura"}
-                </button>
+                {/* Antes estaba en la cabecera «Proyectos» de la barra lateral,
+                    aplastado en una columna de 70 px (auditoría 14-oct, INC-05). */}
+                <div className="authorized-folder-actions">
+                  <button
+                    className="secondary"
+                    disabled={folderBusy === "new-read-folder"}
+                    onClick={() => void authorizeGptReadFolder()}
+                  >
+                    {folderBusy === "new-read-folder"
+                      ? "Abriendo selector…"
+                      : "Autorizar carpeta para lectura"}
+                  </button>
+                  <button
+                    className="secondary"
+                    disabled={folderBusy === "new-modify-folder"}
+                    onClick={() => void authorizeGptModifyFolder()}
+                  >
+                    {folderBusy === "new-modify-folder"
+                      ? "Abriendo selector…"
+                      : "Autorizar carpeta para modificar"}
+                  </button>
+                </div>
                 {authorizedFolders.state === "loading" && <small>Cargando permisos…</small>}
                 {authorizedFolders.state === "error" && (
                   <small role="alert">{authorizedFolders.message}</small>
@@ -5079,6 +5130,8 @@ export function App() {
         activeModalRef={activeModalRef}
         setKeyboardHelpOpen={setKeyboardHelpOpen}
       />
+
+      <ConfirmacionHost />
 
       <Dialogo
         dialog={dialog}

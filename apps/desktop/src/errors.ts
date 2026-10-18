@@ -11,3 +11,13 @@
 export function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
+
+/**
+ * Quita el prefijo de rutas largas de Windows (`\?\`) de un texto visible.
+ *
+ * Las rutas canónicas lo llevan y la base las guarda así a propósito, pero a la
+ * persona solo le dice «tecnicismo» (auditoría 14-oct, INC-13).
+ */
+export function withoutExtendedPathPrefix(text: string): string {
+  return text.replace(/\\\\\?\\UNC\\/g, "\\\\").replace(/\\\\\?\\/g, "");
+}
