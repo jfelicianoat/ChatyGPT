@@ -30,13 +30,16 @@ mod events;
 pub mod simulated;
 mod supervisor;
 
-use std::sync::{Arc, RwLock};
-use std::time::Duration;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Duration, Instant};
 
 use reqwest::{header::HeaderValue, Client, Method, Response, StatusCode};
 use serde::Serialize;
 use serde_json::Value;
 use url::Url;
+
+use crate::broker::ai_os_core::CoreGate;
 
 // `lib` nombra un subconjunto de esto; las pruebas del módulo usan el resto a
 // través de `super::*`. Las dos cosas son ciertas a la vez, así que el aviso se
@@ -221,6 +224,12 @@ pub struct AthenaClient {
     /// Token compartido y recargable: Athena lo regenera en cada arranque, así
     /// que rotarlo no puede obligar a reiniciar ChatyGPT.
     token: Arc<RwLock<Option<HeaderValue>>>,
+    /// Monitor de AI OS Core (con `CHATYGPT_CORE_URL`): cada encargo a Athena se
+    /// ve como un salto ChatyGPT → Athena, y Athena sigue el mismo flujo hasta el
+    /// Broker gracias a la cabecera `X-Flow-Id`.
+    monitor: Option<CoreGate>,
+    /// run → (flujo del monitor, cuándo se pidió).
+    flujos: Arc<Mutex<HashMap<String, (String, Instant)>>>,
 }
 
 impl AthenaClient {
@@ -241,11 +250,20 @@ impl AthenaClient {
             base_url: url,
             http,
             token: Arc::new(RwLock::new(None)),
+            monitor: CoreGate::from_env().ok().flatten(),
+            flujos: Arc::default(),
         })
     }
 
     pub fn base_url(&self) -> String {
         self.base_url.to_string()
+    }
+
+    /// Pruebas: un monitor de Core concreto en vez del de `CHATYGPT_CORE_URL`.
+    #[cfg(test)]
+    pub(crate) fn con_monitor(mut self, core: CoreGate) -> Self {
+        self.monitor = Some(core);
+        self
     }
 
     /// Sustituye el token sin reconstruir el cliente.
@@ -285,8 +303,24 @@ impl AthenaClient {
         cuerpo: Option<&impl Serialize>,
         suscriptor: Option<&str>,
     ) -> Result<Response, AppError> {
+        self.enviar_con_flujo(metodo, ruta, operacion, cuerpo, suscriptor, None)
+            .await
+    }
+
+    async fn enviar_con_flujo(
+        &self,
+        metodo: Method,
+        ruta: &str,
+        operacion: &str,
+        cuerpo: Option<&impl Serialize>,
+        suscriptor: Option<&str>,
+        flujo: Option<&str>,
+    ) -> Result<Response, AppError> {
         let url = self.url_de(ruta)?;
         let mut peticion = self.http.request(metodo, url);
+        if let Some(flujo) = flujo {
+            peticion = peticion.header("X-Flow-Id", flujo);
+        }
         if let Some(cabecera) = self.token_actual() {
             peticion = peticion.header(reqwest::header::AUTHORIZATION, cabecera);
         }
@@ -442,17 +476,51 @@ impl AthenaClient {
             profile: opciones.perfil.clone(),
             model: opciones.modelo.clone(),
         };
-        let respuesta = self
-            .enviar(
-                Method::POST,
-                "/v1/runs",
-                "create_run",
-                Some(&solicitud),
-                None,
+        // El salto se cuenta antes de enviar: Athena consulta a Core al recibirlo,
+        // y en el monitor la petición tiene que verse antes que esa consulta.
+        let flujo = format!("chatygpt_athena_{}", uuid::Uuid::new_v4().simple());
+        let inicio = Instant::now();
+        if let Some(core) = &self.monitor {
+            core.hop_to(
+                &flujo,
+                "athena",
+                "request",
+                "encargo",
+                serde_json::json!({}),
             )
-            .await?;
-        let respuesta = Self::interpretar(respuesta, "create_run").await?;
-        let creado: RunCreado = Self::leer_json(respuesta, "create_run").await?;
+            .await;
+        }
+        let resultado = async {
+            let respuesta = self
+                .enviar_con_flujo(
+                    Method::POST,
+                    "/v1/runs",
+                    "create_run",
+                    Some(&solicitud),
+                    None,
+                    Some(&flujo),
+                )
+                .await?;
+            let respuesta = Self::interpretar(respuesta, "create_run").await?;
+            Self::leer_json::<RunCreado>(respuesta, "create_run").await
+        }
+        .await;
+        let creado = match resultado {
+            Ok(creado) => creado,
+            Err(error) => {
+                if let Some(core) = &self.monitor {
+                    let resumen: String = error.to_string().chars().take(200).collect();
+                    core.hop_to(&flujo, "athena", "error", &resumen, serde_json::json!({}))
+                        .await;
+                }
+                return Err(error);
+            }
+        };
+        if self.monitor.is_some() {
+            if let Ok(mut flujos) = self.flujos.lock() {
+                flujos.insert(creado.run_id.clone(), (flujo, inicio));
+            }
+        }
         logging::info(
             "athena.run_created",
             None,
@@ -463,6 +531,29 @@ impl AthenaClient {
             ],
         );
         Ok(creado)
+    }
+
+    /// El encargo terminó: el monitor de Core ve llegar la respuesta de Athena.
+    /// Sólo la primera vez por run y sólo para runs que pidió este cliente.
+    pub async fn cerrar_flujo(&self, run_id: &str, completado: bool) {
+        let Some(core) = &self.monitor else { return };
+        let pendiente = self
+            .flujos
+            .lock()
+            .ok()
+            .and_then(|mut flujos| flujos.remove(run_id));
+        if let Some((flujo, inicio)) = pendiente {
+            let detalles = serde_json::json!({
+                "run_id": run_id,
+                "latency_ms": inicio.elapsed().as_millis() as u64,
+            });
+            let (tipo, resumen) = if completado {
+                ("response", "encargo terminado")
+            } else {
+                ("error", "encargo sin terminar")
+            };
+            core.hop_to(&flujo, "athena", tipo, resumen, detalles).await;
+        }
     }
 
     /// Lee la instantánea de un run. Es la fuente de verdad; lo que guarde

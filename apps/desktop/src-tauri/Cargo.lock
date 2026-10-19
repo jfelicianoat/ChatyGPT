@@ -328,7 +328,7 @@ dependencies = [
 
 [[package]]
 name = "chatygpt"
-version = "0.4.1"
+version = "0.4.4"
 dependencies = [
  "chrono",
  "mime_guess",

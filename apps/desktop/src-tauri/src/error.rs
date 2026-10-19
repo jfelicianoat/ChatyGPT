@@ -39,6 +39,8 @@ pub enum AppError {
     NotFound(String),
     #[error("la operación no puede realizarse ahora: {0}")]
     Conflict(String),
+    #[error("{0}")]
+    CoreDenied(String),
 }
 
 impl Serialize for AppError {

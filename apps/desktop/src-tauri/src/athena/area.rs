@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 use serde::Serialize;
 
 use super::contracts::{EventoHistorico, MensajeFlujo, ObjetivoRun, ResumenHistoria};
-use super::supervisor::{PermisoVista, ProyeccionRun};
+use super::supervisor::{FaseRun, PermisoVista, ProyeccionRun};
 use super::{AthenaClient, OpcionesReconexion, OpcionesRun, RevisionObjetivo};
 use crate::error::AppError;
 use crate::logging;
@@ -292,10 +292,17 @@ impl AreaAthena {
             let resultado = flujo
                 .escuchar(|mensaje| aplicar(&runs, &identificador, &mensaje))
                 .await;
+            let mut fase = None;
             if let Ok(mut mapa) = runs.lock() {
                 if let Some(vista) = mapa.get_mut(&identificador) {
                     vista.conectado = false;
+                    fase = vista.fase;
                 }
+            }
+            // Monitor de Core: el run acabó y su respuesta vuelve a ChatyGPT
+            if let Some(fase) = fase.filter(|fase| fase.es_terminal()) {
+                let completado = matches!(fase, FaseRun::Completed | FaseRun::Unverified);
+                cliente.cerrar_flujo(&identificador, completado).await;
             }
             if resultado.is_err() {
                 logging::warn(

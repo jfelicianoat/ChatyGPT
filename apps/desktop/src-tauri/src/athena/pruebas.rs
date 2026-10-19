@@ -1082,3 +1082,219 @@ fn un_resultado_sin_fin_se_corta_en_el_presupuesto_local() {
     let enviados = escritos.load(std::sync::atomic::Ordering::SeqCst);
     assert!(enviados < 40, "el servidor escribió {enviados} MB");
 }
+
+// -- monitor de AI OS Core (ChatyGPT 0.4.3) --------------------------------
+
+fn core_simulado() -> crate::broker::simulated::SimulatedBroker {
+    let core = crate::broker::simulated::SimulatedBroker::start();
+    core.always(
+        "POST /api/v1/flows/hops",
+        crate::broker::simulated::ScriptedResponse::ok(json!({})),
+    );
+    core
+}
+
+fn con_core(
+    simulado: &AthenaSimulado,
+    core: &crate::broker::simulated::SimulatedBroker,
+) -> AthenaClient {
+    let monitor =
+        crate::broker::ai_os_core::CoreGate::new(core.base_url(), Some("tok-chaty".to_owned()))
+            .expect("Core válido");
+    cliente(simulado).con_monitor(monitor)
+}
+
+#[test]
+fn el_encargo_a_athena_se_ve_en_el_monitor_de_punta_a_punta() {
+    let simulado = AthenaSimulado::arrancar();
+    simulado.responder(
+        "/v1/runs",
+        RespuestaGuion::creado(json!({
+            "run_id": "run-1", "workspace_id": "ws-1", "writes": "ask", "exec": "ask"
+        })),
+    );
+    let core = core_simulado();
+    let athena = con_core(&simulado, &core);
+
+    en_runtime(async {
+        athena
+            .crear_run("Arreglar calc.add", "D:/repo", &OpcionesRun::default())
+            .await
+            .expect("run creado");
+        athena.cerrar_flujo("run-1", true).await;
+        athena.cerrar_flujo("run-1", true).await; // la segunda vez ya no cuenta nada
+    });
+
+    let enviado = simulado.peticiones().pop().expect("una petición");
+    let flujo = enviado
+        .cabecera("x-flow-id")
+        .expect("Athena recibe el flujo")
+        .to_owned();
+    assert!(flujo.starts_with("chatygpt_athena_"));
+    let saltos = core.requests_to("POST", "/api/v1/flows/hops");
+    let tipos: Vec<_> = saltos.iter().map(|s| s.body["kind"].clone()).collect();
+    assert_eq!(tipos, [json!("request"), json!("response")]);
+    assert!(saltos.iter().all(|s| s.body["flow_id"] == flujo.as_str()
+        && s.body["source_system"] == "chatygpt"
+        && s.body["target_system"] == "athena"));
+    assert!(saltos[1].body["details"]["latency_ms"].is_u64());
+    // Core rechaza (422) un salto cuyo `details` no sea un objeto
+    assert!(saltos.iter().all(|s| s.body["details"].is_object()));
+}
+
+#[test]
+fn un_encargo_que_athena_rechaza_se_ve_como_error() {
+    let simulado = AthenaSimulado::arrancar();
+    simulado.responder(
+        "/v1/runs",
+        RespuestaGuion::error(403, "core_denied", "AI OS Core no autoriza este run"),
+    );
+    let core = core_simulado();
+    let resultado = en_runtime(con_core(&simulado, &core).crear_run(
+        "Arreglar calc.add",
+        "D:/repo",
+        &OpcionesRun::default(),
+    ));
+    assert!(resultado.is_err());
+    let tipos: Vec<_> = core
+        .requests_to("POST", "/api/v1/flows/hops")
+        .iter()
+        .map(|s| s.body["kind"].clone())
+        .collect();
+    assert_eq!(tipos, [json!("request"), json!("error")]);
+}
+
+#[test]
+fn el_flujo_viaja_a_athena_aunque_no_haya_monitor() {
+    let simulado = AthenaSimulado::arrancar();
+    simulado.responder(
+        "/v1/runs",
+        RespuestaGuion::creado(json!({
+            "run_id": "run-1", "workspace_id": "ws-1", "writes": "ask", "exec": "ask"
+        })),
+    );
+    en_runtime(cliente(&simulado).crear_run("Arreglar", "D:/repo", &OpcionesRun::default()))
+        .expect("run creado");
+    let enviado = simulado.peticiones().pop().expect("una petición");
+    assert!(enviado
+        .cabecera("x-flow-id")
+        .is_some_and(|f| f.starts_with("chatygpt_athena_")));
+}
+
+/// El ejemplo con el que se pidió el monitor, de verdad: ChatyGPT encarga a Athena, Athena
+/// pide permiso a Core y llama al Broker, y la respuesta vuelve a ChatyGPT. Todo con el
+/// mismo flujo en `<core>/api/v1/flows/<flujo>`.
+///
+/// `CHATYGPT_VERIFY_ATHENA_URL`, `CHATYGPT_VERIFY_ATHENA_TOKEN`, `CHATYGPT_VERIFY_CORE_URL`,
+/// `CHATYGPT_VERIFY_CORE_TOKEN`, `CHATYGPT_VERIFY_DIRECTOR_TOKEN` y `CHATYGPT_VERIFY_WORKSPACE`
+/// (una carpeta que Athena pueda leer). Athena debe estar dirigida por ese mismo Core.
+#[test]
+#[ignore = "necesita Athena, AI OS Core y Broker AI reales"]
+fn real_chatygpt_athena_core_broker_de_punta_a_punta() {
+    let var = |nombre: &str| std::env::var(nombre).unwrap_or_else(|_| panic!("falta {nombre}"));
+    let core_url = var("CHATYGPT_VERIFY_CORE_URL");
+    let monitor = crate::broker::ai_os_core::CoreGate::new(
+        &core_url,
+        Some(var("CHATYGPT_VERIFY_CORE_TOKEN")),
+    )
+    .expect("Core válido");
+    let athena = AthenaClient::for_base_url(&var("CHATYGPT_VERIFY_ATHENA_URL"))
+        .expect("Athena válida")
+        .con_monitor(monitor);
+    athena
+        .replace_token(Some(&var("CHATYGPT_VERIFY_ATHENA_TOKEN")))
+        .expect("token");
+    let opciones = OpcionesRun {
+        escrituras: ModoCapacidad::Off,
+        ejecucion: ModoCapacidad::Off,
+        max_iteraciones: 3,
+        perfil: "questions".to_owned(),
+        ..OpcionesRun::default()
+    };
+    let (run_id, final_ok) = en_runtime(async {
+        let creado = athena
+            .crear_run(
+                "Di en una frase de qué trata el README.",
+                &var("CHATYGPT_VERIFY_WORKSPACE"),
+                &opciones,
+            )
+            .await
+            .expect("Core autoriza y Athena crea el run");
+        let mut estado = None;
+        for _ in 0..240 {
+            let instantanea = athena.leer_run(&creado.run_id).await.expect("run legible");
+            if instantanea.status.es_terminal() {
+                estado = Some(instantanea.status);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        }
+        let estado = estado.expect("el run termina en 20 minutos");
+        let ok = matches!(estado, EstadoRun::Completed);
+        athena.cerrar_flujo(&creado.run_id, ok).await;
+        (creado.run_id, ok)
+    });
+    println!("[OK ] run {run_id} terminado (completado: {final_ok})");
+    // El flujo quedó en Core: se busca por el run en sus pasos
+    let director = var("CHATYGPT_VERIFY_DIRECTOR_TOKEN");
+    let pasos: serde_json::Value = en_runtime(async {
+        reqwest::Client::new()
+            .get(format!(
+                "{}/api/v1/flows/events?limit=400",
+                core_url.trim_end_matches('/')
+            ))
+            .bearer_auth(&director)
+            .send()
+            .await
+            .expect("Core contesta")
+            .json()
+            .await
+            .expect("JSON")
+    });
+    let pasos = pasos.as_array().expect("lista de pasos");
+    let flujo = pasos
+        .iter()
+        .find(|p| {
+            p["source"] == "chatygpt"
+                && p["target"] == "athena"
+                && p["details"]["run_id"] == run_id.as_str()
+        })
+        .and_then(|p| p["flow_id"].as_str())
+        .expect("ChatyGPT contó la respuesta de Athena con el run")
+        .to_owned();
+    let recorrido: Vec<String> = pasos
+        .iter()
+        .filter(|p| p["flow_id"] == flujo.as_str())
+        .map(|p| {
+            format!(
+                "{} {}→{} {}",
+                p["kind"].as_str().unwrap_or(""),
+                p["source"].as_str().unwrap_or(""),
+                p["target"].as_str().unwrap_or(""),
+                p["summary"].as_str().unwrap_or("")
+            )
+        })
+        .collect();
+    for paso in &recorrido {
+        println!("      {paso}");
+    }
+    let tiene = |trozo: &str| recorrido.iter().any(|p| p.starts_with(trozo));
+    assert!(tiene("request chatygpt→athena"), "ChatyGPT pide a Athena");
+    assert!(
+        tiene("decision athena→core"),
+        "Athena pide permiso a Core con el mismo flujo"
+    );
+    assert!(
+        tiene("request athena→ai_broker"),
+        "Athena llama al Broker con el mismo flujo"
+    );
+    assert!(
+        tiene("response athena→ai_broker"),
+        "el Broker contesta a Athena"
+    );
+    assert!(
+        tiene("response chatygpt→athena") || tiene("error chatygpt→athena"),
+        "la respuesta vuelve a ChatyGPT"
+    );
+    println!("[OK ] ChatyGPT → Athena → Core → Broker → Athena → ChatyGPT con el flujo {flujo}");
+}

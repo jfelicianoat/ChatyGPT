@@ -407,6 +407,42 @@ Compatibilidad con AI Broker 2.10:
 - Los enlaces que el agente no llegó a consultar, publicados en
   `result.agent.citations.unsupported`, aparecen como advertencia verificable.
 
+## AI OS Core como director (0.4.2)
+
+Opcional: sin `CHATYGPT_CORE_URL` todo funciona igual. Con esa variable y el token por app en
+`CHATYGPT_CORE_TOKEN`, `BrokerClient::create_task` (turnos de chat, investigación y flujos) evalúa
+antes en AI OS Core la política `chatygpt:broker` con el `inference_kind` y la
+`data_classification` de la petición, y solo envía con un ALLOW ejecutable:
+
+- denegado: `AppError::CoreDenied`, permanente; el turno queda huérfano con el motivo de Core
+  y no se reintenta solo;
+- Core no contesta: error de transporte, que se reintenta como una caída de red, sin enviar
+  nada mientras tanto;
+- cada tarea deja recibos en Core con su clave de idempotencia (`accepted` y el terminal).
+  Atajo declarado: el recibo terminal de una tarea retomada tras reiniciar la app no se manda.
+
+Athena, que ChatyGPT arranca aparte, se dirige con sus propias variables (`ATHENA_CORE_URL`,
+`ATHENA_CORE_TOKEN`); `Start-AthenaForChatyGPT.ps1` las hereda del entorno. Recorrido real:
+`cargo test --lib real_ai_os_core -- --ignored --nocapture` con `CHATYGPT_VERIFY_CORE_URL`,
+`CHATYGPT_VERIFY_CORE_TOKEN`, `CHATYGPT_VERIFY_DIRECTOR_TOKEN`, `CHATYGPT_VERIFY_BROKER_URL` y
+`CHATYGPT_VERIFY_BROKER_TOKEN` (verde el 18-oct-2026: DENY cierra el turno sin tarea remota,
+ALLOW termina en el Broker real y Core guarda el recibo `succeeded`).
+
+**0.4.3 — monitor de Core.** Con `CHATYGPT_CORE_URL`, cada turno y cada encargo a Athena se ven
+en vivo en `<core>/monitor`. Los turnos llevan como `flow_id` su clave de idempotencia en la
+autorización, los recibos y los saltos ChatyGPT → Broker (petición, y luego respuesta o error con
+su duración). Cada encargo a Athena abre un flujo `chatygpt_athena_<uuid>` que viaja en la
+cabecera `X-Flow-Id`: Athena 0.3.3 lo continúa en su autorización y en sus llamadas al Broker, así
+que se ve el recorrido entero, ChatyGPT → Athena → Core → Broker → Athena → ChatyGPT. Informar
+nunca frena un turno: si el monitor no contesta, se sigue igual.
+
+**0.4.4.** El salto de petición a Athena salía con `details: null` y Core lo rechazaba (422) en
+silencio. Lo encontró el recorrido real; ahora `details` es siempre un objeto. Recorrido real de
+punta a punta: `cargo test --lib real_chatygpt_athena -- --ignored --nocapture` con
+`CHATYGPT_VERIFY_ATHENA_URL`, `CHATYGPT_VERIFY_ATHENA_TOKEN`, `CHATYGPT_VERIFY_CORE_URL`,
+`CHATYGPT_VERIFY_CORE_TOKEN`, `CHATYGPT_VERIFY_DIRECTOR_TOKEN` y `CHATYGPT_VERIFY_WORKSPACE`
+(verde el 19-oct-2026: tres llamadas reales a `muse-glimmer:latest`, 135 s).
+
 ## Documentación
 
 - [Estado vigente y límites](docs/CURRENT_STATE.md)

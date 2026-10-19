@@ -1662,11 +1662,13 @@ pub(super) fn advance_semantic_chat(
 }
 
 pub(super) fn is_permanent(error: &AppError) -> bool {
-    matches!(
-        error,
-        AppError::BrokerResponse { status, .. }
-            if (400..500).contains(status) && !matches!(*status, 401 | 403 | 408 | 429)
-    )
+    // Una política de AI OS Core que dice que no tampoco se arregla reintentando
+    matches!(error, AppError::CoreDenied(_))
+        || matches!(
+            error,
+            AppError::BrokerResponse { status, .. }
+                if (400..500).contains(status) && !matches!(*status, 401 | 403 | 408 | 429)
+        )
 }
 
 pub(super) fn deterministic_jitter(local_id: &str, poll_no: u64) -> i32 {

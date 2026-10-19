@@ -212,6 +212,7 @@ pub fn error_kind(error: &AppError) -> FieldValue {
         AppError::Validation(_) => "validation",
         AppError::NotFound(_) => "not_found",
         AppError::Conflict(_) => "conflict",
+        AppError::CoreDenied(_) => "core_denied",
     };
     FieldValue::Code(kind.to_owned())
 }

@@ -1,3 +1,4 @@
+pub(crate) mod ai_os_core;
 mod contracts;
 #[cfg(test)]
 pub mod simulated;
@@ -100,6 +101,12 @@ pub struct BrokerClient {
     /// que un campo que ese Broker no conoce **no se ignora** — hace fallar la
     /// petición entera con un 422 y se lleva por delante el mensaje del usuario.
     capabilities: Arc<RwLock<Option<BrokerCapabilities>>>,
+    /// AI OS Core, si se configuró (`CHATYGPT_CORE_URL`): autoriza cada envío.
+    core: Option<ai_os_core::CoreGate>,
+    /// Tarea del Broker -> clave de idempotencia, para el recibo terminal en Core.
+    // shortcut: vive lo que vive el proceso; una tarea retomada tras reiniciar no manda
+    // su recibo terminal. Si hace falta, leer la clave del `request` guardado en la base.
+    operations: Arc<std::sync::Mutex<HashMap<String, String>>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -246,6 +253,8 @@ impl BrokerClient {
             admin_token: Arc::new(RwLock::new(admin_token)),
             capabilities: Arc::new(RwLock::new(None)),
             context_filter: crate::system1::ContextFilterConfig::from_env(),
+            core: ai_os_core::CoreGate::from_env()?,
+            operations: Arc::default(),
         })
     }
 
@@ -274,7 +283,19 @@ impl BrokerClient {
             admin_token: Arc::new(RwLock::new(None)),
             capabilities: Arc::new(RwLock::new(None)),
             context_filter: crate::system1::ContextFilterConfig::default(),
+            core: None,
+            operations: Arc::default(),
         })
+    }
+
+    /// El mismo cliente de pruebas, dirigido por un AI OS Core concreto.
+    #[cfg(test)]
+    pub fn with_core(mut self, core_url: &str, token: Option<&str>) -> Result<Self, AppError> {
+        self.core = Some(ai_os_core::CoreGate::new(
+            core_url,
+            token.map(str::to_owned),
+        )?);
+        Ok(self)
     }
 
     pub fn base_url(&self) -> String {
@@ -421,6 +442,10 @@ impl BrokerClient {
     }
 
     pub async fn create_task(&self, request: &Value) -> Result<TaskAccepted, AppError> {
+        if let Some(core) = &self.core {
+            // Antes de tocar el Broker: sin ALLOW de Core no sale nada
+            core.authorize(request).await?;
+        }
         let request = self.strip_unsupported_fields(request);
         let response = self
             .authorize(
@@ -431,7 +456,17 @@ impl BrokerClient {
             .send()
             .await
             .map_err(|error| transport_failure("create_task", error))?;
-        Self::decode("create_task", response).await
+        let accepted: TaskAccepted = Self::decode("create_task", response).await?;
+        if let (Some(core), Some(key)) = (
+            &self.core,
+            request.get("idempotency_key").and_then(Value::as_str),
+        ) {
+            if let Ok(mut operations) = self.operations.lock() {
+                operations.insert(accepted.task_id.clone(), key.to_owned());
+            }
+            core.receipt(key, "accepted", &accepted.task_id).await;
+        }
+        Ok(accepted)
     }
 
     /// Quita los campos que este Broker no anuncia (Client_API.md, 5.1).
@@ -672,7 +707,21 @@ impl BrokerClient {
             .send()
             .await
             .map_err(|error| transport_failure("get_task", error))?;
-        Self::decode_task_state("get_task", task_id, response).await
+        let state = Self::decode_task_state("get_task", task_id, response).await?;
+        if let Some(core) = &self.core {
+            if state.status.is_terminal() {
+                let key = self
+                    .operations
+                    .lock()
+                    .ok()
+                    .and_then(|mut map| map.remove(task_id));
+                if let Some(key) = key {
+                    let receipt = ai_os_core::terminal_receipt(state.status.as_str());
+                    core.receipt(&key, receipt, task_id).await;
+                }
+            }
+        }
+        Ok(state)
     }
 
     pub async fn cancel_task(&self, task_id: &str) -> Result<TaskState, AppError> {
