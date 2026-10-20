@@ -1102,6 +1102,7 @@ fn custom_gpt_instructions_are_explicit_context_without_granting_tools() {
         execution_profile: None,
         context_profile: "balanced".to_owned(),
         api_actions: Vec::new(),
+        knowledge_orchestrator: false,
     };
     let request = chat_request_with_project_instruction(
         "conversation",
@@ -1152,9 +1153,11 @@ fn custom_gpt_execution_profile_overrides_chat_preferences_safely() {
             max_cost_usd: 0.75,
             long_context: "fail".to_owned(),
             priority: 50,
+            knowledge_orchestrator: false,
         }),
         context_profile: "balanced".to_owned(),
         api_actions: Vec::new(),
+        knowledge_orchestrator: false,
     };
     let request = chat_request_with_project_instruction(
         "conversation",
@@ -1205,6 +1208,7 @@ fn authorized_folder_tools_require_gpt_permission_and_force_local_routing() {
         execution_profile: None,
         context_profile: "balanced".to_owned(),
         api_actions: Vec::new(),
+        knowledge_orchestrator: false,
     };
     let request = chat_request_with_project_instruction(
         "conversation",
@@ -1253,6 +1257,7 @@ fn scheduled_task_tool_requires_explicit_intent_and_gpt_permission() {
         execution_profile: None,
         context_profile: "balanced".to_owned(),
         api_actions: Vec::new(),
+        knowledge_orchestrator: false,
     };
     let request = chat_request_with_project_instruction(
         "conversation",
@@ -1302,6 +1307,7 @@ fn external_api_tool_requires_explicit_https_url_and_permission() {
         execution_profile: None,
         context_profile: "balanced".to_owned(),
         api_actions: Vec::new(),
+        knowledge_orchestrator: false,
     };
     let request = chat_request_with_project_instruction(
         "conversation",
@@ -1384,6 +1390,7 @@ fn configured_api_action_has_a_fixed_destination_and_versioned_parameters() {
                 },
             ],
         }],
+        knowledge_orchestrator: false,
     };
     let request = chat_request_with_project_instruction(
         "conversation",
@@ -1475,6 +1482,7 @@ fn custom_gpt_context_profiles_have_bounded_distinct_budgets() {
         execution_profile: None,
         context_profile: profile.to_owned(),
         api_actions: Vec::new(),
+        knowledge_orchestrator: false,
     };
     let focused_context = context("focused");
     let balanced_context = context("balanced");
@@ -1539,6 +1547,7 @@ fn the_preview_block_is_literally_the_one_sent_to_the_broker() {
         execution_profile: None,
         context_profile: "balanced".to_owned(),
         api_actions: Vec::new(),
+        knowledge_orchestrator: false,
     };
     let block = custom_gpt_prompt_block(&custom_gpt).expect("el bloque debe construirse");
     let request = chat_request_with_project_instruction(
@@ -1597,6 +1606,7 @@ fn custom_gpt_permission_matrix_gates_rename_tool_without_skipping_confirmation(
         execution_profile: None,
         context_profile: "balanced".to_owned(),
         api_actions: Vec::new(),
+        knowledge_orchestrator: false,
     };
     let context = [ContextMessage {
         message_id: "current".to_owned(),
@@ -2121,6 +2131,7 @@ fn contract_2_7_uses_priority_and_gives_run_code_to_collaborative_proposers() {
             execution_preferences: ConversationExecutionPreferences {
                 strategy: "mixture_of_agents".to_owned(),
                 priority: 25,
+                knowledge_orchestrator: false,
                 ..ConversationExecutionPreferences::default()
             },
             ..ChatExecutionOptions::default()
@@ -2467,6 +2478,7 @@ fn conversation_preferences_enable_auto_routing_budget_and_long_documents() {
                 max_cost_usd: 0.5,
                 long_context: "map_reduce".to_owned(),
                 priority: 100,
+                knowledge_orchestrator: false,
             },
             ..ChatExecutionOptions::default()
         },

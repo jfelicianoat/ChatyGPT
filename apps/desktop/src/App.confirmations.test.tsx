@@ -584,6 +584,7 @@ describe("navegación principal simplificada", () => {
     await userEvent.clear(cost);
     await userEvent.type(cost, "0.75");
     await userEvent.selectOptions(form.getByLabelText("Prioridad en la cola"), "50");
+    await userEvent.click(form.getByLabelText(/Mochila: conocimiento de Knowledge Orchestrator/));
     await userEvent.click(form.getByRole("button", { name: "Crear GPT" }));
 
     await waitFor(() => expect(platformMethod("createCustomGpt")).toHaveBeenCalledWith(
@@ -597,7 +598,8 @@ describe("navegación principal simplificada", () => {
       null,
       savedGpt.executionProfile,
       "broad",
-      []
+      [],
+      true
     ));
     expect(await form.findByText(/GPT creado con su versión 1/)).toBeDefined();
   }, 10_000);

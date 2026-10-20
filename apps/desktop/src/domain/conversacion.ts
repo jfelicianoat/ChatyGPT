@@ -362,6 +362,8 @@ export type CustomGptView = {
   /** Cantidad de historial, recuerdos y fragmentos documentales que puede usar. */
   contextProfile: "focused" | "balanced" | "broad";
   apiActions: CustomGptApiAction[];
+  /** La mochila incluye el conocimiento de Knowledge Orchestrator. */
+  knowledgeOrchestrator?: boolean;
   /** Proyecto al que van los chats nuevos que eligen este GPT. */
   defaultProjectId: string | null;
   versionNo: number;
@@ -498,4 +500,12 @@ export const filterProjectKnowledge = (
     memories,
     total: files.length + memories.length
   };
+};
+
+/** Conexión con Knowledge Orchestrator; el token nunca vuelve a la interfaz. */
+export type KnowledgeOrchestratorStatus = {
+  baseUrl: string;
+  credentialStored: boolean;
+  reachable: boolean;
+  message: string;
 };

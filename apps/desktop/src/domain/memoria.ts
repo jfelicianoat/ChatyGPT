@@ -218,7 +218,7 @@ export const taskFailureSummary = (
 
 /** Estado de la credencial del Broker, sin exponer nunca su valor. */
 export type BrokerCredentialStatus = {
-  source: "protected" | "environment" | "missing";
+  source: "protected" | "environment" | "core" | "missing";
   protected: boolean;
   environmentPresent: boolean;
   message: string;
@@ -236,6 +236,8 @@ export const brokerCredentialLabel = (status: BrokerCredentialStatus): string =>
       return "Guardada y cifrada";
     case "environment":
       return "Heredada del entorno";
+    case "core":
+      return "La da AI OS Core";
     default:
       return "Sin credencial";
   }

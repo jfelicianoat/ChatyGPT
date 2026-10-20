@@ -34,6 +34,8 @@ pub enum TokenSource {
     Protected,
     /// Heredado del entorno del proceso; vía de transición.
     Environment,
+    /// La da AI OS Core, que la recibe del runner del PC IA y la renueva sola.
+    Core,
     /// No hay credencial disponible.
     Missing,
 }
@@ -159,7 +161,13 @@ pub fn environment_token() -> Option<String> {
 pub fn credential_status(data_dir: &Path) -> BrokerCredentialStatus {
     let protected = broker_token_path(data_dir).is_file();
     let environment_present = environment_token().is_some();
+    let from_core = crate::broker::ai_os_core::core_connection().is_some();
     let (source, message) = match (protected, environment_present) {
+        _ if from_core => (
+            TokenSource::Core,
+            "La da AI OS Core y se renueva sola cuando el Broker cambia de token: no hace falta pegarla."
+                .to_owned(),
+        ),
         (true, _) => (
             TokenSource::Protected,
             "La credencial está guardada y cifrada para tu cuenta de Windows.".to_owned(),

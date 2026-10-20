@@ -479,6 +479,7 @@ fn a_published_custom_gpt_profile_reaches_the_broker_request() {
         max_cost_usd: 0.75,
         long_context: "fail".to_owned(),
         priority: 50,
+        knowledge_orchestrator: false,
     };
     let gpt = database
         .create_custom_gpt_with_starters(

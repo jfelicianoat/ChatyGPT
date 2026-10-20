@@ -498,7 +498,7 @@ class BuildConfigurationTests(unittest.TestCase):
             ROOT / "apps" / "desktop" / "src-tauri" / "src" / "broker" / "mod.rs"
         ).read_text(encoding="utf-8")
         self.assertIn(
-            'const DEFAULT_BROKER_BASE_URL: &str = "http://192.168.1.52:8765";',
+            'const DEFAULT_BROKER_BASE_URL: &str = "https://192.168.1.52:8765";',
             broker_source,
         )
         self.assertNotIn(
@@ -513,7 +513,7 @@ class BuildConfigurationTests(unittest.TestCase):
         # ahi es donde la comprobacion de la credencial no comprobaba nada.
         self.assertIn('-File "scripts\\Start-ChatyGPT.ps1"', launcher)
         self.assertIn(
-            'set "CHATYGPT_BROKER_BASE_URL=http://192.168.1.52:8765"', launcher
+            'set "CHATYGPT_BROKER_BASE_URL=https://192.168.1.52:8765"', launcher
         )
         self.assertIn('-BrokerBaseUrl "%CHATYGPT_BROKER_BASE_URL%"', launcher)
         self.assertIn(

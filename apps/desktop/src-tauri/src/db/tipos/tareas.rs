@@ -165,6 +165,9 @@ pub struct ConversationExecutionPreferences {
     pub long_context: String,
     #[serde(default = "default_execution_priority")]
     pub priority: u16,
+    /// Añade al turno los claims de Knowledge Orchestrator que respondan a la pregunta.
+    #[serde(default)]
+    pub knowledge_orchestrator: bool,
 }
 
 pub(crate) fn default_execution_priority() -> u16 {
@@ -180,6 +183,7 @@ impl Default for ConversationExecutionPreferences {
             max_cost_usd: 0.1,
             long_context: "fail".to_owned(),
             priority: default_execution_priority(),
+            knowledge_orchestrator: false,
         }
     }
 }

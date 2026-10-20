@@ -393,3 +393,46 @@ pub(crate) fn archive_project(
     }
     state.database.archive_project(&project_id)
 }
+
+/// Estado de la conexión con Knowledge Orchestrator; no falla, describe.
+#[tauri::command]
+pub(crate) async fn get_knowledge_orchestrator_status(
+    state: State<'_, AppState>,
+) -> Result<knowledge_orchestrator::KnowledgeOrchestratorStatus, AppError> {
+    Ok(
+        knowledge_orchestrator::KnowledgeOrchestratorClient::for_data_dir(&state.data_dir)
+            .status()
+            .await,
+    )
+}
+
+/// Guarda cifrado el token de consumidor que se crea en Knowledge Orchestrator.
+#[tauri::command]
+pub(crate) async fn set_knowledge_orchestrator_credential(
+    token: String,
+    state: State<'_, AppState>,
+) -> Result<knowledge_orchestrator::KnowledgeOrchestratorStatus, AppError> {
+    secrets::store_api_credential(
+        &state.data_dir,
+        knowledge_orchestrator::ALIAS_CREDENCIAL,
+        &token,
+    )?;
+    logging::info("knowledge_orchestrator.credential_stored", None, &[]);
+    get_knowledge_orchestrator_status(state).await
+}
+
+/// Retira la credencial guardada. Requiere confirmación explícita.
+#[tauri::command]
+pub(crate) async fn clear_knowledge_orchestrator_credential(
+    confirmed: bool,
+    state: State<'_, AppState>,
+) -> Result<knowledge_orchestrator::KnowledgeOrchestratorStatus, AppError> {
+    if !confirmed {
+        return Err(AppError::Validation(
+            "retirar la credencial de Knowledge Orchestrator requiere confirmación".to_owned(),
+        ));
+    }
+    secrets::clear_api_credential(&state.data_dir, knowledge_orchestrator::ALIAS_CREDENCIAL)?;
+    logging::info("knowledge_orchestrator.credential_cleared", None, &[]);
+    get_knowledge_orchestrator_status(state).await
+}

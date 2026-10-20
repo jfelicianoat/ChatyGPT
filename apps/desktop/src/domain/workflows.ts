@@ -224,6 +224,8 @@ export type ConversationExecutionPreferences = {
   maxCostUsd: number;
   longContext: "fail" | "map_reduce";
   priority: number;
+  /** Adjunta a cada turno todo el conocimiento publicado en Knowledge Orchestrator. */
+  knowledgeOrchestrator?: boolean;
 };
 
 export type ExportPathSelection = {

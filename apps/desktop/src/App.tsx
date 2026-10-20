@@ -126,6 +126,7 @@ import { ResumenConversacion } from "./paneles/ResumenConversacion";
 import { ConocimientoProyecto } from "./paneles/ConocimientoProyecto";
 import { ArchivoPanel } from "./paneles/ArchivoPanel";
 import { CopiaSeguridad } from "./paneles/CopiaSeguridad";
+import { ConexionKnowledgeOrchestrator } from "./paneles/ConexionKnowledgeOrchestrator";
 import { MessageArtifacts } from "./MessageArtifacts";
 import {
   draftText,
@@ -4257,6 +4258,20 @@ export function App() {
                       />
                       Buscar recuerdos
                     </label>
+                    <label
+                      className="tools-toggle"
+                      title="Cada mensaje adjunta todo el conocimiento publicado en Knowledge Orchestrator y pide una respuesta que lo sintetice. Se configura en Inicio."
+                    >
+                      <input
+                        type="checkbox"
+                        checked={conversation.value.executionPreferences.knowledgeOrchestrator ?? false}
+                        onChange={(event) => void updateExecutionPreferences({
+                          knowledgeOrchestrator: event.target.checked
+                        })}
+                        disabled={Boolean(currentTurnBlocks) || executionOptionsBusy}
+                      />
+                      Knowledge Orchestrator
+                    </label>
                     {researchMode &&
                       ((semanticMemoryEnabled && semanticMemoryReady) || semanticDocumentsReady) && (
                         <span className="research-mode-note">
@@ -4900,6 +4915,8 @@ export function App() {
                   </>
                 )}
               </section>
+
+              <ConexionKnowledgeOrchestrator />
 
               <section className="authorized-folders" aria-labelledby="folders-heading">
                 <div>

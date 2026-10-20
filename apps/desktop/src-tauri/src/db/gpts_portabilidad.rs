@@ -211,6 +211,7 @@ impl Database {
             execution_profile: view.execution_profile,
             context_profile: view.context_profile,
             api_actions: view.api_actions,
+            knowledge_orchestrator: view.knowledge_orchestrator,
         })
     }
 
@@ -318,6 +319,7 @@ impl Database {
                     execution_profile: configuration.execution_profile,
                     context_profile: configuration.context_profile,
                     api_actions: configuration.api_actions,
+                    knowledge_orchestrator: configuration.knowledge_orchestrator,
                 })
             },
         )

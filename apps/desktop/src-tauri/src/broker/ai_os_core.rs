@@ -50,6 +50,23 @@ pub fn flow_id_for(operation_id: &str) -> String {
     }
 }
 
+/// URL y token de ChatyGPT en Core, tal como Core los deja en %LOCALAPPDATA%/AIOSCore/conexion.
+pub fn core_connection() -> Option<(String, String)> {
+    let folder = match std::env::var("AI_OS_CONNECT_DIR") {
+        Ok(dir) if !dir.trim().is_empty() => std::path::PathBuf::from(dir),
+        // Las pruebas nunca ven el Core real de este equipo
+        _ if cfg!(test) => return None,
+        _ => std::path::PathBuf::from(std::env::var("LOCALAPPDATA").ok()?)
+            .join("AIOSCore")
+            .join("conexion"),
+    };
+    let raw = std::fs::read_to_string(folder.join(format!("{PRINCIPAL}.json"))).ok()?;
+    let value: Value = serde_json::from_str(&raw).ok()?;
+    let url = value.get("core_url")?.as_str()?.to_owned();
+    let token = value.get("token")?.as_str()?.to_owned();
+    (!url.is_empty() && !token.is_empty()).then_some((url, token))
+}
+
 #[derive(Clone)]
 pub struct CoreGate {
     base_url: Url,
@@ -86,18 +103,53 @@ impl CoreGate {
         })
     }
 
-    /// `CHATYGPT_CORE_URL` (y su token `CHATYGPT_CORE_TOKEN`), o `None`.
+    /// `CHATYGPT_CORE_URL` (y su token `CHATYGPT_CORE_TOKEN`) y, si faltan, los que deja
+    /// Core al arrancar en su carpeta de conexión: no hay que pegar ningún token. Sin Core, `None`.
     pub fn from_env() -> Result<Option<Self>, AppError> {
-        match std::env::var("CHATYGPT_CORE_URL") {
-            Ok(url) if !url.trim().is_empty() => {
-                Self::new(url.trim(), std::env::var("CHATYGPT_CORE_TOKEN").ok()).map(Some)
-            }
-            _ => Ok(None),
+        let env_url = std::env::var("CHATYGPT_CORE_URL")
+            .ok()
+            .map(|url| url.trim().to_owned())
+            .filter(|url| !url.is_empty());
+        let env_token = std::env::var("CHATYGPT_CORE_TOKEN")
+            .ok()
+            .filter(|token| !token.trim().is_empty());
+        let found = core_connection();
+        let Some(url) = env_url.or_else(|| found.as_ref().map(|(url, _)| url.clone())) else {
+            return Ok(None);
+        };
+        // El token que deja Core sólo viaja a ese mismo Core
+        let token = env_token.or_else(|| {
+            found
+                .filter(|(core_url, _)| core_url.trim_end_matches('/') == url.trim_end_matches('/'))
+                .map(|(_, token)| token)
+        });
+        Self::new(&url, token).map(Some)
+    }
+
+    /// El token del Broker que el runner de Agora publica en Core (el Broker lo rota al arrancar).
+    pub async fn broker_token(&self) -> Option<String> {
+        let url = self.base_url.join("api/v1/credentials/broker").ok()?;
+        let mut builder = self.http.get(url).header("X-Principal-Id", PRINCIPAL);
+        if let Some(token) = &self.token {
+            builder = builder.bearer_auth(token.trim());
         }
+        let response = builder.send().await.ok()?;
+        if !response.status().is_success() {
+            return None;
+        }
+        let value: Value = response.json().await.ok()?;
+        value
+            .get("token")
+            .and_then(Value::as_str)
+            .filter(|token| !token.is_empty())
+            .map(str::to_owned)
     }
 
     /// Error si Core no da un ALLOW ejecutable: entonces no se envía nada.
-    pub async fn authorize(&self, request: &Value) -> Result<(), AppError> {
+    ///
+    /// Con ALLOW devuelve el turno en la cola del Broker que el director fijó
+    /// a ChatyGPT en el monitor (`None` = sin fijar).
+    pub async fn authorize(&self, request: &Value) -> Result<Option<i64>, AppError> {
         let classification = request
             .pointer("/risk/data_classification")
             .and_then(Value::as_str)
@@ -123,7 +175,7 @@ impl CoreGate {
             .and_then(Value::as_str)
             .unwrap_or("INDETERMINATE");
         if authorization == "ALLOW" && decision.get("executable") == Some(&Value::Bool(true)) {
-            return Ok(());
+            return Ok(decision.get("broker_priority").and_then(Value::as_i64));
         }
         let missing = decision
             .get("unknown_inputs")
@@ -409,6 +461,41 @@ mod tests {
     }
 
     #[test]
+    fn the_core_monitor_turn_is_the_base_of_the_broker_priority() {
+        let core = SimulatedBroker::start();
+        core.always(
+            "POST /api/v1/policies/evaluate",
+            ScriptedResponse::ok(json!({
+                "authorization": "ALLOW", "executable": true, "broker_priority": 200,
+            })),
+        );
+        core.always(
+            "POST /api/v1/operations/receipts",
+            ScriptedResponse::ok(json!({})),
+        );
+        core.always("POST /api/v1/flows/hops", ScriptedResponse::ok(json!({})));
+        let broker = finished_broker();
+        let chaty = client(&broker, core.base_url());
+        block_on(chaty.create_task(&request())).expect("sin prioridad propia");
+        let mut alta = request();
+        alta["idempotency_key"] = json!("chatygpt:turno-2");
+        alta["priority"] = json!(25);
+        block_on(chaty.create_task(&alta)).expect("pregunta «alta»");
+        let sent = broker.requests_to("POST", "/api/v1/tasks");
+        // La normal (100) va en el turno de ChatyGPT; la «alta», en su cuarta parte
+        assert_eq!(sent[0].body["priority"], 200);
+        assert_eq!(sent[1].body["priority"], 50);
+        // Sin turno fijado en Core, la petición sale como estaba
+        let broker = finished_broker();
+        let core = core_with("ALLOW");
+        block_on(client(&broker, core.base_url()).create_task(&alta)).expect("sin turno");
+        assert_eq!(
+            broker.requests_to("POST", "/api/v1/tasks")[0].body["priority"],
+            25
+        );
+    }
+
+    #[test]
     fn the_turn_is_seen_in_the_core_monitor() {
         // ChatyGPT 0.4.3: autorización, recibos y saltos comparten el flujo del turno
         let broker = finished_broker();
@@ -457,5 +544,44 @@ mod tests {
     fn terminal_states_map_to_core_receipts() {
         assert_eq!(super::terminal_receipt("failed"), "failed_terminal");
         assert_eq!(super::terminal_receipt("completed"), "succeeded");
+    }
+
+    #[test]
+    fn a_rotated_broker_token_is_taken_from_core_and_retried_once() {
+        // El Broker se reinició: rechaza el token viejo; Core ya tiene el nuevo (lo publicó el runner)
+        let core = core_with("ALLOW");
+        core.always(
+            "GET /api/v1/credentials/broker",
+            ScriptedResponse::ok(json!({"token": "broker-2"})),
+        );
+        let broker = SimulatedBroker::start();
+        broker.script("GET /api/v1/tasks/{id}", ScriptedResponse::status(403));
+        broker.always(
+            "GET /api/v1/tasks/{id}",
+            ScriptedResponse::ok(task_state("task-1", "running", None)),
+        );
+        let client = BrokerClient::for_base_url(broker.base_url())
+            .and_then(|client| client.with_core(core.base_url(), Some("tok-chaty")))
+            .expect("cliente de pruebas");
+        client
+            .replace_admin_token(Some("broker-1"))
+            .expect("token inicial");
+
+        block_on(client.get_task("task-1")).expect("el reintento con el token nuevo funciona");
+
+        let tokens: Vec<_> = broker
+            .requests_to("GET", "/api/v1/tasks/task-1")
+            .iter()
+            .map(|request| request.headers.get("x-admin-token").cloned())
+            .collect();
+        assert_eq!(
+            tokens,
+            vec![Some("broker-1".to_owned()), Some("broker-2".to_owned())]
+        );
+        let asked = core.requests_to("GET", "/api/v1/credentials/broker");
+        assert_eq!(
+            asked[0].headers.get("authorization").map(String::as_str),
+            Some("Bearer tok-chaty")
+        );
     }
 }

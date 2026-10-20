@@ -77,6 +77,7 @@ impl Database {
             execution_profile,
             context_profile,
             &[],
+            false,
         )
     }
 
@@ -94,6 +95,7 @@ impl Database {
         execution_profile: Option<&ConversationExecutionPreferences>,
         context_profile: Option<&str>,
         api_actions: &[CustomGptApiAction],
+        knowledge_orchestrator: bool,
     ) -> Result<CustomGptView, AppError> {
         let (name, description, instructions) =
             validated_custom_gpt_fields(name, description, instructions)?;
@@ -123,6 +125,7 @@ impl Database {
             execution_profile: execution_profile.cloned(),
             context_profile,
             api_actions,
+            knowledge_orchestrator,
         };
         let configuration_json = serde_json::to_string(&configuration)
             .map_err(|error| AppError::Validation(error.to_string()))?;
@@ -273,6 +276,7 @@ impl Database {
             execution_profile,
             context_profile,
             &[],
+            false,
         )
     }
 
@@ -291,6 +295,7 @@ impl Database {
         execution_profile: Option<&ConversationExecutionPreferences>,
         context_profile: Option<&str>,
         api_actions: &[CustomGptApiAction],
+        knowledge_orchestrator: bool,
     ) -> Result<CustomGptView, AppError> {
         let (name, description, instructions) =
             validated_custom_gpt_fields(name, description, instructions)?;
@@ -319,6 +324,7 @@ impl Database {
             execution_profile: execution_profile.cloned(),
             context_profile,
             api_actions,
+            knowledge_orchestrator,
         };
         let configuration_json = serde_json::to_string(&configuration)
             .map_err(|error| AppError::Validation(error.to_string()))?;
@@ -507,6 +513,7 @@ impl Database {
                         execution_profile: configuration.execution_profile,
                         context_profile: configuration.context_profile,
                         api_actions: configuration.api_actions,
+                        knowledge_orchestrator: configuration.knowledge_orchestrator,
                         default_project_id,
                         version_no,
                         created_at,

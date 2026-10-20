@@ -1579,6 +1579,17 @@ pub(super) fn advance_semantic_chat(
                         },
                     )
                     .await?;
+                    request = crate::knowledge_orchestrator::enrich_request(
+                        &database,
+                        &broker,
+                        request,
+                        workflow.execution_preferences.knowledge_orchestrator
+                            || workflow
+                                .custom_gpt_context
+                                .as_ref()
+                                .is_some_and(|custom_gpt| custom_gpt.knowledge_orchestrator),
+                    )
+                    .await?;
                     // La instantánea solo menciona recuerdos enviados, incluido el
                     // recorte del presupuesto que precede a System 1.
                     let selected = selected

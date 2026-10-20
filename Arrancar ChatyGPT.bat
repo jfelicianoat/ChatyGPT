@@ -81,7 +81,7 @@ if "%NEED_BUILD%"=="1" (
     if errorlevel 1 goto :failed
 )
 
-if not defined CHATYGPT_BROKER_BASE_URL set "CHATYGPT_BROKER_BASE_URL=http://192.168.1.52:8765"
+if not defined CHATYGPT_BROKER_BASE_URL set "CHATYGPT_BROKER_BASE_URL=https://192.168.1.52:8765"
 echo Broker AI: %CHATYGPT_BROKER_BASE_URL%
 echo.
 

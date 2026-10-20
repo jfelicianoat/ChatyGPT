@@ -57,6 +57,7 @@ import type {
   ConversationMessagePage,
   ConversationSearchHit,
   EffectiveExecutionPolicy,
+  KnowledgeOrchestratorStatus,
 } from "./domain";
 
 export const platform = {
@@ -567,7 +568,8 @@ export const platform = {
     defaultProjectId: string | null,
     executionProfile: CustomGptView["executionProfile"],
     contextProfile: CustomGptView["contextProfile"]
-    ,apiActions: CustomGptView["apiActions"]
+    ,apiActions: CustomGptView["apiActions"],
+    knowledgeOrchestrator = false
   ): Promise<CustomGptView> {
     return invoke<CustomGptView>("create_custom_gpt", {
       name,
@@ -580,7 +582,8 @@ export const platform = {
       defaultProjectId,
       executionProfile,
       contextProfile
-      ,apiActions
+      ,apiActions,
+      knowledgeOrchestrator
     });
   },
   listCustomGptVersions(customGptId: string): Promise<CustomGptVersionView[]> {
@@ -636,7 +639,8 @@ export const platform = {
     defaultProjectId: string | null,
     executionProfile: CustomGptView["executionProfile"],
     contextProfile: CustomGptView["contextProfile"]
-    ,apiActions: CustomGptView["apiActions"]
+    ,apiActions: CustomGptView["apiActions"],
+    knowledgeOrchestrator = false
   ): Promise<CustomGptView> {
     return invoke<CustomGptView>("update_custom_gpt", {
       customGptId,
@@ -650,7 +654,8 @@ export const platform = {
       defaultProjectId,
       executionProfile,
       contextProfile
-      ,apiActions
+      ,apiActions,
+      knowledgeOrchestrator
     });
   },
   pickCustomGptImportPath(): Promise<string | null> {
@@ -871,6 +876,17 @@ export const platform = {
   // El token de Athena nunca llega hasta aquí: se guarda con una orden y solo
   // se consulta su estado. La interfaz no conoce ni la URL ni la credencial.
 
+  getKnowledgeOrchestratorStatus(): Promise<KnowledgeOrchestratorStatus> {
+    return invoke<KnowledgeOrchestratorStatus>("get_knowledge_orchestrator_status");
+  },
+  setKnowledgeOrchestratorCredential(token: string): Promise<KnowledgeOrchestratorStatus> {
+    return invoke<KnowledgeOrchestratorStatus>("set_knowledge_orchestrator_credential", { token });
+  },
+  clearKnowledgeOrchestratorCredential(confirmed: boolean): Promise<KnowledgeOrchestratorStatus> {
+    return invoke<KnowledgeOrchestratorStatus>("clear_knowledge_orchestrator_credential", {
+      confirmed
+    });
+  },
   getAthenaStatus(): Promise<AthenaEstadoArea> {
     return invoke<AthenaEstadoArea>("get_athena_status");
   },

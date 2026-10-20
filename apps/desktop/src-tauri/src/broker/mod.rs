@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use reqwest::{header::HeaderValue, Client, StatusCode};
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use url::Url;
 
@@ -25,7 +25,7 @@ use crate::error::AppError;
 use crate::logging;
 use crate::secrets;
 
-const DEFAULT_BROKER_BASE_URL: &str = "http://192.168.1.52:8765";
+const DEFAULT_BROKER_BASE_URL: &str = "https://192.168.1.52:8765";
 const MAX_ARTIFACT_BYTES: usize = 20 * 1024 * 1024;
 const MAX_CONVERTED_TEXT_BYTES: usize = 64 * 1024 * 1024;
 /// Presupuesto de una respuesta JSON del Broker (H18).
@@ -34,6 +34,36 @@ const MAX_CONVERTED_TEXT_BYTES: usize = 64 * 1024 * 1024;
 /// una respuesta larga y cortan una respuesta defectuosa antes de que llene la
 /// memoria. El tiempo de espera no es un presupuesto de bytes.
 pub(crate) const MAX_JSON_BYTES: usize = 32 * 1024 * 1024;
+
+/// CA que firma el certificado HTTPS del Broker (la «AI Broker CA»). Se confía solo en los
+/// clientes del Broker: un `SSL_CERT_FILE` global rompería el HTTPS de internet.
+pub(crate) const BROKER_CA_ENV: &str = "AI_BROKER_CA_CERT";
+const DEFAULT_BROKER_CA_CERT: &str = r"C:\Agora\pki-broker\ca.crt";
+
+/// Ruta de la CA del Broker y si se indicó a propósito (entonces tiene que existir).
+pub(crate) fn broker_ca_path() -> (String, bool) {
+    match std::env::var(BROKER_CA_ENV) {
+        Ok(value) if !value.trim().is_empty() => (value, true),
+        _ => (DEFAULT_BROKER_CA_CERT.to_owned(), false),
+    }
+}
+
+/// La CA del Broker si está en el equipo; una indicada que no se puede leer es un error.
+fn broker_ca_certificate(
+    (path, explicit): (String, bool),
+) -> Result<Option<reqwest::Certificate>, AppError> {
+    match std::fs::read(&path) {
+        Ok(pem) => reqwest::Certificate::from_pem(&pem)
+            .map(Some)
+            .map_err(|error| {
+                AppError::BrokerTransport(format!("CA del Broker no válida ({path}): {error}"))
+            }),
+        Err(_) if !explicit => Ok(None),
+        Err(error) => Err(AppError::BrokerTransport(format!(
+            "CA del Broker no legible ({path}): {error}"
+        ))),
+    }
+}
 
 /// Convierte el token en cabecera HTTP sin filtrar su contenido al error.
 fn header_token(value: &str) -> Result<HeaderValue, AppError> {
@@ -240,11 +270,15 @@ impl BrokerClient {
         let admin_token = secrets::resolve_broker_token(data_dir)
             .map(|value| header_token(&value))
             .transpose()?;
-        let http = Client::builder()
+        let mut builder = Client::builder()
             .connect_timeout(std::time::Duration::from_secs(3))
             .timeout(std::time::Duration::from_secs(10))
             .redirect(reqwest::redirect::Policy::none())
-            .user_agent(concat!("ChatyGPT/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("ChatyGPT/", env!("CARGO_PKG_VERSION")));
+        if let Some(ca) = broker_ca_certificate(broker_ca_path())? {
+            builder = builder.add_root_certificate(ca);
+        }
+        let http = builder
             .build()
             .map_err(|error| AppError::BrokerTransport(error.to_string()))?;
         Ok(Self {
@@ -271,10 +305,14 @@ impl BrokerClient {
         if !base_url.path().ends_with('/') {
             base_url.set_path(&format!("{}/", base_url.path()));
         }
-        let http = Client::builder()
+        let mut builder = Client::builder()
             .connect_timeout(std::time::Duration::from_secs(2))
             .timeout(std::time::Duration::from_secs(5))
-            .redirect(reqwest::redirect::Policy::none())
+            .redirect(reqwest::redirect::Policy::none());
+        if let Some(ca) = broker_ca_certificate(broker_ca_path())? {
+            builder = builder.add_root_certificate(ca);
+        }
+        let http = builder
             .build()
             .map_err(|error| AppError::BrokerTransport(error.to_string()))?;
         Ok(Self {
@@ -300,6 +338,11 @@ impl BrokerClient {
 
     pub fn base_url(&self) -> String {
         self.base_url.as_str().trim_end_matches('/').to_owned()
+    }
+
+    /// AI OS Core, si dirige este cliente: también recibe los saltos hacia otras apps.
+    pub(crate) fn core_gate(&self) -> Option<&ai_os_core::CoreGate> {
+        self.core.as_ref()
     }
 
     /// Sustituye la credencial en caliente tras guardarla o retirarla.
@@ -346,6 +389,53 @@ impl BrokerClient {
             ));
         }
         Ok(url)
+    }
+
+    /// Envía con el token vigente. Si el Broker responde 401/403 y AI OS Core tiene otro
+    /// (el Broker se reinició y rotó el suyo), se reintenta una vez con el nuevo.
+    async fn send(
+        &self,
+        operation: &str,
+        request: reqwest::RequestBuilder,
+    ) -> Result<reqwest::Response, AppError> {
+        if self.current_token().is_none() {
+            self.refresh_token_from_core().await;
+        }
+        let retry = request.try_clone();
+        let response = self
+            .authorize(request)
+            .send()
+            .await
+            .map_err(|error| transport_failure(operation, error))?;
+        if matches!(
+            response.status(),
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+        ) {
+            if let Some(retry) = retry {
+                if self.refresh_token_from_core().await {
+                    return self
+                        .authorize(retry)
+                        .send()
+                        .await
+                        .map_err(|error| transport_failure(operation, error));
+                }
+            }
+        }
+        Ok(response)
+    }
+
+    /// Toma de AI OS Core el token del Broker. `true` si ha cambiado.
+    pub async fn refresh_token_from_core(&self) -> bool {
+        let Some(core) = &self.core else {
+            return false;
+        };
+        let Some(token) = core.broker_token().await else {
+            return false;
+        };
+        let changed = self
+            .current_token()
+            .is_none_or(|current| current.as_bytes() != token.as_bytes());
+        changed && self.replace_admin_token(Some(&token)).is_ok()
     }
 
     fn authorize(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
@@ -410,10 +500,11 @@ impl BrokerClient {
 
     pub async fn capabilities(&self) -> Result<BrokerCapabilities, AppError> {
         let response = self
-            .authorize(self.http.get(self.endpoint("/api/v1/capabilities")?))
-            .send()
-            .await
-            .map_err(|error| transport_failure("capabilities", error))?;
+            .send(
+                "capabilities",
+                self.http.get(self.endpoint("/api/v1/capabilities")?),
+            )
+            .await?;
         let capabilities: BrokerCapabilities = Self::decode("capabilities", response).await?;
         if let Ok(mut guard) = self.capabilities.write() {
             *guard = Some(capabilities.clone());
@@ -442,20 +533,21 @@ impl BrokerClient {
     }
 
     pub async fn create_task(&self, request: &Value) -> Result<TaskAccepted, AppError> {
+        let mut request = self.strip_unsupported_fields(request);
         if let Some(core) = &self.core {
             // Antes de tocar el Broker: sin ALLOW de Core no sale nada
-            core.authorize(request).await?;
+            if let Some(turn) = core.authorize(&request).await? {
+                request["priority"] = json!(with_core_turn(turn, &request));
+            }
         }
-        let request = self.strip_unsupported_fields(request);
         let response = self
-            .authorize(
+            .send(
+                "create_task",
                 self.http
                     .post(self.endpoint("/api/v1/tasks")?)
                     .json(&request),
             )
-            .send()
-            .await
-            .map_err(|error| transport_failure("create_task", error))?;
+            .await?;
         let accepted: TaskAccepted = Self::decode("create_task", response).await?;
         if let (Some(core), Some(key)) = (
             &self.core,
@@ -470,6 +562,8 @@ impl BrokerClient {
     }
 
     /// Quita los campos que este Broker no anuncia (Client_API.md, 5.1).
+    ///
+    /// (Antes de pedir permiso a Core: lo que se evalúa es lo que se envía.)
     ///
     /// Su validación es estricta: un campo que no exista en su contrato hace
     /// fallar la petición con 422, no se ignora. Perder la garantía adicional
@@ -494,10 +588,8 @@ impl BrokerClient {
     pub async fn invocations(&self, task_id: &str) -> Result<Vec<InvocationTelemetry>, AppError> {
         let path = format!("/api/v1/tasks/{task_id}/invocations");
         let response = self
-            .authorize(self.http.get(self.endpoint(&path)?))
-            .send()
-            .await
-            .map_err(|error| transport_failure("invocations", error))?;
+            .send("invocations", self.http.get(self.endpoint(&path)?))
+            .await?;
         let payload: Value = Self::decode("invocations", response).await?;
         Ok(Self::items(&payload))
     }
@@ -512,10 +604,8 @@ impl BrokerClient {
     pub async fn artifacts(&self, task_id: &str) -> Result<Vec<TaskArtifact>, AppError> {
         let path = format!("/api/v1/tasks/{task_id}/artifacts");
         let response = self
-            .authorize(self.http.get(self.endpoint(&path)?))
-            .send()
-            .await
-            .map_err(|error| transport_failure("artifacts", error))?;
+            .send("artifacts", self.http.get(self.endpoint(&path)?))
+            .await?;
         let payload: Value = Self::decode("artifacts", response).await?;
         Ok(Self::items(&payload))
     }
@@ -532,10 +622,8 @@ impl BrokerClient {
     ) -> Result<Vec<u8>, AppError> {
         let path = format!("/api/v1/tasks/{task_id}/artifacts/{artifact_id}");
         let response = self
-            .authorize(self.http.get(self.endpoint(&path)?))
-            .send()
-            .await
-            .map_err(|error| transport_failure("download_artifact", error))?;
+            .send("download_artifact", self.http.get(self.endpoint(&path)?))
+            .await?;
         let (status, bytes) = read_body_limited(
             "download_artifact",
             response,
@@ -599,10 +687,14 @@ impl BrokerClient {
             if let Some(describe_images) = describe_images {
                 form = form.text("describe_images", describe_images.to_string());
             }
-            let client = reqwest::blocking::Client::builder()
+            let mut builder = reqwest::blocking::Client::builder()
                 .connect_timeout(std::time::Duration::from_secs(3))
                 .timeout(std::time::Duration::from_secs(600))
-                .user_agent(concat!("ChatyGPT/", env!("CARGO_PKG_VERSION")))
+                .user_agent(concat!("ChatyGPT/", env!("CARGO_PKG_VERSION")));
+            if let Some(ca) = broker_ca_certificate(broker_ca_path())? {
+                builder = builder.add_root_certificate(ca);
+            }
+            let client = builder
                 .build()
                 .map_err(|error| AppError::BrokerTransport(error.to_string()))?;
             let mut request = client.post(endpoint).multipart(form);
@@ -661,20 +753,14 @@ impl BrokerClient {
     pub async fn get_file(&self, file_id: &str) -> Result<FileState, AppError> {
         let path = format!("/api/v1/files/{file_id}");
         let response = self
-            .authorize(self.http.get(self.endpoint(&path)?))
-            .send()
-            .await
-            .map_err(|error| transport_failure("get_file", error))?;
+            .send("get_file", self.http.get(self.endpoint(&path)?))
+            .await?;
         Self::decode("get_file", response).await
     }
 
     pub async fn download_text(&self, location: &str) -> Result<String, AppError> {
         let url = self.resource_url(location)?;
-        let response = self
-            .authorize(self.http.get(url))
-            .send()
-            .await
-            .map_err(|error| transport_failure("download_text", error))?;
+        let response = self.send("download_text", self.http.get(url)).await?;
         let (status, bytes) = read_body_limited(
             "download_text",
             response,
@@ -703,10 +789,8 @@ impl BrokerClient {
     pub async fn get_task(&self, task_id: &str) -> Result<TaskState, AppError> {
         let path = format!("/api/v1/tasks/{task_id}");
         let response = self
-            .authorize(self.http.get(self.endpoint(&path)?))
-            .send()
-            .await
-            .map_err(|error| transport_failure("get_task", error))?;
+            .send("get_task", self.http.get(self.endpoint(&path)?))
+            .await?;
         let state = Self::decode_task_state("get_task", task_id, response).await?;
         if let Some(core) = &self.core {
             if state.status.is_terminal() {
@@ -727,10 +811,8 @@ impl BrokerClient {
     pub async fn cancel_task(&self, task_id: &str) -> Result<TaskState, AppError> {
         let path = format!("/api/v1/tasks/{task_id}");
         let response = self
-            .authorize(self.http.delete(self.endpoint(&path)?))
-            .send()
-            .await
-            .map_err(|error| transport_failure("cancel_task", error))?;
+            .send("cancel_task", self.http.delete(self.endpoint(&path)?))
+            .await?;
         Self::decode_task_state("cancel_task", task_id, response).await
     }
 
@@ -741,10 +823,11 @@ impl BrokerClient {
     ) -> Result<TaskState, AppError> {
         let path = format!("/api/v1/tasks/{task_id}/tool_results");
         let response = self
-            .authorize(self.http.post(self.endpoint(&path)?).json(tool_results))
-            .send()
-            .await
-            .map_err(|error| transport_failure("submit_tool_results", error))?;
+            .send(
+                "submit_tool_results",
+                self.http.post(self.endpoint(&path)?).json(tool_results),
+            )
+            .await?;
         Self::decode_task_state("submit_tool_results", task_id, response).await
     }
 
@@ -811,7 +894,7 @@ impl BrokerClient {
         let Ok(url) = self.endpoint("/api/v1/auth/check") else {
             return "unknown".to_owned();
         };
-        let response = match self.authorize(self.http.get(url)).send().await {
+        let response = match self.send("auth_check", self.http.get(url)).await {
             Ok(response) => response,
             Err(_) => return "unknown".to_owned(),
         };
@@ -1741,4 +1824,63 @@ mod tests {
         assert_eq!(diagnostic.credential.as_deref(), Some("not_required"));
         assert!(diagnostic.message.contains("no exige credencial"));
     }
+}
+
+#[cfg(test)]
+mod https_tests {
+    use super::{broker_ca_certificate, BrokerClient};
+
+    const AGORA_CA: &str = "-----BEGIN CERTIFICATE-----
+MIIBzjCCAVSgAwIBAgIUCWVS5X4G5SAA06CvKLJbtzJ/pfowCgYIKoZIzj0EAwMw
+JTEjMCEGA1UEAwwaQWdvcmEgQ0EgKERFU0tUT1AtQ0FRNVNMNSkwHhcNMjYwOTA1
+MTg1NzAxWhcNMzYwOTAyMTkwMjAxWjAlMSMwIQYDVQQDDBpBZ29yYSBDQSAoREVT
+S1RPUC1DQVE1U0w1KTB2MBAGByqGSM49AgEGBSuBBAAiA2IABGjSG+mHRrtAnKXf
+z2eoSodinnooPMhbzE408k2LhImZRKiAXA6/dvkzScEWv1/THjsFQzvd2wPhTQ4X
+GKhsZDfY3I5qsx49L+k99o2TvON46JU/Ow80HlA04ddbFdcAjaNFMEMwEgYDVR0T
+AQH/BAgwBgEB/wIBADAOBgNVHQ8BAf8EBAMCAYYwHQYDVR0OBBYEFAuD8n+MC/oF
+603eCbrPhgcfBFXiMAoGCCqGSM49BAMDA2gAMGUCMQD/88o808uBTfWc+oQv4Lm+
+MEMhAQrGg5fgyp6JtN7dqmTNgWMmYEpHD05AhR7gMC0CMHklfjnJ9GJhdq/iXhtK
++QA8Tj9xKhFCs9X8zXUOuuuZSqs3SEYYrT+fXL3pVxcLPw==
+-----END CERTIFICATE-----
+";
+
+    #[test]
+    fn la_ca_del_broker_se_carga_y_una_indicada_que_falta_es_error() {
+        let dir =
+            std::env::temp_dir().join(format!("chatygpt-ca-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ca = dir.join("ca.crt");
+        std::fs::write(&ca, AGORA_CA).unwrap();
+        let path = ca.to_string_lossy().into_owned();
+        assert!(broker_ca_certificate((path, true)).unwrap().is_some());
+        let missing = dir.join("no-existe.crt").to_string_lossy().into_owned();
+        assert!(broker_ca_certificate((missing.clone(), false))
+            .unwrap()
+            .is_none());
+        assert!(broker_ca_certificate((missing, true)).is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Contra un Broker real en HTTPS: `CHATYGPT_HTTPS_BROKER=https://… cargo test -- --ignored`.
+    #[test]
+    #[ignore]
+    fn broker_real_por_https() {
+        let url = std::env::var("CHATYGPT_HTTPS_BROKER").expect("CHATYGPT_HTTPS_BROKER");
+        let client = BrokerClient::for_base_url(&url).unwrap();
+        let capabilities = tauri::async_runtime::block_on(client.capabilities()).unwrap();
+        println!("contrato por HTTPS: {}", capabilities.contract_version);
+    }
+}
+
+/// Turno en la cola del Broker (Client_API.md, 5.1.1: menor número = antes).
+///
+/// El turno que Core fija a ChatyGPT es la base y la prioridad de la petición
+/// se mide respecto a la normal del Broker (100): una pregunta «alta» (25)
+/// sigue pasando antes que el resto de la app.
+fn with_core_turn(turn: i64, request: &Value) -> i64 {
+    let own = request
+        .get("priority")
+        .and_then(Value::as_i64)
+        .unwrap_or(100);
+    (turn * own / 100).clamp(0, 1000)
 }

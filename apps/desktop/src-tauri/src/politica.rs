@@ -91,6 +91,7 @@ pub fn merge_execution_preferences(
             max_cost_usd,
             long_context: profile.long_context.clone(),
             priority: profile.priority,
+            knowledge_orchestrator: chat.knowledge_orchestrator,
         },
         PolicySources {
             data_classification: classification_source.to_owned(),
@@ -315,6 +316,7 @@ mod tests {
                 execution_profile: Some(preferences("local_only", 0.1)),
                 context_profile: "balanced".to_owned(),
                 api_actions: Vec::new(),
+                knowledge_orchestrator: false,
             }),
             None,
             false,

@@ -22,6 +22,7 @@ pub(crate) fn create_custom_gpt(
     execution_profile: Option<db::ConversationExecutionPreferences>,
     context_profile: String,
     api_actions: Vec<db::CustomGptApiAction>,
+    knowledge_orchestrator: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<CustomGptView, AppError> {
     state.database.create_custom_gpt_with_api_actions(
@@ -36,6 +37,7 @@ pub(crate) fn create_custom_gpt(
         execution_profile.as_ref(),
         Some(&context_profile),
         &api_actions,
+        knowledge_orchestrator.unwrap_or(false),
     )
 }
 
@@ -54,6 +56,7 @@ pub(crate) fn update_custom_gpt(
     execution_profile: Option<db::ConversationExecutionPreferences>,
     context_profile: String,
     api_actions: Vec<db::CustomGptApiAction>,
+    knowledge_orchestrator: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<CustomGptView, AppError> {
     state.database.update_custom_gpt_with_api_actions(
@@ -69,6 +72,7 @@ pub(crate) fn update_custom_gpt(
         execution_profile.as_ref(),
         Some(&context_profile),
         &api_actions,
+        knowledge_orchestrator.unwrap_or(false),
     )
 }
 

@@ -5,6 +5,9 @@ pnpm-recovery.log
 dist/
 target/
 target-next/
+target-check/
+*.bak
+.pytest_cache/
 *.db
 *.db-shm
 *.db-wal

@@ -5,6 +5,7 @@ mod db;
 mod error;
 mod export;
 mod instancia;
+mod knowledge_orchestrator;
 mod logging;
 mod metrics;
 mod politica;
@@ -333,6 +334,9 @@ pub fn run() {
             list_audit_events,
             get_memory_overview,
             get_custom_gpt_knowledge,
+            get_knowledge_orchestrator_status,
+            set_knowledge_orchestrator_credential,
+            clear_knowledge_orchestrator_credential,
             list_custom_gpt_files,
             import_custom_gpt_file,
             remove_custom_gpt_file,

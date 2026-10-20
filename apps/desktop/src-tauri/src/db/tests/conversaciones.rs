@@ -184,6 +184,7 @@ fn conversation_execution_preferences_are_validated_persisted_and_visible() {
         max_cost_usd: 0.5,
         long_context: "fail".to_owned(),
         priority: 25,
+        knowledge_orchestrator: false,
     };
     database
         .update_conversation_execution_preferences(&conversation.id, &preferences)

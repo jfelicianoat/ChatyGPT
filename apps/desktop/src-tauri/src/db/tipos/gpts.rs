@@ -157,6 +157,9 @@ pub(crate) struct CustomGptConfiguration {
     /// Acciones GET públicas definidas por la persona y congeladas con la versión.
     #[serde(default)]
     pub(crate) api_actions: Vec<CustomGptApiAction>,
+    /// La mochila incluye el conocimiento de Knowledge Orchestrator.
+    #[serde(default)]
+    pub(crate) knowledge_orchestrator: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -359,6 +362,7 @@ pub struct CustomGptView {
     pub execution_profile: Option<ConversationExecutionPreferences>,
     pub context_profile: String,
     pub api_actions: Vec<CustomGptApiAction>,
+    pub knowledge_orchestrator: bool,
     /// Proyecto al que van los chats nuevos que eligen este GPT.
     pub default_project_id: Option<String>,
     pub version_no: i64,
@@ -497,6 +501,8 @@ pub struct CustomGptContext {
     pub context_profile: String,
     #[serde(default)]
     pub api_actions: Vec<CustomGptApiAction>,
+    #[serde(default)]
+    pub knowledge_orchestrator: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

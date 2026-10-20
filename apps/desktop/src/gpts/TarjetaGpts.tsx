@@ -53,6 +53,8 @@ export function TarjetaGpts({ gpts, projects, openDialog }: Props) {
     setCustomGptSchedulePermission,
     customGptExternalApiPermission,
     setCustomGptExternalApiPermission,
+    customGptKnowledgeOrchestrator,
+    setCustomGptKnowledgeOrchestrator,
     customGptApiActions,
     setCustomGptApiActions,
     customGptApiSamples,
@@ -296,6 +298,22 @@ export function TarjetaGpts({ gpts, projects, openDialog }: Props) {
           <span>
             Crear tareas programadas
             <small>Puede proponer una ejecución futura; confirmarás antes de activarla.</small>
+          </span>
+        </label>
+        <label>
+          <input
+            type="checkbox"
+            checked={customGptKnowledgeOrchestrator}
+            onChange={(event) =>
+              setCustomGptKnowledgeOrchestrator(event.target.checked)}
+            disabled={customGptBusy}
+          />
+          <span>
+            Mochila: conocimiento de Knowledge Orchestrator
+            <small>
+              Cada mensaje adjunta todo el conocimiento publicado en Knowledge Orchestrator y la
+              respuesta lo sintetiza. Si no responde, el mensaje no se envía.
+            </small>
           </span>
         </label>
         <label>

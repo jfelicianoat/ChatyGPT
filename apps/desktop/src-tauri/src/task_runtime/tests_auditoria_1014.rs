@@ -277,3 +277,97 @@ fn real_ai_os_core_governs_a_chat_turn() {
     println!("[OK ] Core tiene el recibo succeeded del turno");
     cleanup(&database);
 }
+
+/// Turno real con Knowledge Orchestrator activado en la conversación.
+///
+/// Variables: `KNOWLEDGE_ORCHESTRATOR_URL`, `KO_E2E_TOKEN` (consumidor «read»),
+/// `CHATYGPT_VERIFY_BROKER_URL` y `CHATYGPT_VERIFY_PROFILE_DIR` (perfil del que
+/// solo se lee el token cifrado del Broker). Pasa por `start_chat_turn`, el
+/// mismo camino que un mensaje enviado desde la interfaz.
+#[test]
+#[ignore = "necesita Knowledge Orchestrator y Broker AI reales"]
+fn real_knowledge_orchestrator_feeds_a_chat_turn() {
+    let env = |name: &str| std::env::var(name).unwrap_or_else(|_| panic!("falta {name}"));
+    let data_dir =
+        std::env::temp_dir().join(format!("chatygpt-ko-e2e-{}", uuid::Uuid::new_v4().simple()));
+    std::fs::create_dir_all(&data_dir).expect("directorio");
+    let database = Database::open(data_dir.join("chatygpt.db")).expect("base");
+    crate::secrets::store_api_credential(
+        &data_dir,
+        crate::knowledge_orchestrator::ALIAS_CREDENCIAL,
+        &env("KO_E2E_TOKEN"),
+    )
+    .expect("credencial");
+    let conversation = database.create_conversation("KO real", None).expect("chat");
+    let mut preferences = database
+        .conversation_execution_preferences(&conversation.id)
+        .expect("preferencias");
+    preferences.knowledge_orchestrator = true;
+    // Prioridad «Alta»: el Broker real suele tener cola de otras aplicaciones.
+    preferences.priority = 25;
+    database
+        .update_conversation_execution_preferences(&conversation.id, &preferences)
+        .expect("activar KO");
+    // `KO_E2E_QUESTION` permite probar una síntesis entre varias notas reales.
+    let question = std::env::var("KO_E2E_QUESTION").ok();
+    let custom_question = question.is_some();
+    let question = question.unwrap_or_else(|| {
+        "¿Cada cuánto tengo que descalcificar la cafetera y con qué producto?".to_owned()
+    });
+    let broker = BrokerClient::for_base_url(&env("CHATYGPT_VERIFY_BROKER_URL")).expect("cliente");
+    broker
+        .replace_admin_token(
+            crate::secrets::load_broker_token(std::path::Path::new(&env(
+                "CHATYGPT_VERIFY_PROFILE_DIR",
+            )))
+            .as_deref(),
+        )
+        .expect("token");
+
+    let snapshot = tauri::async_runtime::block_on(super::start_chat_turn(
+        database.clone(),
+        broker,
+        &conversation.id,
+        &question,
+        &[],
+        false,
+        false,
+        false,
+        false,
+    ))
+    .expect("turno");
+    let request = database
+        .task_record(&snapshot.id)
+        .expect("registro")
+        .request;
+    let prompt = request["content"]["prompt"].as_str().expect("prompt");
+    assert!(prompt.contains("Knowledge Orchestrator"));
+    assert_eq!(request["execution"]["long_context"], "map_reduce");
+    println!(
+        "[OK ] la petición adjunta todo el conocimiento: documentos {} en {}",
+        request["content"]["metadata"]["knowledge_orchestrator_document_ids"],
+        request["content"]["attachments"]
+    );
+    assert!(
+        SimulatedBroker::wait_until(Duration::from_secs(600), || database
+            .task_snapshot(&snapshot.id)
+            .is_ok_and(|task| task.local_state == "terminal")),
+        "el turno debía terminar en el Broker real"
+    );
+    let task = database.task_snapshot(&snapshot.id).expect("tarea");
+    assert_eq!(task.remote_status, "completed", "{:?}", task.error);
+    let answer = database
+        .conversation_view(&conversation.id)
+        .expect("conversación")
+        .messages
+        .into_iter()
+        .filter(|message| message.role == "assistant")
+        .find_map(|message| message.text)
+        .expect("respuesta");
+    println!("[OK ] respuesta del modelo:\n{answer}");
+    assert!(
+        custom_question || answer.contains("90"),
+        "la respuesta no usa el conocimiento"
+    );
+    let _ = std::fs::remove_dir_all(&data_dir);
+}

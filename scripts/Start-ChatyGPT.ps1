@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Arranca ChatyGPT: comprueba la credencial de Broker AI, levanta Athena y abre la app.
 
@@ -20,7 +20,7 @@
     un token que el broker ya no aceptaba.
 #>
 param(
-    [string]$BrokerBaseUrl = "http://192.168.1.52:8765",
+    [string]$BrokerBaseUrl = "https://192.168.1.52:8765",
 
     # Modelo con el que Athena habla al broker. Athena necesita que el modelo devuelva su
     # decision como JSON estructurado; el que elige el broker por su cuenta puede no
@@ -116,6 +116,30 @@ function Save-StoredToken {
     }
 }
 
+function Get-CoreBrokerToken {
+    <#
+        El token del broker que reparte AI OS Core (lo publica alli el runner de Agora del
+        PC IA). La URL y el token de ChatyGPT ante Core los deja Core al arrancar en
+        %LOCALAPPDATA%/AIOSCore/conexion/chatygpt.json: no hay que pegar nada. $null si no hay
+        Core en este equipo o aun no tiene el token.
+    #>
+    $carpeta = if ($env:AI_OS_CONNECT_DIR) { $env:AI_OS_CONNECT_DIR } else { Join-Path $env:LOCALAPPDATA "AIOSCore\conexion" }
+    $fichero = Join-Path $carpeta "chatygpt.json"
+    if (-not (Test-Path -LiteralPath $fichero)) {
+        return $null
+    }
+    try {
+        $conexion = Get-Content -LiteralPath $fichero -Raw | ConvertFrom-Json
+        $respuesta = Invoke-RestMethod -UseBasicParsing -TimeoutSec 5 `
+            -Uri ($conexion.core_url.TrimEnd("/") + "/api/v1/credentials/broker") `
+            -Headers @{ Authorization = "Bearer " + $conexion.token; "X-Principal-Id" = "chatygpt" }
+        return $respuesta.token
+    }
+    catch {
+        return $null
+    }
+}
+
 function Test-BrokerCredential {
     <#
         Devuelve $true, $false o $null cuando no se ha podido saber.
@@ -152,10 +176,53 @@ function Test-BrokerCredential {
     }
 }
 
+# -- HTTPS del broker ---------------------------------------------------------
+# Con el broker en HTTPS su certificado lo firma la AI Broker CA, que PowerShell 5.1 no
+# conoce: se le anade solo para este proceso (el mismo bloque que el inicio con Windows).
+$caPath = if ($env:AI_BROKER_CA_CERT) { $env:AI_BROKER_CA_CERT } else { "C:\Agora\pki-broker\ca.crt" }
+$brokerUrl = $BrokerBaseUrl
+if ($brokerUrl.StartsWith('https:') -and (Test-Path -LiteralPath $caPath)) {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    if (-not ('BrokerCaTrust' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System.Net;
+using System.Net.Security;
+using System.Security.Cryptography.X509Certificates;
+public static class BrokerCaTrust {
+    static X509Certificate2 Ca;
+    public static void Enable(string path) {
+        Ca = new X509Certificate2(path);
+        ServicePointManager.ServerCertificateValidationCallback = Check;
+    }
+    static bool Check(object sender, X509Certificate certificate, X509Chain chain, SslPolicyErrors errors) {
+        if (errors == SslPolicyErrors.None) return true;
+        if (errors != SslPolicyErrors.RemoteCertificateChainErrors) return false;
+        using (var own = new X509Chain()) {
+            own.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
+            own.ChainPolicy.VerificationFlags = X509VerificationFlags.AllowUnknownCertificateAuthority;
+            own.ChainPolicy.ExtraStore.Add(Ca);
+            if (!own.Build(new X509Certificate2(certificate))) return false;
+            return own.ChainElements[own.ChainElements.Count - 1].Certificate.Thumbprint == Ca.Thumbprint;
+        }
+    }
+}
+'@
+    }
+    [BrokerCaTrust]::Enable($caPath)
+}
+
 # -- credencial ---------------------------------------------------------------
 
 $token = $env:AI_BROKER_ADMIN_TOKEN
 $fromDisk = $false
+$fromCore = $false
+if (-not $token) {
+    $token = Get-CoreBrokerToken
+    if ($token) {
+        $fromCore = $true
+        Write-Host "Usando el token de Broker AI que da AI OS Core."
+    }
+}
 if (-not $token) {
     $token = Read-StoredToken -Path $credentialPath
     if ($token) {
@@ -181,6 +248,14 @@ for ($intento = 0; $intento -lt 3; $intento++) {
             $offline = $true
             break
         }
+        if ($fromCore) {
+            # Con Core no se pide nada a mano: si su token no vale, el runner del PC IA aun no
+            # ha publicado el nuevo. La app se abre y lo toma de Core en cuanto llegue.
+            Write-Warning ("Broker AI rechaza el token que da AI OS Core: el runner de Agora del PC IA " +
+                "aun no ha publicado el nuevo. ChatyGPT se abrira y lo tomara solo en cuanto llegue.")
+            $offline = $true
+            break
+        }
         if ($fromDisk) {
             Write-Host "La credencial guardada ya no vale: el broker la rechaza."
         }
@@ -200,7 +275,8 @@ if (-not $validated -and -not $offline) {
     $offline = $true
 }
 
-if ($validated -and (Read-StoredToken -Path $credentialPath) -ne $token) {
+# El de Core no se guarda: Core lo renueva y una copia en disco solo podria quedarse vieja
+if ($validated -and -not $fromCore -and (Read-StoredToken -Path $credentialPath) -ne $token) {
     # Se guarda despues de comprobarla, nunca antes: escribir una credencial sin
     # comprobar sustituiria una que quiza funcionaba por otra que no. Y se guarda venga
     # de donde venga —del entorno o del teclado— porque lo que rompio un dia fue

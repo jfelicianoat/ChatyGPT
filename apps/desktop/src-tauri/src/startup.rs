@@ -204,13 +204,48 @@ fn startup_paths(data_dir: &Path) -> StartupPaths {
     }
 }
 
+/// El Broker en HTTPS lleva un certificado de la «AI Broker CA». PowerShell 5.1 solo confía en
+/// el almacén de Windows, así que se le añade esa CA para este proceso (mismo nombre de host,
+/// misma cadena: no se acepta cualquier certificado). Lo usan `$brokerUrl` y `$caPath`.
+pub(crate) const BROKER_CA_TRUST_PS: &str = r#"if ($brokerUrl.StartsWith('https:') -and (Test-Path -LiteralPath $caPath)) {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    if (-not ('BrokerCaTrust' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System.Net;
+using System.Net.Security;
+using System.Security.Cryptography.X509Certificates;
+public static class BrokerCaTrust {
+    static X509Certificate2 Ca;
+    public static void Enable(string path) {
+        Ca = new X509Certificate2(path);
+        ServicePointManager.ServerCertificateValidationCallback = Check;
+    }
+    static bool Check(object sender, X509Certificate certificate, X509Chain chain, SslPolicyErrors errors) {
+        if (errors == SslPolicyErrors.None) return true;
+        if (errors != SslPolicyErrors.RemoteCertificateChainErrors) return false;
+        using (var own = new X509Chain()) {
+            own.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
+            own.ChainPolicy.VerificationFlags = X509VerificationFlags.AllowUnknownCertificateAuthority;
+            own.ChainPolicy.ExtraStore.Add(Ca);
+            if (!own.Build(new X509Certificate2(certificate))) return false;
+            return own.ChainElements[own.ChainElements.Count - 1].Certificate.Thumbprint == Ca.Thumbprint;
+        }
+    }
+}
+'@
+    }
+    [BrokerCaTrust]::Enable($caPath)
+}
+"#;
+
 fn render_startup_script(executable: &Path, secret: &Path, broker_base_url: &str) -> String {
     format!(
         r#"$ErrorActionPreference = 'SilentlyContinue'
 $executable = '{}'
 $secretPath = '{}'
 $brokerUrl = '{}'.TrimEnd('/')
-if (-not (Test-Path -LiteralPath $executable) -or -not (Test-Path -LiteralPath $secretPath)) {{ exit 1 }}
+$caPath = '{}'
+{}if (-not (Test-Path -LiteralPath $executable) -or -not (Test-Path -LiteralPath $secretPath)) {{ exit 1 }}
 Add-Type -AssemblyName System.Security
 $protected = [IO.File]::ReadAllBytes($secretPath)
 $plain = [Security.Cryptography.ProtectedData]::Unprotect($protected, $null, [Security.Cryptography.DataProtectionScope]::CurrentUser)
@@ -243,7 +278,9 @@ $token = $null
 "#,
         powershell_literal(&executable.to_string_lossy()),
         powershell_literal(&secret.to_string_lossy()),
-        powershell_literal(broker_base_url)
+        powershell_literal(broker_base_url),
+        powershell_literal(&crate::broker::broker_ca_path().0),
+        BROKER_CA_TRUST_PS
     )
 }
 
@@ -293,6 +330,11 @@ mod tests {
         assert!(script.contains("/api/v1/auth/check"));
         assert!(!script.contains("/api/v1/capabilities"));
         assert!(script.contains("$attempt -lt 20"));
+        // Broker en HTTPS: la CA del Broker se añade antes de la primera petición.
+        let trust = script
+            .find("[BrokerCaTrust]::Enable($caPath)")
+            .expect("confianza en la CA");
+        assert!(trust < script.find("/api/v1/auth/check").unwrap());
         assert!(!script.contains("while ($true)"));
         assert!(script.contains("ProtectedData]::Unprotect"));
         // Sin cargar System.Security, PowerShell 5.1 no conoce ProtectedData.

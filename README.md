@@ -443,6 +443,54 @@ punta a punta: `cargo test --lib real_chatygpt_athena -- --ignored --nocapture` 
 `CHATYGPT_VERIFY_CORE_TOKEN`, `CHATYGPT_VERIFY_DIRECTOR_TOKEN` y `CHATYGPT_VERIFY_WORKSPACE`
 (verde el 19-oct-2026: tres llamadas reales a `muse-glimmer:latest`, 135 s).
 
+**0.4.6 — Knowledge Orchestrator completo.** La casilla «Knowledge Orchestrator» está junto a
+«Buscar recuerdos», sin abrir desplegables, y se recuerda por conversación; la mochila de un GPT
+tiene la suya («Mochila: conocimiento de Knowledge Orchestrator», versionada con el GPT). Con
+cualquiera de las dos, cada mensaje lee **todos** los documentos publicados (`GET /documents` y
+`GET /documents/{id}`), los junta en un Markdown donde cada uno lleva `[KO doc N] título` y su
+fuente, y lo sube al Broker como adjunto (el Broker deduplica por SHA-256: si nada cambió, no se
+vuelve a convertir). La petición autoriza `long_context: map_reduce` con estrategia `single` o
+`auto`, para que el Broker trocee y sintetice si no cabe en el contexto del modelo, y sube
+`max_output_tokens` a 12000 porque una síntesis larga con un modelo que razona llegaba cortada.
+Las notas que KO no entrega (HTTP 404 o 409) se omiten y el adjunto lo dice. La petición registra
+`knowledge_orchestrator_document_ids`. La URL sale de `KNOWLEDGE_ORCHESTRATOR_URL` (por defecto
+`http://127.0.0.1:8766/api/v1`) y el token de un consumidor «read» se guarda cifrado desde
+Inicio → Knowledge Orchestrator. Si está activado y KO no responde, el mensaje no se envía.
+Recorrido real: `cargo test --lib real_knowledge_orchestrator -- --ignored --nocapture` con
+`KNOWLEDGE_ORCHESTRATOR_URL`, `KO_E2E_URL`, `KO_E2E_TOKEN`, `CHATYGPT_VERIFY_BROKER_URL`,
+`CHATYGPT_VERIFY_PROFILE_DIR` y, opcional, `KO_E2E_QUESTION`.
+
+**0.4.7 — Knowledge Orchestrator más rápido y tolerante.** KO tarda 4–5 s en cada llamada a su
+API, y releer 21 notas costaba unos 100 s por mensaje. Ahora las notas se guardan en
+`knowledge_orchestrator/documentos.json` del perfil, y solo se descargan las que no están o cuyo
+`content_hash` cambió en el listado: tras la primera pregunta, cada mensaje solo hace el listado.
+Un documento que responde 5xx se reintenta dos veces y, si sigue fallando, se omite, y el adjunto
+dice cuántos faltan. Antes, un 500 pasajero de KO tumbaba la pregunta entera.
+
+**0.4.8 — las preguntas con Knowledge Orchestrator pasan delante de sus lotes.** KO encola con
+prioridad 100 decenas de tareas (trozos de vídeo, extracción de notas), y el Broker atiende una
+cada 2–3 minutos: una pregunta con la misma prioridad esperaba cerca de una hora. Ahora sale con
+prioridad 25 («Alta»), salvo que la conversación ya tenga una más alta (en el Broker, menor
+número = antes en la cola).
+
+**0.4.12 — la lectura de Knowledge Orchestrator también se ve en el monitor de Core.** Cada vez
+que un mensaje lee el conocimiento de KO, el monitor muestra un flujo `chatygpt_ko_<uuid>`:
+petición ChatyGPT → Knowledge Orchestrator y su respuesta (documentos, omitidos, bytes recibidos
+y duración) o su error. Como el resto de saltos, informar nunca frena el mensaje.
+
+**0.4.13 — el chat ya no se sale de la ventana.** Un aviso encima del chat (recuperación al
+iniciar, credencial del Broker, exportación…) empujaba el chat hacia abajo y, como la vista no
+tiene scroll, el campo de texto y «Enviar» quedaban cortados. Ahora el aviso resta alto al chat
+(como mucho un 35 % de la ventana, con su propio scroll) y su «×» para cerrarlo se ve. Los
+mensajes conservan siempre un alto mínimo: con un adjunto grande o una ventana pequeña es el
+compositor el que hace scroll, no la conversación la que desaparece. En Flujos, «Publicar versión»
+ya no queda cortado en ventanas medianas. Probado en la app real con una copia del perfil, a
+1400×900 y 1100×700, en todas las áreas.
+
+**0.4.15 — con «Knowledge Orchestrator» marcado, solo responde con lo que hay en KO.** Antes, si
+ningún documento cubría la pregunta, el modelo lo decía y seguía con conocimiento general, y esa
+parte parecía salir de KO. Ahora dice que KO no lo cubre y no añade nada más.
+
 ## Documentación
 
 - [Estado vigente y límites](docs/CURRENT_STATE.md)

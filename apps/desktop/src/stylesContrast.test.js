@@ -89,3 +89,19 @@ describe("maquetación (auditoría 14-oct)", () => {
     expect(css).not.toMatch(/\.scheduler-calendar-day h4 \{[^}]*text-transform: capitalize/);
   });
 });
+
+describe("maquetación del chat (20-oct)", () => {
+  it("un aviso sobre el chat le resta alto en vez de sacar el compositor de la ventana", () => {
+    expect(css).toMatch(/\.conversation-content \{[^}]*overflow: hidden; display: flex; flex-direction: column;/);
+    expect(css).toMatch(/\.conversation-content > \.chat-workspace \{ flex: 1 1 0; height: auto; \}/);
+    expect(css).toMatch(/\.conversation-content > :not\(\.chat-workspace\) \{[^}]*max-height: 35vh; overflow-y: auto;/);
+  });
+
+  it("los mensajes conservan un alto mínimo frente al compositor", () => {
+    expect(css).toMatch(/\.chat-surface \{ display: grid; grid-template-rows: minmax\(min\(160px, 35%\), 1fr\) minmax\(0, auto\);/);
+  });
+
+  it("la cabecera de un flujo no empuja «Publicar versión» fuera del editor", () => {
+    expect(css).toMatch(/\.workflow-editor-header \{ display: grid; grid-template-columns: minmax\(0, \.8fr\) minmax\(0, 1\.2fr\) minmax\(0, \.65fr\) auto;/);
+  });
+});

@@ -63,6 +63,7 @@ export function useGpts({
   const [customGptFileModifyPermission, setCustomGptFileModifyPermission] = useState(false);
   const [customGptSchedulePermission, setCustomGptSchedulePermission] = useState(false);
   const [customGptExternalApiPermission, setCustomGptExternalApiPermission] = useState(false);
+  const [customGptKnowledgeOrchestrator, setCustomGptKnowledgeOrchestrator] = useState(false);
   const [customGptApiActions, setCustomGptApiActions] = useState<CustomGptView["apiActions"]>([]);
   const [customGptApiSamples, setCustomGptApiSamples] = useState<Record<number, Record<string, string>>>({});
   const [customGptApiPreviews, setCustomGptApiPreviews] = useState<Record<number, { value?: CustomGptApiActionPreview; error?: string }>>({});
@@ -126,6 +127,7 @@ export function useGpts({
     setCustomGptFileModifyPermission(false);
     setCustomGptSchedulePermission(false);
     setCustomGptExternalApiPermission(false);
+    setCustomGptKnowledgeOrchestrator(false);
     setCustomGptApiActions([]);
     setCustomGptApiSamples({});
     setCustomGptApiPreviews({});
@@ -236,6 +238,7 @@ export function useGpts({
     setCustomGptFileModifyPermission(item.toolPermissions.modifyAuthorizedFiles === "confirm");
     setCustomGptSchedulePermission(item.toolPermissions.createScheduledTasks === "confirm");
     setCustomGptExternalApiPermission(item.toolPermissions.callExternalApis === "confirm");
+    setCustomGptKnowledgeOrchestrator(item.knowledgeOrchestrator ?? false);
     setCustomGptApiActions((item.apiActions ?? []).map((action) => ({
       ...action,
       authMode: action.authMode ?? "none",
@@ -309,7 +312,8 @@ export function useGpts({
             customGptDefaultProject || null,
             executionProfile,
             customGptContextProfile
-            ,customGptApiActions
+            ,customGptApiActions,
+            customGptKnowledgeOrchestrator
           )
         : await platform.createCustomGpt(
             customGptName,
@@ -329,7 +333,8 @@ export function useGpts({
             customGptDefaultProject || null,
             executionProfile,
             customGptContextProfile
-            ,customGptApiActions
+            ,customGptApiActions,
+            customGptKnowledgeOrchestrator
           );
       setCustomGpts({ state: "ready", value: await platform.listCustomGpts() });
       setCustomGptNotice(
@@ -755,6 +760,8 @@ export function useGpts({
     setCustomGptSchedulePermission,
     customGptExternalApiPermission,
     setCustomGptExternalApiPermission,
+    customGptKnowledgeOrchestrator,
+    setCustomGptKnowledgeOrchestrator,
     customGptApiActions,
     setCustomGptApiActions,
     customGptApiSamples,

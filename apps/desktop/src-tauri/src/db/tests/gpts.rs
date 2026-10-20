@@ -118,6 +118,7 @@ fn custom_gpt_execution_profile_is_optional_versioned_and_restorable() {
         max_cost_usd: 0.75,
         long_context: "fail".to_owned(),
         priority: 50,
+        knowledge_orchestrator: false,
     };
     let created = database
         .create_custom_gpt_with_starters(
@@ -178,6 +179,7 @@ fn custom_gpt_execution_profile_is_optional_versioned_and_restorable() {
 
     let invalid = ConversationExecutionPreferences {
         priority: 1001,
+        knowledge_orchestrator: false,
         ..ConversationExecutionPreferences::default()
     };
     assert!(matches!(
@@ -891,5 +893,73 @@ fn custom_gpt_files_follow_the_selected_gpt_without_sticky_chat_links() {
         .ready_custom_gpt_file_ids_for_conversation(&conversation.id)
         .expect("removed GPT files should resolve")
         .is_empty());
+    cleanup(&database);
+}
+
+#[test]
+fn knowledge_orchestrator_backpack_is_versioned_and_reaches_the_turn_context() {
+    let database = test_database();
+    let created = database
+        .create_custom_gpt_with_api_actions(
+            "Con mochila",
+            None,
+            None,
+            "Responde con mi base de conocimiento.",
+            &[],
+            &CustomGptToolPermissions::default(),
+            None,
+            None,
+            None,
+            None,
+            &[],
+            true,
+        )
+        .expect("GPT con mochila");
+    assert!(created.knowledge_orchestrator);
+    assert!(
+        database
+            .custom_gpt_context(&created.id)
+            .expect("contexto")
+            .knowledge_orchestrator
+    );
+
+    // Una versión nueva sin la casilla la apaga; la anterior sigue intacta.
+    let updated = database
+        .update_custom_gpt_with_api_actions(
+            &created.id,
+            "Con mochila",
+            None,
+            None,
+            "Responde con mi base de conocimiento.",
+            &[],
+            &CustomGptToolPermissions::default(),
+            None,
+            None,
+            None,
+            None,
+            &[],
+            false,
+        )
+        .expect("versión 2");
+    assert!(!updated.knowledge_orchestrator);
+    assert!(
+        !database
+            .custom_gpt_context(&created.id)
+            .expect("contexto")
+            .knowledge_orchestrator
+    );
+    let first: String = database
+        .connect()
+        .expect("conexión")
+        .query_row(
+            "SELECT configuration_json FROM gpt_versions WHERE custom_gpt_id = ?1 AND version_no = 1",
+            params![created.id],
+            |row| row.get(0),
+        )
+        .expect("versión 1");
+    assert_eq!(
+        serde_json::from_str::<Value>(&first).expect("json")["knowledgeOrchestrator"],
+        Value::Bool(true)
+    );
     cleanup(&database);
 }

@@ -631,6 +631,10 @@ pub async fn start_chat_turn_with_identity(
     let idempotency_key = operation_key
         .map(str::to_owned)
         .unwrap_or_else(|| format!("chatygpt:turn:{}", Uuid::new_v4()));
+    let knowledge_orchestrator = execution_preferences.knowledge_orchestrator
+        || custom_gpt_context
+            .as_ref()
+            .is_some_and(|custom_gpt| custom_gpt.knowledge_orchestrator);
     let (mut request, memories, document_chunks) = chat_request_with_system1(
         &broker,
         conversation_id,
@@ -648,6 +652,13 @@ pub async fn start_chat_turn_with_identity(
             sandbox_enabled,
             execution_preferences,
         },
+    )
+    .await?;
+    request = crate::knowledge_orchestrator::enrich_request(
+        &database,
+        &broker,
+        request,
+        knowledge_orchestrator,
     )
     .await?;
     if let Some(plan) = research_plan.as_ref() {
