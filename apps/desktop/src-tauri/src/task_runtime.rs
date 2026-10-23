@@ -659,6 +659,7 @@ pub async fn start_chat_turn_with_identity(
         &broker,
         request,
         knowledge_orchestrator,
+        user_text,
     )
     .await?;
     if let Some(plan) = research_plan.as_ref() {

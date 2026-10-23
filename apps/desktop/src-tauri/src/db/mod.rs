@@ -72,6 +72,7 @@ pub struct Database {
 mod adjuntos;
 mod adjuntos_estado;
 mod adjuntos_indice;
+mod ajustes;
 mod apertura;
 mod artefactos;
 mod auditoria;

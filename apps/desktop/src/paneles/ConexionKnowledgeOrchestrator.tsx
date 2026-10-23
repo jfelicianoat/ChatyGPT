@@ -17,6 +17,9 @@ export function ConexionKnowledgeOrchestrator() {
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
+  // Minutos que el Broker deja a una pregunta con conocimiento antes de darla por perdida
+  const [minutes, setMinutes] = useState("");
+  const [savedMinutes, setSavedMinutes] = useState<number | null>(null);
 
   const run = async (action: () => Promise<KnowledgeOrchestratorStatus>) => {
     setBusy(true);
@@ -32,7 +35,25 @@ export function ConexionKnowledgeOrchestrator() {
 
   useEffect(() => {
     void run(() => platform.getKnowledgeOrchestratorStatus());
+    void platform.getKnowledgeOrchestratorTimeout().then((seconds) => {
+      setSavedMinutes(seconds / 60);
+      setMinutes(String(seconds / 60));
+    }).catch((failure) => setError(describeError(failure)));
   }, []);
+
+  const saveTimeout = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const seconds = await platform.setKnowledgeOrchestratorTimeout(Math.round(Number(minutes) * 60));
+      setSavedMinutes(seconds / 60);
+      setMinutes(String(seconds / 60));
+    } catch (failure) {
+      setError(describeError(failure));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const save = async () => {
     await run(() => platform.setKnowledgeOrchestratorCredential(draft));
@@ -99,6 +120,29 @@ export function ConexionKnowledgeOrchestrator() {
             </div>
           </div>
         </>
+      )}
+      {savedMinutes !== null && (
+        <div className="credential-form">
+          <label htmlFor="ko-timeout">Plazo de una pregunta con conocimiento (minutos, de 10 a 120)</label>
+          <input
+            id="ko-timeout"
+            type="number"
+            min={10}
+            max={120}
+            step={1}
+            value={minutes}
+            onChange={(event) => setMinutes(event.target.value)}
+          />
+          <div className="credential-actions">
+            <button
+              className="secondary"
+              disabled={busy || minutes === "" || Number(minutes) === savedMinutes}
+              onClick={() => void saveTimeout()}
+            >
+              Guardar plazo
+            </button>
+          </div>
+        </div>
       )}
     </section>
   );

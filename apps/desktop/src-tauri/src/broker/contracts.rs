@@ -74,10 +74,9 @@ impl TaskState {
             return Err("task_id no coincide con la tarea consultada".to_owned());
         }
 
+        // El carril es aditivo: el 2.12 trajo `embedding` y vendrán otros. Un
+        // carril desconocido no invalida la tarea (Client_API.md, §2).
         let kind = required_non_empty_string(object, "kind")?;
-        if !matches!(kind, "inference" | "ingestion") {
-            return Err("kind no pertenece al contrato de tareas".to_owned());
-        }
         let status = required_non_empty_string(object, "status")?;
         required_nullable_string(object, "request_id")?;
         required_non_empty_string(object, "created_at")?;
@@ -692,6 +691,30 @@ mod tests {
         let error = TaskState::from_contract_value(crossed, "task-one")
             .expect_err("una respuesta de otra tarea no debe mezclarse");
         assert!(error.contains("task_id"));
+    }
+
+    /// Contrato 2.12: las tareas del carril de embeddings llegan con su propio
+    /// `kind`. Rechazarlo convertiría un carril nuevo en un error de contrato.
+    #[test]
+    fn runtime_contract_accepts_the_embedding_lane_and_future_lanes() {
+        for kind in ["embedding", "carril_futuro"] {
+            let state = TaskState::from_contract_value(
+                serde_json::json!({
+                    "task_id": "task-emb",
+                    "kind": kind,
+                    "status": "queued",
+                    "request_id": null,
+                    "created_at": "2026-10-21T10:00:00Z",
+                    "updated_at": "2026-10-21T10:00:01Z",
+                    "progress": {"phase": "queued"},
+                    "result": null,
+                    "error": null
+                }),
+                "task-emb",
+            )
+            .expect("un carril nuevo cumple el contrato");
+            assert_eq!(state.kind.as_deref(), Some(kind));
+        }
     }
 
     /// Respuesta literal del Broker 2.11 (auditoría 14-oct, INC-14): rechazarla

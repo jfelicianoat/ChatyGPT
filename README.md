@@ -491,6 +491,26 @@ ya no queda cortado en ventanas medianas. Probado en la app real con una copia d
 ningún documento cubría la pregunta, el modelo lo decía y seguía con conocimiento general, y esa
 parte parecía salir de KO. Ahora dice que KO no lo cubre y no añade nada más.
 
+**0.4.16 — las preguntas con Knowledge Orchestrator tienen su propio plazo, y se puede cambiar.**
+Con 79 notas (unos 230 000 tokens) un modelo local de 30B no terminaba en los 600 s fijos de un
+turno y el Broker la daba por perdida (`TASK_TIMEOUT`), aunque la prioridad urgente la ponía la
+primera de la cola. Ahora el plazo es de 30 min por defecto y se ajusta en Inicio → Knowledge
+Orchestrator, entre 10 y 120 min. El Broker sigue aplicando su propio techo.
+
+**0.4.17 — con «Knowledge Orchestrator» marcado ya no contesta «no hay archivos activos».** La
+lista de ficheros activos que lee el modelo solo incluía los adjuntos del usuario, así que en una
+pregunta sin adjuntos iba vacía. El modelo obedecía la regla de «si la lista está vacía, dilo» e
+ignoraba el conocimiento de KO, aunque sí lo había recibido. Ahora el adjunto de KO figura en esa lista.
+
+**0.4.18 — con «Knowledge Orchestrator» marcado solo viajan las notas relevantes.** Hasta ahora cada
+pregunta mandaba al Broker todas las notas publicadas: con 89 eran ~240 000 tokens y unos 20 minutos.
+Ahora ChatyGPT pregunta antes a KO (`POST /retrievals`, KO 0.5.0), que busca por palabras y por
+significado y devuelve todas las notas relevantes, sin tope, más las que aún no ha indexado. Solo esas
+viajan, enteras. Si KO es anterior, la búsqueda falla, tarda más de 5 minutos o le faltó la parte por
+significado, se manda todo como antes: nunca se pierde una nota por la búsqueda. Si no hay nada
+relevante, la respuesta dice que KO no lo cubre. Además, el cliente del Broker ya no rechaza tareas de
+un carril nuevo (`kind: "embedding"` del contrato 2.12).
+
 ## Documentación
 
 - [Estado vigente y límites](docs/CURRENT_STATE.md)

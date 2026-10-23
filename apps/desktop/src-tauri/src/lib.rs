@@ -337,6 +337,8 @@ pub fn run() {
             get_knowledge_orchestrator_status,
             set_knowledge_orchestrator_credential,
             clear_knowledge_orchestrator_credential,
+            get_knowledge_orchestrator_timeout,
+            set_knowledge_orchestrator_timeout,
             list_custom_gpt_files,
             import_custom_gpt_file,
             remove_custom_gpt_file,

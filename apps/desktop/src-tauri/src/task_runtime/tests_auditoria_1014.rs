@@ -255,7 +255,7 @@ fn real_ai_os_core_governs_a_chat_turn() {
         database.task_record(&allowed).expect("registro"),
     );
     assert!(
-        SimulatedBroker::wait_until(Duration::from_secs(600), || database
+        SimulatedBroker::wait_until(Duration::from_secs(1_800), || database
             .task_snapshot(&allowed)
             .is_ok_and(|task| task.local_state == "terminal")),
         "el turno autorizado debía terminar en el Broker real"
@@ -315,14 +315,16 @@ fn real_knowledge_orchestrator_feeds_a_chat_turn() {
         "¿Cada cuánto tengo que descalcificar la cafetera y con qué producto?".to_owned()
     });
     let broker = BrokerClient::for_base_url(&env("CHATYGPT_VERIFY_BROKER_URL")).expect("cliente");
-    broker
-        .replace_admin_token(
+    // El Broker rota su token al reiniciarse y la app lo recibe de Core: el
+    // guardado en el perfil puede estar caducado. `CHATYGPT_VERIFY_BROKER_TOKEN` manda.
+    let token = std::env::var("CHATYGPT_VERIFY_BROKER_TOKEN")
+        .ok()
+        .or_else(|| {
             crate::secrets::load_broker_token(std::path::Path::new(&env(
                 "CHATYGPT_VERIFY_PROFILE_DIR",
             )))
-            .as_deref(),
-        )
-        .expect("token");
+        });
+    broker.replace_admin_token(token.as_deref()).expect("token");
 
     let snapshot = tauri::async_runtime::block_on(super::start_chat_turn(
         database.clone(),
@@ -344,12 +346,12 @@ fn real_knowledge_orchestrator_feeds_a_chat_turn() {
     assert!(prompt.contains("Knowledge Orchestrator"));
     assert_eq!(request["execution"]["long_context"], "map_reduce");
     println!(
-        "[OK ] la petición adjunta todo el conocimiento: documentos {} en {}",
+        "[OK ] la petición adjunta el conocimiento relevante: documentos {} en {}",
         request["content"]["metadata"]["knowledge_orchestrator_document_ids"],
         request["content"]["attachments"]
     );
     assert!(
-        SimulatedBroker::wait_until(Duration::from_secs(600), || database
+        SimulatedBroker::wait_until(Duration::from_secs(1_800), || database
             .task_snapshot(&snapshot.id)
             .is_ok_and(|task| task.local_state == "terminal")),
         "el turno debía terminar en el Broker real"

@@ -421,6 +421,22 @@ pub(crate) async fn set_knowledge_orchestrator_credential(
     get_knowledge_orchestrator_status(state).await
 }
 
+/// Plazo en segundos que se pide al Broker para un turno con conocimiento.
+#[tauri::command]
+pub(crate) fn get_knowledge_orchestrator_timeout(
+    state: State<'_, AppState>,
+) -> Result<u64, AppError> {
+    Ok(knowledge_orchestrator::timeout_seconds(&state.database))
+}
+
+#[tauri::command]
+pub(crate) fn set_knowledge_orchestrator_timeout(
+    seconds: u64,
+    state: State<'_, AppState>,
+) -> Result<u64, AppError> {
+    knowledge_orchestrator::set_timeout_seconds(&state.database, seconds)
+}
+
 /// Retira la credencial guardada. Requiere confirmación explícita.
 #[tauri::command]
 pub(crate) async fn clear_knowledge_orchestrator_credential(

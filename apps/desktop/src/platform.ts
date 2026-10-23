@@ -887,6 +887,12 @@ export const platform = {
       confirmed
     });
   },
+  getKnowledgeOrchestratorTimeout(): Promise<number> {
+    return invoke<number>("get_knowledge_orchestrator_timeout");
+  },
+  setKnowledgeOrchestratorTimeout(seconds: number): Promise<number> {
+    return invoke<number>("set_knowledge_orchestrator_timeout", { seconds });
+  },
   getAthenaStatus(): Promise<AthenaEstadoArea> {
     return invoke<AthenaEstadoArea>("get_athena_status");
   },

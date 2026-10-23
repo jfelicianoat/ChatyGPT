@@ -1588,6 +1588,7 @@ pub(super) fn advance_semantic_chat(
                                 .custom_gpt_context
                                 .as_ref()
                                 .is_some_and(|custom_gpt| custom_gpt.knowledge_orchestrator),
+                        &workflow.user_text,
                     )
                     .await?;
                     // La instantánea solo menciona recuerdos enviados, incluido el
