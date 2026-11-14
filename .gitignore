@@ -21,3 +21,7 @@ __pycache__/
 vite.config.js
 vite.config.d.ts
 apps/desktop/src-tauri/gen/schemas/
+
+# Generados (plan 13-nov, COM-03)
+/graphify-out/
+/diagnostico-adjuntos.txt

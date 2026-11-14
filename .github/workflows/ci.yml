@@ -24,7 +24,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # Versiones fijas (auditoría 28-sep-2026, H26): una herramienta flotante
       # cambia el resultado de la puerta sin que cambie el código.
@@ -34,20 +34,20 @@ jobs:
 
       - uses: taiki-e/install-action@cargo-llvm-cov
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24.11.1
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 11.9.0
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
 
       - name: Cachear dependencias de Cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -57,16 +57,6 @@ jobs:
 
       - name: Instalar dependencias JavaScript
         run: pnpm install --frozen-lockfile
-
-      # Vulnerabilidades conocidas en dependencias de producción. Se detiene en
-      # «high»: una alerta moderada se revisa en el informe, no bloquea.
-      - name: Auditoría de dependencias JavaScript
-        run: pnpm audit --prod --audit-level high
-
-      - name: Auditoría de dependencias Rust
-        run: |
-          cargo install cargo-audit --locked --version 0.22.2
-          cargo audit --file apps/desktop/src-tauri/Cargo.lock
 
       - name: Formato de Rust
         run: cargo fmt --check --manifest-path apps/desktop/src-tauri/Cargo.toml
@@ -117,7 +107,7 @@ jobs:
           }
 
       - name: Conservar instaladores verificables
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: chatygpt-windows-installers
           path: |
@@ -134,22 +124,53 @@ jobs:
       - name: Espacios en blanco y saltos de línea
         run: git diff --check
 
+  # Trabajo aparte: un aviso nuevo en una dependencia externa no debe tapar el
+  # formato, clippy, los tests ni la construcción del instalador (plan 13-nov, CH-02).
+  auditoria:
+    name: Auditoría de dependencias
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.11.1
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11.9.0
+
+      - name: Instalar dependencias JavaScript
+        run: pnpm install --frozen-lockfile
+
+      # Vulnerabilidades conocidas en dependencias de producción. Se detiene en
+      # «high»: una alerta moderada se revisa en el informe, no bloquea.
+      - name: Auditoría de dependencias JavaScript
+        run: pnpm audit --prod --audit-level high
+
+      - name: Auditoría de dependencias Rust
+        if: ${{ !cancelled() }}
+        run: |
+          cargo install cargo-audit --locked --version 0.22.2
+          cargo audit --file apps/desktop/src-tauri/Cargo.lock
+
   linux:
     name: Comprobaciones independientes del sistema (Linux)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24.11.1
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 11.9.0
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
 

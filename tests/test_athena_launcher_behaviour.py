@@ -133,6 +133,7 @@ def _ejecutar(url: str, local_app_data: Path, athena_root: Path | None = None):
     )
 
 
+@unittest.skipUnless(os.name == "nt", "el lanzador de Athena es un script de PowerShell de Windows")
 class LauncherBehaviourTests(unittest.TestCase):
     def setUp(self) -> None:
         self._temporal = tempfile.TemporaryDirectory()
