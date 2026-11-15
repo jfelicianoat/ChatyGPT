@@ -413,6 +413,126 @@ describe("navegación principal simplificada", () => {
     expect(platformMethod("getLocalTask")).toHaveBeenCalledWith("task-chat");
   }, 10_000);
 
+  it("CH-03: un turno en pausa pide permiso dentro de App y reanuda con la decisión", async () => {
+    // La tarjeta y su hook tienen pruebas sueltas; esta comprueba el cableado
+    // en App (turno activo → tarjeta → resolveToolCalls → recarga), que es lo
+    // que movió el corte 3 y no se pudo provocar en vivo con un modelo real.
+    const summary = {
+      id: "conversation-tool",
+      title: "Chat con herramienta",
+      projectId: null,
+      updatedAt: "2026-11-14T10:00:00Z"
+    };
+    const conversation = {
+      ...summary,
+      customGptId: null,
+      executionPreferences: {
+        dataClassification: "public",
+        strategy: "single",
+        preset: "fast",
+        maxCostUsd: 0.1,
+        longContext: "fail",
+        priority: 50
+      },
+      messages: [],
+      researchRuns: []
+    };
+    const toolCall = {
+      toolCallId: "call-rename",
+      name: "rename_conversation",
+      arguments: { title: "Título propuesto" },
+      status: "waiting_approval",
+      confirmation: {
+        toolName: "Renombrar conversación",
+        resources: { label: "Título propuesto" },
+        consequences: "El chat pasará a llamarse «Título propuesto».",
+        disclosure: {
+          action_label: "Renombrar esta conversación",
+          destination_label: "Solo en este equipo",
+          scope_label: "Permitir una vez",
+          data_sent: []
+        }
+      }
+    };
+    const task = (pending: unknown[], remoteStatus: string, localState: string) => ({
+      id: "task-tool",
+      remoteTaskId: "remote-task-tool",
+      remoteStatus,
+      localState,
+      consecutivePollErrors: 0,
+      result: remoteStatus === "completed" ? {} : null,
+      progress: { phase: remoteStatus },
+      pendingToolCalls: pending,
+      updatedAt: "2026-11-14T10:00:01Z"
+    });
+    const paused = task([toolCall], "requires_action", "polling");
+    const done = task([], "completed", "terminal");
+    let resolved = false;
+    platformMethod("listConversations").mockResolvedValue([summary]);
+    // Tras enviar, Rust ya tiene guardados el mensaje y la respuesta pendiente;
+    // con la conversación vacía App pinta el estado inicial, no la lista.
+    const sentMessages = [
+      {
+        id: "message-user-tool",
+        role: "user",
+        status: "complete",
+        sequenceNo: 1,
+        text: "Ponle un título",
+        sources: [],
+        createdAt: "2026-11-14T10:00:00Z"
+      },
+      {
+        id: "message-assistant-tool",
+        role: "assistant",
+        status: "pending",
+        sequenceNo: 2,
+        brokerTaskId: "task-tool",
+        taskRemoteStatus: "requires_action",
+        sources: [],
+        createdAt: "2026-11-14T10:00:00Z"
+      }
+    ];
+    platformMethod("getConversation").mockImplementation(async () =>
+      platformMethod("sendChatTurn").mock.calls.length > 0
+        ? { ...conversation, messages: sentMessages }
+        : conversation
+    );
+    platformMethod("listAttachments").mockResolvedValue([]);
+    platformMethod("listProjectFiles").mockResolvedValue([]);
+    platformMethod("sendChatTurn").mockResolvedValue(paused);
+    platformMethod("getLocalTask").mockImplementation(async () => (resolved ? done : paused));
+    platformMethod("resolveToolCalls").mockImplementation(async () => {
+      resolved = true;
+      return done;
+    });
+
+    render(<App />);
+    await screen.findByRole("heading", { name: summary.title });
+    await userEvent.type(screen.getByPlaceholderText("Escribe un mensaje…"), "Ponle un título");
+    await userEvent.click(screen.getByRole("button", { name: "Enviar" }));
+
+    const seccion = await screen.findByRole("region", { name: "Confirmación de herramientas" });
+    expect(seccion.textContent).toContain("Renombrar esta conversación");
+    const confirmar = within(seccion).getByRole("button", {
+      name: "Confirmar decisiones y continuar"
+    }) as HTMLButtonElement;
+    expect(confirmar.disabled).toBe(true);
+    expect(platformMethod("resolveToolCalls")).not.toHaveBeenCalled();
+
+    await userEvent.click(within(seccion).getByRole("button", { name: "Autorizar una vez" }));
+    await userEvent.click(confirmar);
+
+    await waitFor(() => {
+      expect(platformMethod("resolveToolCalls")).toHaveBeenCalledWith("task-tool", [
+        { toolCallId: "call-rename", approved: true }
+      ]);
+    });
+    await waitFor(() => {
+      expect(screen.queryByRole("region", { name: "Confirmación de herramientas" })).toBeNull();
+    });
+    expect(platformMethod("resolveToolCalls")).toHaveBeenCalledTimes(1);
+  }, 10_000);
+
   it("abre un chat largo por el final y pide a Rust los mensajes anteriores", async () => {
     // H17 (auditoría 28-sep-2026): antes Rust enviaba el historial entero y la
     // interfaz solo ocultaba mensajes. Ahora llega un lote acotado y la página

@@ -150,7 +150,12 @@ export const taskProgressSummary = (task: LocalTaskSnapshot): {
   completed?: number;
   total?: number;
 } => {
-  const phase = task.progress.phase ?? task.remoteStatus;
+  // Tras confirmar, el Broker sigue anunciando `waiting_for_tools` hasta su
+  // siguiente informe: sin llamadas pendientes no queda nada que confirmar.
+  const phase =
+    task.progress.phase === "waiting_for_tools" && task.pendingToolCalls.length === 0
+      ? task.remoteStatus
+      : task.progress.phase ?? task.remoteStatus;
   const label = TASK_PHASE_LABELS[phase] ?? task.activity ?? "Procesando";
   const completed = task.progress.invocationsCompleted;
   const total = task.progress.invocationsTotal;

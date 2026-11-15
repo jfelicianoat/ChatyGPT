@@ -93,7 +93,8 @@ def declared_commands() -> dict[str, set[str]]:
     source = "\n".join(ruta.read_text(encoding="utf-8") for ruta in COMANDOS_RS)
     commands: dict[str, set[str]] = {}
     pattern = re.compile(
-        r"#\[tauri::command\]\s*(?:#\[[^\]]*\]\s*)*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+(\w+)\s*\("
+        # `#[tauri::command(async)]` saca del hilo principal las órdenes que abren un diálogo.
+        r"#\[tauri::command(?:\([^)]*\))?\]\s*(?:#\[[^\]]*\]\s*)*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+(\w+)\s*\("
     )
     for match in pattern.finditer(source):
         raw_params = balanced_block(source, match.end() - 1, "(", ")")

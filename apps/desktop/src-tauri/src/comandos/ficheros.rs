@@ -6,7 +6,8 @@
 use super::*;
 use crate::*;
 
-#[tauri::command]
+// async: el diálogo es modal y bloquearía el hilo principal (ventana «No responde»).
+#[tauri::command(async)]
 pub(crate) fn pick_attachment_paths(extensions: Vec<String>) -> Result<Vec<String>, AppError> {
     #[cfg(target_os = "windows")]
     {
@@ -73,7 +74,8 @@ pub(crate) fn attachment_filter_patterns(extensions: &[String]) -> String {
         .join(";")
 }
 
-#[tauri::command]
+// async: el diálogo es modal y bloquearía el hilo principal (ventana «No responde»).
+#[tauri::command(async)]
 pub(crate) fn pick_export_path(
     suggested_name: String,
     state: State<'_, AppState>,
@@ -143,7 +145,8 @@ pub(crate) fn pick_export_path(
     ))
 }
 
-#[tauri::command]
+// async: el diálogo es modal y bloquearía el hilo principal (ventana «No responde»).
+#[tauri::command(async)]
 pub(crate) fn pick_scheduled_history_export_path(
     state: State<'_, AppState>,
 ) -> Result<Option<ExportPathSelection>, AppError> {
@@ -195,7 +198,8 @@ pub(crate) fn pick_scheduled_history_export_path(
     ))
 }
 
-#[tauri::command]
+// async: el diálogo es modal y bloquearía el hilo principal (ventana «No responde»).
+#[tauri::command(async)]
 pub(crate) fn pick_scheduled_calendar_export_path(
     state: State<'_, AppState>,
 ) -> Result<Option<ExportPathSelection>, AppError> {
@@ -247,7 +251,8 @@ pub(crate) fn pick_scheduled_calendar_export_path(
     ))
 }
 
-#[tauri::command]
+// async: el diálogo es modal y bloquearía el hilo principal (ventana «No responde»).
+#[tauri::command(async)]
 pub(crate) fn pick_obsidian_vault(state: State<'_, AppState>) -> Result<Option<String>, AppError> {
     #[cfg(target_os = "windows")]
     {

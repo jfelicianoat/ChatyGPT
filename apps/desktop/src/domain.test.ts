@@ -593,6 +593,21 @@ describe("Broker 2.6 task presentation", () => {
     });
   });
 
+  it("no pide confirmar cuando ya no queda ninguna llamada pendiente", () => {
+    // Visto en vivo el 14-nov-2026: tras «Autorizar una vez» la tarea pasa a
+    // `queued` pero el progreso del Broker aún dice `waiting_for_tools`.
+    const paused = {
+      ...task("waiting_for_tools"),
+      progress: { phase: "waiting_for_tools", invocationsCompleted: 1, invocationsTotal: 6 }
+    };
+    expect(taskProgressSummary({
+      ...paused,
+      pendingToolCalls: [{ toolCallId: "call-1" } as unknown as ToolCallView]
+    }).label).toBe("Esperando tu confirmación");
+    expect(taskProgressSummary({ ...paused, remoteStatus: "queued", pendingToolCalls: [] }))
+      .toEqual({ label: "En cola", completed: 1, total: 6 });
+  });
+
   it("explains the non-terminal memory wait introduced by contract 2.7", () => {
     expect(taskProgressSummary({
       ...task("waiting_for_memory"),

@@ -29,7 +29,8 @@ pub(crate) fn list_authorized_folders(
     state.database.list_authorized_folders()
 }
 
-#[tauri::command]
+// async: el diálogo es modal y bloquearía el hilo principal (ventana «No responde»).
+#[tauri::command(async)]
 pub(crate) fn pick_gpt_read_folder(
     state: State<'_, AppState>,
 ) -> Result<Option<AuthorizedFolderView>, AppError> {
@@ -77,7 +78,8 @@ pub(crate) fn pick_gpt_read_folder(
     ))
 }
 
-#[tauri::command]
+// async: el diálogo es modal y bloquearía el hilo principal (ventana «No responde»).
+#[tauri::command(async)]
 pub(crate) fn pick_gpt_modify_folder(
     state: State<'_, AppState>,
 ) -> Result<Option<AuthorizedFolderView>, AppError> {
@@ -125,7 +127,8 @@ pub(crate) fn pick_gpt_modify_folder(
     ))
 }
 
-#[tauri::command]
+// async: el diálogo es modal y bloquearía el hilo principal (ventana «No responde»).
+#[tauri::command(async)]
 pub(crate) fn pick_athena_folder(
     state: State<'_, AppState>,
 ) -> Result<Option<AuthorizedFolderView>, AppError> {

@@ -18,7 +18,8 @@ pub(crate) fn bootstrap_app(state: State<'_, AppState>) -> Result<BootstrapRepor
 }
 
 /// Elige la carpeta donde crear o desde la que leer una copia de seguridad.
-#[tauri::command]
+// async: el diálogo es modal y bloquearía el hilo principal (ventana «No responde»).
+#[tauri::command(async)]
 pub(crate) fn pick_backup_folder() -> Result<Option<String>, AppError> {
     crate::comandos::pick_folder("Elige la carpeta de las copias de seguridad de ChatyGPT")
 }

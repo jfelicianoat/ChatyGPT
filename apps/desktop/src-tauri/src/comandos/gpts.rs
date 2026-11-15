@@ -371,7 +371,8 @@ pub(crate) fn duplicate_custom_gpt(
         .duplicate_custom_gpt(&custom_gpt_id, new_name.as_deref())
 }
 
-#[tauri::command]
+// async: el diálogo es modal y bloquearía el hilo principal (ventana «No responde»).
+#[tauri::command(async)]
 pub(crate) fn pick_custom_gpt_import_path() -> Result<Option<String>, AppError> {
     #[cfg(target_os = "windows")]
     {
@@ -408,7 +409,8 @@ pub(crate) fn pick_custom_gpt_import_path() -> Result<Option<String>, AppError> 
     ))
 }
 
-#[tauri::command]
+// async: el diálogo es modal y bloquearía el hilo principal (ventana «No responde»).
+#[tauri::command(async)]
 pub(crate) fn pick_custom_gpt_export_path(
     suggested_name: String,
     state: State<'_, AppState>,
