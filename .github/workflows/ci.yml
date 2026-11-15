@@ -28,7 +28,7 @@ jobs:
 
       # Versiones fijas (auditoría 28-sep-2026, H26): una herramienta flotante
       # cambia el resultado de la puerta sin que cambie el código.
-      - uses: dtolnay/rust-toolchain@1.97.1
+      - uses: dtolnay/rust-toolchain@1.120.0
         with:
           components: rustfmt, clippy, llvm-tools-preview
 
