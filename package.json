@@ -13,7 +13,7 @@
     "typecheck": "tsc -b --pretty false"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.0.0",
+    "@tauri-apps/api": "^2.12.5",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
